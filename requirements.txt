@@ -1,0 +1,7 @@
+requests
+python-dotenv
+pytest
+psutil
+pyyaml
+pyarrow
+tzdata
