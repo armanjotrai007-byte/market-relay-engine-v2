@@ -1,0 +1,1 @@
+"""Structured context package placeholder."""

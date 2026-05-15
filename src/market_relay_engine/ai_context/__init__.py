@@ -1,0 +1,1 @@
+"""AI context package placeholder."""

@@ -1,0 +1,13 @@
+# QuestDB is reserved for the bot ledger only.
+# It must not be used as a historical market-data warehouse.
+questdb:
+  enabled: false
+  role: bot_ledger_only
+  market_data_warehouse: false
+  http:
+    host: localhost
+    port: 9000
+  postgres:
+    host: localhost
+    port: 8812
+  schema_created_in_pr1: false
