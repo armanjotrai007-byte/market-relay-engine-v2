@@ -1,0 +1,33 @@
+metadata:
+  config_version: 1
+  description: "Execution configuration placeholders. Paper trading only by default."
+
+broker:
+  name: alpaca
+  enabled: false
+  paper_trading_only: true
+  live_trading_enabled: false
+  api_key_env: ALPACA_API_KEY
+  secret_key_env: ALPACA_SECRET_KEY
+  base_url_env: ALPACA_BASE_URL
+
+order_defaults:
+  order_type: limit
+  time_in_force: day
+  default_quantity: 1
+
+required_execution_metrics:
+  - order_sent_time
+  - broker_ack_time
+  - fill_time
+  - arrival_midprice
+  - expected_price
+  - fill_price
+  - slippage
+  - time_to_fill_ms
+  - missed_fill_status
+
+safety:
+  require_risk_approval_before_order: true
+  allow_direct_ai_orders: false
+  allow_live_trading_without_manual_config_change: false

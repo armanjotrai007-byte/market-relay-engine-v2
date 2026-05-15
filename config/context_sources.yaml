@@ -1,23 +1,69 @@
-# Collectors are not implemented in PR 1.
-# External collectors default to disabled or development-safe placeholders.
-sources:
+metadata:
+  config_version: 1
+  description: "V2 context source configuration."
+
+structured_sources:
   eia:
     enabled: false
-    description: "Oil inventory and energy release windows."
+    api_key_env: EIA_API_KEY
+    purpose: "Oil inventory and release-window context."
+    feeds_memory_cache: true
+    writes_questdb_ledger: true
+    used_in_per_tick_loop: false
+    max_staleness_seconds: 86400
+
   fred:
     enabled: false
-    description: "Rates and macro context."
+    api_key_env: FRED_API_KEY
+    purpose: "Macro/rates context."
+    feeds_memory_cache: true
+    writes_questdb_ledger: true
+    used_in_per_tick_loop: false
+    max_staleness_seconds: 86400
+
   usaspending:
     enabled: false
-    description: "Defense contract award context."
+    api_key_required: false
+    purpose: "Defense contract award context."
+    feeds_memory_cache: true
+    writes_questdb_ledger: true
+    used_in_per_tick_loop: false
+    max_staleness_seconds: 86400
+
   yfinance_dev_only:
     enabled: false
-    production_allowed: false
-    description: "Development-only secondary context, not production-critical."
+    development_only: true
+    production_critical: false
+    purpose: "Development-only sector/index/oil proxy context."
+    feeds_memory_cache: true
+    writes_questdb_ledger: true
+    used_in_per_tick_loop: false
+    max_staleness_seconds: 300
+
+unstructured_sources:
   sec_edgar:
     enabled: false
-    description: "SEC filing context."
-  calendar_events:
-    enabled: true
-    implemented: false
-    description: "Local calendar placeholders for known event windows."
+    user_agent_env: SEC_USER_AGENT
+    purpose: "SEC filing text and metadata for AI context flags."
+    feeds_ai_context_filter: true
+    direct_trade_authority: false
+
+  news:
+    enabled: false
+    purpose: "News text for AI context flags."
+    feeds_ai_context_filter: true
+    direct_trade_authority: false
+
+  social:
+    enabled: false
+    purpose: "Social/political posts for AI context flags."
+    feeds_ai_context_filter: true
+    direct_trade_authority: false
+
+ai_context_filter:
+  enabled: false
+  direct_trade_authority: false
+  required_output_schema: context_flag_v1
+  prompt_version: context_filter_v1
+  temperature: 0
+  require_valid_until: true

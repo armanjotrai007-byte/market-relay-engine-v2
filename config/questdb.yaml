@@ -1,13 +1,36 @@
-# QuestDB is reserved for the bot ledger only.
-# It must not be used as a historical market-data warehouse.
-questdb:
-  enabled: false
-  role: bot_ledger_only
-  market_data_warehouse: false
-  http:
-    host: localhost
-    port: 9000
-  postgres:
-    host: localhost
-    port: 8812
-  schema_created_in_pr1: false
+metadata:
+  config_version: 1
+  description: "QuestDB config for V2 bot ledger only."
+  questdb_role: bot_ledger_only
+  not_market_data_warehouse: true
+
+connection:
+  http_host_env: QUESTDB_HTTP_HOST
+  http_port_env: QUESTDB_HTTP_PORT
+  pg_host_env: QUESTDB_PG_HOST
+  pg_port_env: QUESTDB_PG_PORT
+  default_http_host: localhost
+  default_http_port: 9000
+  default_pg_host: localhost
+  default_pg_port: 8812
+
+ledger_tables:
+  - model_signals
+  - risk_decisions
+  - context_indicator_snapshots
+  - context_ai_events
+  - orders
+  - fills
+  - trade_outcomes
+  - latency_metrics
+  - system_health
+
+forbidden_uses:
+  - historical_databento_market_warehouse
+  - raw_tick_archive_for_training
+  - dbn_to_questdb_to_parquet_training_flow
+
+jsonl_fallback:
+  enabled: true
+  directory: data/emergency_ledger
+  description: "Tiny fallback for failed ledger writes only."

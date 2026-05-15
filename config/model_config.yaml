@@ -1,6 +1,33 @@
-# Placeholder model metadata. No model training or inference is implemented in PR 1.
+metadata:
+  config_version: 1
+  description: "V2 model configuration placeholders."
+
+feature_pipeline:
+  canonical_feature_builder: src/market_relay_engine/market_data/feature_builder.py
+  feature_version: feature_v0_placeholder
+  require_train_live_feature_parity: true
+  notebook_only_features_allowed: false
+
 model:
-  model_version: placeholder_model_v0
-  feature_version: placeholder_features_v0
-  calibration_version: placeholder_calibration_v0
-  model_path:
+  model_version: model_v0_placeholder
+  model_path: ""
+  inference_enabled: false
+  training_enabled: false
+  model_type: supervised_signal_model_placeholder
+
+calibration:
+  calibration_version: calibration_v0_placeholder
+  confidence_calibrated: false
+  require_calibration_before_live: true
+
+prediction_horizons:
+  - 1m
+  - 5m
+  - 15m
+
+labels:
+  cost_aware_labels_required: true
+  examples:
+    - profitable_after_costs
+    - net_forward_return_after_costs
+    - probability_clears_cost_threshold

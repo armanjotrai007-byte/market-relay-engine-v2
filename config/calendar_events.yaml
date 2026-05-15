@@ -1,0 +1,35 @@
+metadata:
+  config_version: 1
+  description: "Scheduled event windows used as risk flags, not trade signals."
+
+market:
+  country: US
+  timezone: America/New_York
+
+event_windows:
+  eia:
+    enabled: false
+    timezone: America/New_York
+    windows: []
+
+  cpi:
+    enabled: false
+    timezone: America/New_York
+    windows: []
+
+  fomc:
+    enabled: false
+    timezone: America/New_York
+    windows: []
+
+  earnings:
+    enabled: false
+    events: []
+
+  holidays:
+    enabled: false
+    dates: []
+
+  early_closes:
+    enabled: false
+    dates: []
