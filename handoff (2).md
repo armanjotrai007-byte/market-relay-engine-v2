@@ -1,0 +1,799 @@
+# handoff.md — Trading System V2 Clean Handoff
+
+## Purpose
+
+This file is the source of truth for continuing the `market-relay-engine` project.
+
+The project should be built as a clean V2 system. Ignore old assumptions unless they are explicitly reintroduced here.
+
+## Two-Line Summary
+
+This is a local AI-assisted trading system where Databento DBN market data feeds a neural-network signal model, while structured indicators and AI-interpreted context are filtered through a deterministic Python risk gate before Alpaca execution.
+
+QuestDB is not the market-data warehouse; it is the bot’s black-box ledger for signals, decisions, context, orders, fills, latency, slippage, and outcomes so weekly analysis can improve the risk rules carefully.
+
+## Corrected System Goal
+
+Build the simplest local trading research and paper/live execution system that can honestly measure whether a model signal survives:
+
+- real spreads
+- realistic slippage
+- Alpaca execution delay
+- missed fills
+- context/event risk
+- portfolio/correlation risk
+- model confidence calibration
+- regime drift
+
+The goal is not to build an overly complex institutional platform. The goal is to prove whether a practical signal can survive real execution and risk controls.
+
+## What Is Being Traded
+
+Initial target universe:
+
+- selected liquid oil-related equities
+- selected liquid defense-related equities
+
+Example tickers:
+
+```text
+Defense: LMT, RTX, NOC, GD
+Oil/Energy: XOM, CVX
+```
+
+The final trade universe belongs in:
+
+```text
+config/symbols.yaml
+```
+
+## Core Data Sources
+
+### Market Data
+
+```text
+Databento live DBN
+→ live feature builder
+→ model signal
+```
+
+```text
+Databento historical Parquets / DBN converted to Parquet
+→ training and backtesting
+```
+
+Databento is the core market-data source.
+
+### Execution
+
+```text
+Alpaca
+```
+
+Start with paper trading. Do not enable live trading by default.
+
+### Structured Context Sources
+
+- EIA: oil inventory data, natural gas data, release windows.
+- FRED: 2Y yield, 10Y yield, 10Y-2Y spread, macro/rate variables.
+- USAspending: defense contracts, award dates, values, agencies, recipients, ticker mapping.
+- Sector/index/oil proxies: SPY, QQQ, IWM, XLE, XOP, OIH, XLI, PPA, GLD, VIX proxy, WTI, Brent, natural gas if available.
+- Calendar events: CPI, FOMC, EIA releases, holidays, earnings windows, major known risk events.
+- yfinance: acceptable for development and secondary context only, not as a production-critical live dependency.
+
+### Unstructured Context Sources
+
+- SEC EDGAR filings.
+- News.
+- Social/political posts.
+- Contract descriptions.
+- Policy/geopolitical headlines.
+
+These go through the AI context filter and become structured flags. They do not trade directly.
+
+## Correct Architecture
+
+### Historical Training Path
+
+```text
+Official Databento historical Parquets
+or Databento DBN converted to Parquet
+→ canonical feature_builder.py
+→ cost-aware labels
+→ supervised model training
+→ walk-forward validation
+→ confidence calibration
+```
+
+Do not route historical Databento market data through QuestDB.
+
+### Live Trading Path
+
+```text
+Databento live DBN
+→ DBN decoder
+→ same canonical feature_builder.py
+→ calibrated model signal
+→ deterministic Python risk filter
+→ Alpaca paper/live execution if approved
+```
+
+### Context Path
+
+```text
+Structured collectors
++ AI context filter
+→ in-memory ContextState cache
+→ deterministic Python risk filter
+```
+
+Also:
+
+```text
+Context updates
+→ QuestDB ledger
+→ weekly Parquet export
+→ filter analysis
+```
+
+### Recordkeeping Path
+
+```text
+model signals
++ feature snapshots
++ risk decisions
++ context flags
++ orders
++ fills
++ latency
++ slippage
++ PnL
++ outcomes
++ system health
+→ QuestDB
+```
+
+QuestDB is the bot ledger / black-box recorder.
+
+## QuestDB Role
+
+QuestDB should store bot-specific facts that Databento cannot reconstruct later:
+
+- every model signal
+- model confidence
+- feature version
+- feature snapshot ID
+- every risk decision
+- approved/blocked/reduced result
+- block/reduce reasons
+- structured context snapshots
+- AI context events
+- Alpaca orders
+- Alpaca fills
+- slippage
+- time-to-fill
+- latency
+- PnL/outcomes
+- system health
+- feed delays/reconnects
+
+QuestDB should not store:
+
+- the full Databento historical market archive
+- bulk raw ticks just to recreate market history
+- DBN-to-QuestDB-to-Parquet training data
+- market data that Databento already provides as official history
+
+## Model Plan
+
+Start with a supervised signal model, not RL.
+
+The first model should predict whether a short-horizon trade has enough edge after costs.
+
+Possible prediction horizons:
+
+- 1 minute
+- 5 minutes
+- 15 minutes
+
+Possible labels:
+
+- `profitable_after_costs`
+- `net_forward_return_after_costs`
+- `probability_clears_cost_threshold`
+- `max_favorable_excursion_after_costs`
+
+The model must use features generated by the same canonical feature builder used live.
+
+## Alpha Thesis
+
+The first thesis should be narrow:
+
+The model attempts to identify short-horizon continuation or reversal opportunities in selected liquid oil/defense-related equities using recent trade, quote, spread, volume, and volatility behavior. The risk layer blocks or reduces trades when execution, context, sector, event, or portfolio conditions make the signal unlikely to survive costs.
+
+Do not design the first strategy around microsecond or sub-second alpha because Alpaca is the execution broker.
+
+Target practical horizons such as:
+
+```text
+30 seconds to 5 minutes or longer
+```
+
+## Feature Builder Rule
+
+There must be one canonical feature builder:
+
+```text
+src/market_relay_engine/market_data/feature_builder.py
+```
+
+It must be used by:
+
+- historical training
+- backtesting
+- paper trading
+- live trading
+
+No separate notebook-only feature logic is allowed.
+
+Required tests:
+
+```text
+same input records
+→ historical path features
+→ live path features
+→ identical output
+```
+
+No feature is allowed into the model unless it is generated by this shared code path.
+
+## Cost Model Rule
+
+The system must account for:
+
+- spread
+- slippage
+- missed fills
+- time to fill
+- transaction costs if applicable
+- conservative fill assumptions
+- Alpaca execution delay
+
+The model should not learn only “price went up.” It should learn whether price moved enough to beat realistic costs.
+
+## Risk Filter
+
+The final gate is a deterministic Python risk script.
+
+Inputs:
+
+- model signal
+- model confidence
+- spread
+- volume/liquidity
+- latency
+- context flags
+- event windows
+- sector confirmation
+- portfolio state
+- daily loss state
+- open order state
+- calibrated confidence state
+
+Outputs:
+
+```text
+APPROVE
+BLOCK
+REDUCE_SIZE
+EXIT
+DO_NOTHING
+```
+
+Example block/reduce reasons:
+
+- confidence too low
+- spread too wide
+- latency too high
+- EIA release window
+- CPI/FOMC event window
+- AI context high risk
+- sector confirmation weak
+- daily loss limit hit
+- duplicate/conflicting order
+- portfolio exposure too high
+- correlated names firing together
+- context data stale
+- model/regime drift detected
+
+AI cannot override this layer.
+
+## AI Context Filter
+
+The AI context filter reads messy text and returns structured JSON.
+
+It may process:
+
+- SEC filings
+- news
+- social/political posts
+- contract descriptions
+- geopolitical headlines
+
+Required output fields:
+
+```json
+{
+  "event_time": "2026-06-04T14:03:12Z",
+  "source": "news",
+  "affected_tickers": ["LMT", "RTX"],
+  "affected_sector": "defense",
+  "event_type": "defense_policy_news",
+  "sentiment": "negative",
+  "urgency": "high",
+  "risk_level": "elevated",
+  "confidence": 0.84,
+  "valid_from": "2026-06-04T14:03:12Z",
+  "valid_until": "2026-06-04T16:00:00Z",
+  "summary": "Short explanation.",
+  "prompt_version": "context_filter_v1",
+  "model_version": "fixed_model_name_or_id",
+  "raw_input_hash": "sha256_hash"
+}
+```
+
+Rules:
+
+- Use fixed prompt versions.
+- Use fixed model versions.
+- Use low temperature.
+- Validate JSON schema.
+- Ignore expired flags.
+- Log failed validation.
+- AI flags can block/reduce only through the deterministic risk script.
+- AI never directly places or approves orders.
+
+## Weekly Analysis
+
+Weekly analysis uses:
+
+```text
+QuestDB bot/context exports
++
+official Databento market Parquets
++
+historical context Parquets where available
+```
+
+It evaluates:
+
+- approved trades
+- blocked trades
+- estimated blocked-trade outcomes
+- slippage
+- latency
+- missed fills
+- model confidence buckets
+- spread buckets
+- event windows
+- sector confirmation
+- AI flags
+- structured context usefulness
+- risk filter usefulness
+
+Blocked trades must be analyzed conservatively. Do not assume perfect fills.
+
+Weekly analysis should produce recommendations, not automatic code changes.
+
+Good recommendations:
+
+- keep EIA no-trade window
+- tighten max spread from 0.05 to 0.04
+- raise AI context threshold from 0.75 to 0.85
+- ignore low-confidence social flags
+- do not change FRED rules yet; not enough data
+
+Bad recommendations:
+
+- retrain and deploy a new model every weekend automatically
+- rewrite many risk rules from one week of small-sample data
+- let AI edit trading rules without review
+
+## Build Plan
+
+### PR 1 — Repo Skeleton
+
+Create:
+- folder structure
+- README
+- AGENT.md
+- handoff.md
+- `.gitignore`
+- `.env.example`
+- `requirements.txt`
+- empty package under `src/market_relay_engine`
+- initial tests
+
+### PR 2 — Config, Logging, and Time Utilities
+
+Add:
+- YAML config loader
+- config validation
+- standard logger
+- UTC timestamp helpers
+- market-time helpers
+- runtime/session ID
+
+### PR 3 — Core Data Contracts
+
+Create typed contracts for:
+- `MarketRecord`
+- `FeatureSnapshot`
+- `ModelSignal`
+- `RiskDecision`
+- `ContextFlag`
+- `OrderEvent`
+- `FillEvent`
+- `TradeOutcome`
+- `SystemHealthEvent`
+
+### PR 4 — Canonical Feature Builder
+
+Build:
+- one `feature_builder.py`
+- deterministic feature outputs
+- versioned feature schema
+- tests with fake market records
+
+### PR 5 — Historical/Live Feature Consistency
+
+Prove historical and live paths produce identical features from equivalent input.
+
+### PR 6 — Cost Model
+
+Implement:
+- spread cost
+- slippage estimate
+- missed-fill assumptions
+- minimum edge threshold
+- net return after costs
+
+### PR 7 — QuestDB Ledger
+
+Build:
+- health check
+- schema creation
+- write helpers
+- fake event writes
+
+Tables:
+- `model_signals`
+- `risk_decisions`
+- `context_indicator_snapshots`
+- `context_ai_events`
+- `orders`
+- `fills`
+- `trade_outcomes`
+- `latency_metrics`
+- `system_health`
+
+### PR 8 — Tiny JSONL Ledger Fallback
+
+If QuestDB write fails:
+
+```text
+append event to data/emergency_ledger/YYYYMMDD.jsonl
+```
+
+No large replay system yet.
+
+### PR 9 — Alpaca Paper Execution Metrics
+
+Create paper-only execution wrapper and log:
+- order sent time
+- acknowledgement time
+- fill time
+- expected price
+- fill price
+- arrival midprice
+- spread
+- slippage
+- time to fill
+- missed-fill status
+
+### PR 10 — Risk Filter V1
+
+Implement deterministic:
+- approve
+- block
+- reduce size
+- exit/do nothing where applicable
+
+Include config-driven thresholds.
+
+### PR 11 — ContextState Cache
+
+Build in-memory cache for latest context.
+
+Risk must read this cache directly.
+
+### PR 12 — Structured Collectors One by One
+
+Start small:
+1. sector/index proxy collector
+2. EIA release-window collector
+3. FRED yields/rates collector
+4. USAspending awards collector
+5. calendar events collector
+
+Each updates memory and logs to QuestDB.
+
+### PR 13 — AI Context Filter V1
+
+Build:
+- strict schema
+- prompt v1
+- validator
+- expiry handling
+- test examples
+- ContextState integration
+- QuestDB logging
+
+### PR 14 — SEC/News/Social Inputs
+
+Start with:
+- SEC EDGAR metadata/text for watched tickers
+- simple manual or stubbed news/social input
+
+Do not overbuild.
+
+### PR 15 — Model Inference Interface
+
+Create:
+- `predict(features) -> ModelSignal`
+- fake model first
+- ledger logging of model outputs
+
+### PR 16 — Supervised Signal Model
+
+Train first model using:
+- official Databento historical Parquets
+- canonical feature builder
+- cost-aware labels
+- walk-forward validation
+
+### PR 17 — Confidence Calibration
+
+Add:
+- reliability chart data
+- calibration method
+- calibration version
+- threshold validation
+
+### PR 18 — End-to-End Paper Loop
+
+Connect:
+- Databento live/mocked input
+- feature builder
+- model
+- ContextState
+- risk filter
+- Alpaca paper
+- QuestDB ledger
+
+### PR 19 — Weekly Analysis
+
+Build reports for:
+- approved trades
+- blocked signals
+- counterfactual blocked outcomes
+- filter usefulness
+- execution quality
+- recommendations
+
+### PR 20 — Regime and Portfolio Controls
+
+Add:
+- drift monitoring
+- sector exposure limits
+- correlated-name limits
+- circuit breakers
+- gross/net exposure limits
+
+### PR 21+ — Later RL
+
+Only after:
+- supervised model works
+- cost model is realistic
+- paper trading loop works
+- simulator is realistic
+- weekly analysis proves enough signal quality
+
+RL should focus on:
+- exit timing
+- hold/reduce/exit
+- position sizing
+- trade management
+
+## Minimum Data Contracts
+
+### model_signals
+
+- event_time
+- ticker
+- model_version
+- calibration_version
+- feature_version
+- signal
+- confidence
+- raw_score
+- feature_snapshot_id
+- databento_event_time
+- local_decision_time
+
+### risk_decisions
+
+- decision_time
+- ticker
+- model_signal_id
+- risk_version
+- decision
+- approved
+- reduce_size_factor
+- reasons
+- thresholds_used
+- context_snapshot_id
+
+### context_indicator_snapshots
+
+- snapshot_time
+- source
+- ticker_or_sector
+- indicator_name
+- value
+- window
+- units
+- freshness_seconds
+- source_event_time
+
+### context_ai_events
+
+- event_time
+- source
+- source_id
+- affected_tickers
+- affected_sector
+- event_type
+- sentiment
+- urgency
+- risk_level
+- confidence
+- valid_from
+- valid_until
+- summary
+- prompt_version
+- model_version
+- raw_input_hash
+
+### orders
+
+- order_time
+- order_id
+- ticker
+- side
+- quantity
+- order_type
+- limit_price
+- expected_price
+- submitted_price
+- status
+
+### fills
+
+- fill_time
+- order_id
+- ticker
+- side
+- quantity
+- fill_price
+- expected_price
+- slippage
+- alpaca_status
+
+### trade_outcomes
+
+- signal_id
+- order_id
+- ticker
+- entry_time
+- exit_time
+- realized_pnl
+- return_1m
+- return_5m
+- return_15m
+- max_favorable_excursion
+- max_adverse_excursion
+- result
+
+## Repository Rules
+
+Do not commit:
+- `.env`
+- API keys
+- Databento data
+- DBN files
+- Parquet data
+- QuestDB data folders
+- logs
+- generated reports
+- local notebooks with outputs
+- raw news/social data if license-sensitive
+- model checkpoints unless intentionally versioned
+
+Use `.env.example` for variable names only.
+
+## Current Requirements Guidance
+
+Start minimal. The initial `requirements.txt` only needs foundation libraries.
+
+Good starter requirements:
+
+```text
+requests
+python-dotenv
+pytest
+psutil
+pyyaml
+pyarrow
+tzdata
+```
+
+Add later only when the PR actually needs them:
+
+```text
+pandas
+polars
+duckdb
+questdb
+alpaca-py
+databento
+pydantic
+numpy
+scikit-learn
+torch
+matplotlib
+fredapi
+yfinance
+```
+
+Do not add heavy ML, broker, or API packages before the structure requires them.
+
+## Current .gitignore Guidance
+
+The `.gitignore` should protect:
+- secrets
+- virtual environments
+- Python caches
+- IDE files
+- logs
+- local data folders
+- Databento DBN/Parquet files
+- QuestDB local data
+- generated reports
+- raw API exports
+
+It should not globally ignore small test fixtures such as tiny CSV test files unless they are inside ignored data folders.
+
+## Final Rule
+
+Build this project in small PRs.
+
+Each PR should answer:
+
+1. What changed?
+2. Why was it needed?
+3. How was it tested?
+4. What is intentionally not included?
+5. What follow-up PR comes next?
+
+Do not combine unrelated layers.
