@@ -1,0 +1,14 @@
+# Editable examples only. These are not the final trading universe.
+symbols:
+  defense:
+    - LMT
+    - RTX
+    - NOC
+    - GD
+  oil_energy:
+    - XOM
+    - CVX
+
+metadata:
+  description: "Example watched symbols for PR 1 local development."
+  final_universe_required: false

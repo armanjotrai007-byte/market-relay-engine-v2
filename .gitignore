@@ -1,5 +1,5 @@
 # =========================================================
-# market-relay-engine .gitignore
+# market-relay-engine-v2 .gitignore
 # Python + trading data pipeline + QuestDB + local secrets
 # =========================================================
 
@@ -141,8 +141,29 @@ logs/*
 # ---------------------------------------------------------
 data/*
 !data/.gitkeep
+!data/raw/
+!data/parquet/
+!data/reports/
+!data/logs/
+!data/emergency_ledger/
 !data/spool/
 !data/dead_letter/
+
+data/raw/*
+!data/raw/.gitkeep
+
+data/parquet/*
+!data/parquet/.gitkeep
+
+data/reports/*
+!data/reports/.gitkeep
+
+data/logs/*
+!data/logs/.gitkeep
+
+data/emergency_ledger/*
+!data/emergency_ledger/.gitkeep
+data/emergency_ledger/*.jsonl
 
 data/spool/*
 !data/spool/.gitkeep
@@ -283,3 +304,4 @@ eia_raw/
 fred_raw/
 edgar_raw/
 usaspending_raw/
+yfinance_raw/

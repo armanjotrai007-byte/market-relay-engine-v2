@@ -1,0 +1,23 @@
+# Collectors are not implemented in PR 1.
+# External collectors default to disabled or development-safe placeholders.
+sources:
+  eia:
+    enabled: false
+    description: "Oil inventory and energy release windows."
+  fred:
+    enabled: false
+    description: "Rates and macro context."
+  usaspending:
+    enabled: false
+    description: "Defense contract award context."
+  yfinance_dev_only:
+    enabled: false
+    production_allowed: false
+    description: "Development-only secondary context, not production-critical."
+  sec_edgar:
+    enabled: false
+    description: "SEC filing context."
+  calendar_events:
+    enabled: true
+    implemented: false
+    description: "Local calendar placeholders for known event windows."

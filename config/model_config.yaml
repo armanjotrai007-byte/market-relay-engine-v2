@@ -1,0 +1,6 @@
+# Placeholder model metadata. No model training or inference is implemented in PR 1.
+model:
+  model_version: placeholder_model_v0
+  feature_version: placeholder_features_v0
+  calibration_version: placeholder_calibration_v0
+  model_path:
