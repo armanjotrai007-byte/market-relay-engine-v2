@@ -797,3 +797,25 @@ Each PR should answer:
 5. What follow-up PR comes next?
 
 Do not combine unrelated layers.
+
+
+
+
+
+
+UPDATE:
+
+## Build Plan
+
+### Current Progress
+**PR 1 and PR 2 are complete.** The repository skeleton, local validation environments, and configuration structures are established. The next step is PR 3 — Core Data Contracts.
+
+### PR 1 — Repo Skeleton [COMPLETED]
+- Implemented clean skeleton, package layout, tests, `.env.example`, `.gitignore`, and local validation scripts (`check_environment.py`, `run_tests.ps1`). 
+- Validated locally with pytest and environment checks.
+
+### PR 2 — Config, Logging, and Time Utilities [COMPLETED]
+- Organized all V2 config files (including `calendar_events.yaml` and `execution.yaml`).
+- Added config loader helpers and config validation script (`check_config.py`).
+- Added `docs/configuration.md` and config-focused unit tests.
+- Validated locally.
