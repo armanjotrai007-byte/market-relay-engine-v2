@@ -6,6 +6,7 @@ For now, the operating runbook is local validation:
 
 ```powershell
 python scripts/check_environment.py
+python scripts/check_config.py
 pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```

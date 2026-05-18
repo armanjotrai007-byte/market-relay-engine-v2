@@ -1,14 +1,48 @@
-# Placeholder paper-trading limits for PR 1.
-# These are not optimized live-trading settings.
-trading_mode: paper
+metadata:
+  config_version: 1
+  description: "V2 placeholder risk limits for paper trading. Not optimized live settings."
+  review_required: true
 
-limits:
+mode:
+  default_trading_mode: paper
+  live_trading_enabled_by_default: false
+
+signal_thresholds:
+  min_model_confidence: 0.0
+  confidence_requires_calibration: true
+  calibration_required_before_live: true
+
+market_quality:
+  max_spread_dollars: 0.05
   max_spread_bps: 10
   max_latency_ms: 1000
-  max_daily_loss_usd: 100
-  max_open_positions: 3
-  default_trade_size_usd: 1000
+  stale_market_data_seconds: 5
 
-notes:
-  live_trading_enabled: false
-  requires_future_validation: true
+execution_quality:
+  require_slippage_logging: true
+  require_time_to_fill_logging: true
+  reject_if_expected_edge_below_cost: true
+
+position_limits:
+  default_order_quantity: 1
+  max_open_positions: 3
+  max_position_per_symbol: 1
+  max_gross_exposure_dollars: 1000
+  max_sector_exposure_dollars:
+    oil: 500
+    defense: 500
+
+daily_limits:
+  max_daily_loss_dollars: 50
+  max_consecutive_losses: 3
+
+event_risk:
+  block_during_eia_window: true
+  block_during_cpi_window: true
+  block_during_fomc_window: true
+  reduce_size_on_ai_elevated_risk: true
+  block_on_ai_high_risk: true
+
+portfolio_risk:
+  enforce_sector_limits: true
+  enforce_correlated_symbol_limits: true

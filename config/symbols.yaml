@@ -1,14 +1,72 @@
-# Editable examples only. These are not the final trading universe.
-symbols:
-  defense:
-    - LMT
-    - RTX
-    - NOC
-    - GD
-  oil_energy:
-    - XOM
-    - CVX
-
 metadata:
-  description: "Example watched symbols for PR 1 local development."
-  final_universe_required: false
+  config_version: 1
+  description: "V2 symbol configuration. Examples only until manually approved."
+  review_required: true
+
+tradable_universe:
+  oil:
+    description: "Example oil/energy tradable symbols. Final list requires manual approval."
+    enabled: true
+    symbols:
+      - ticker: XOM
+        name: Exxon Mobil Corporation
+        sector: oil
+        alpaca_symbol: XOM
+        databento_symbol: XOM
+        approved_for_live: false
+      - ticker: CVX
+        name: Chevron Corporation
+        sector: oil
+        alpaca_symbol: CVX
+        databento_symbol: CVX
+        approved_for_live: false
+
+  defense:
+    description: "Example defense tradable symbols. Final list requires manual approval."
+    enabled: true
+    symbols:
+      - ticker: LMT
+        name: Lockheed Martin Corporation
+        sector: defense
+        alpaca_symbol: LMT
+        databento_symbol: LMT
+        approved_for_live: false
+      - ticker: RTX
+        name: RTX Corporation
+        sector: defense
+        alpaca_symbol: RTX
+        databento_symbol: RTX
+        approved_for_live: false
+      - ticker: NOC
+        name: Northrop Grumman Corporation
+        sector: defense
+        alpaca_symbol: NOC
+        databento_symbol: NOC
+        approved_for_live: false
+      - ticker: GD
+        name: General Dynamics Corporation
+        sector: defense
+        alpaca_symbol: GD
+        databento_symbol: GD
+        approved_for_live: false
+
+context_symbols:
+  broad_market:
+    - SPY
+    - QQQ
+    - IWM
+  oil_sector:
+    - XLE
+    - XOP
+    - OIH
+  defense_sector:
+    - XLI
+    - PPA
+    - ITA
+  volatility:
+    - VIX_PROXY
+  commodities:
+    - WTI
+    - BRENT
+    - NATURAL_GAS
+    - GLD

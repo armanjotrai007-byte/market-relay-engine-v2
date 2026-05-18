@@ -44,6 +44,7 @@ pip install -r requirements.txt
 pip install -e .
 pytest
 python scripts/check_environment.py
+python scripts/check_config.py
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
 
@@ -55,13 +56,25 @@ The environment health check verifies Python 3.12+, required files, required dir
 python scripts/check_environment.py
 ```
 
-The full local validation runner executes the health check and then pytest:
+The full local validation runner executes the health check, config validation, and then pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
 
 These same commands must be run on the separate trading laptop after it pulls from GitHub.
+
+## Configuration
+
+Trading System V2 config files live under `config/`. They separate tradable symbols from context symbols, keep all external sources disabled by default, mark yfinance as development-only, keep QuestDB ledger-only, and keep live trading disabled by default.
+
+Validate configuration locally with:
+
+```powershell
+python scripts/check_config.py
+```
+
+See `docs/configuration.md` for the config file map and safety rules.
 
 ## Safety Defaults
 

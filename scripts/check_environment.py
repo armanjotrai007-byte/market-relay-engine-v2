@@ -10,6 +10,8 @@ from typing import Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
@@ -19,6 +21,8 @@ REQUIRED_CONFIG_FILES = [
     "config/risk_limits.yaml",
     "config/questdb.yaml",
     "config/model_config.yaml",
+    "config/calendar_events.yaml",
+    "config/execution.yaml",
 ]
 
 REQUIRED_DIRECTORIES = [
@@ -48,7 +52,6 @@ REQUIRED_DIRECTORIES = [
 
 REQUIRED_FILES = [
     "README.md",
-    "AGENT.md",
     "AGENTS.md",
     "handoff.md",
     "pyproject.toml",
@@ -56,10 +59,14 @@ REQUIRED_FILES = [
     ".gitignore",
     ".env.example",
     "scripts/check_environment.py",
+    "scripts/check_config.py",
     "scripts/run_tests.ps1",
+    "docs/configuration.md",
     "tests/unit/test_imports.py",
     "tests/unit/test_time_utils.py",
     "tests/unit/test_config_files_exist.py",
+    "tests/unit/test_config_loader.py",
+    "tests/unit/test_config_validation.py",
     "tests/integration/.gitkeep",
     "data/.gitkeep",
     "data/raw/.gitkeep",
@@ -124,12 +131,24 @@ def main() -> int:
         from market_relay_engine.common.config import load_yaml_config
 
         symbols = load_yaml_config("config/symbols.yaml")
-        yaml_ok = "symbols" in symbols
+        yaml_ok = "tradable_universe" in symbols and "context_symbols" in symbols
         yaml_message = "YAML loader can read config/symbols.yaml"
     except Exception as exc:  # noqa: BLE001 - health check should report clear failure.
         yaml_ok = False
         yaml_message = f"YAML loader failed: {exc}"
     _record(results, yaml_ok, yaml_message)
+
+    try:
+        from scripts.check_config import run_config_checks
+
+        config_results = run_config_checks(REPO_ROOT)
+        config_failures = [result.message for result in config_results if not result.ok]
+        config_ok = not config_failures
+        config_message = f"Config validation passes: {config_failures or 'ok'}"
+    except Exception as exc:  # noqa: BLE001 - health check should report clear failure.
+        config_ok = False
+        config_message = f"Config validation failed to run: {exc}"
+    _record(results, config_ok, config_message)
 
     failures = [message for ok, message in results if not ok]
     print()
