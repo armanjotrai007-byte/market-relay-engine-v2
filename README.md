@@ -76,6 +76,16 @@ python scripts/check_config.py
 
 See `docs/configuration.md` for the config file map and safety rules.
 
+## Core Contracts
+
+Core dataclass contracts now live under `src/market_relay_engine/contracts`. They define lightweight record shapes, UTC timestamp standards, UUID-based IDs, and JSON serialization helpers for future market, feature, model, risk, context, execution, ledger, and system health layers.
+
+Validate contract examples locally with:
+
+```powershell
+python scripts/check_contracts.py
+```
+
 ## Safety Defaults
 
 The repository defaults to local development and future paper trading. `.env.example` contains placeholder variable names only. Do not commit real secrets, live credentials, logs, Databento DBN files, Parquet data, QuestDB data folders, or generated API exports.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Any
 
 
 def get_logger(name: str, level: str | int | None = None) -> logging.Logger:
@@ -21,3 +22,21 @@ def get_logger(name: str, level: str | int | None = None) -> logging.Logger:
 
     logger.propagate = False
     return logger
+
+
+def build_log_context(
+    run_id: str | None = None,
+    session_id: str | None = None,
+    trace_id: str | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    """Return a plain structured log context dictionary."""
+    context: dict[str, Any] = {}
+    if run_id is not None:
+        context["run_id"] = run_id
+    if session_id is not None:
+        context["session_id"] = session_id
+    if trace_id is not None:
+        context["trace_id"] = trace_id
+    context.update(extra)
+    return context
