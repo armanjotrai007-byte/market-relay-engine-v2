@@ -2,6 +2,16 @@
 
 This local workspace file summarizes the current Codex session state. The workspace is not a git checkout, and the canonical GitHub `handoff.md` may differ from this local placeholder unless updated separately through the GitHub connector.
 
+### PR 5 Note
+
+* PR number: PR 5.
+* Branch: `pr5-historical-parquet-reader-stub`.
+* Purpose: local historical Parquet reader boundary from future official Databento historical Parquets into `MarketRecord`.
+* Added: PyArrow reader module, local inspection script, generated fake-Parquet tests, historical Parquet check script, and documentation.
+* Explicitly not added: Databento API calls, DBN decoding, real data files, QuestDB writes, QuestDB-generated training Parquets, feature calculations, model logic, risk logic, context collectors, AI calls, Alpaca, or live trading.
+* Fake Parquet tests are mechanical reader tests only and are not official Databento schema proof.
+* Next PR: PR 6 - DBN Inspection Utility.
+
 ### 1. Session Summary
 
 * Implemented PR 4 locally as a test-only fixture foundation based on the PR 3 contracts.
