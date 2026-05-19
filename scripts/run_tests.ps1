@@ -32,6 +32,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running fixture validation..."
+& $Python scripts/check_fixtures.py
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 Write-Host "Running pytest..."
 & $Python -m pytest
 if ($LASTEXITCODE -ne 0) {

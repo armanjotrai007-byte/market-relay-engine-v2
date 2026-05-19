@@ -56,7 +56,8 @@ The environment health check verifies Python 3.12+, required files, required dir
 python scripts/check_environment.py
 ```
 
-The full local validation runner executes the health check, config validation, and then pytest:
+The full local validation runner executes the health check, config validation,
+contract validation, fixture validation, and then pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -85,6 +86,21 @@ Validate contract examples locally with:
 ```powershell
 python scripts/check_contracts.py
 ```
+
+## Test Fixtures
+
+Reusable fake fixtures now live under `tests/fixtures/`. They provide stable
+sample records and scenarios for tests without using real Databento DBN files or
+external services.
+
+Validate them locally with:
+
+```powershell
+python scripts/check_fixtures.py
+```
+
+See `docs/testing_fixtures.md` for fixture scope, scenario descriptions, and the
+fake-data safety rules.
 
 ## Safety Defaults
 
