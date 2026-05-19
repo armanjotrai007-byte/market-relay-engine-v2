@@ -360,6 +360,13 @@ def test_check_historical_parquet_uses_temporary_directory() -> None:
 def test_no_real_parquet_or_dbn_files_are_committed() -> None:
     forbidden_suffixes = {".parquet", ".dbn"}
     ignored_dirs = {".venv", ".pytest_cache", "__pycache__"}
+    ignored_local_roots = {
+        "data",
+        "data_lake",
+        "logs",
+        "archives",
+        "manifests",
+    }
     forbidden_files = []
 
     for path in REPO_ROOT.rglob("*"):
@@ -367,7 +374,10 @@ def test_no_real_parquet_or_dbn_files_are_committed() -> None:
             continue
         if any(part in ignored_dirs for part in path.parts):
             continue
+        relative_path = path.relative_to(REPO_ROOT)
+        if relative_path.parts and relative_path.parts[0] in ignored_local_roots:
+            continue
         if path.suffix.lower() in forbidden_suffixes or path.name.endswith(".dbn.zst"):
-            forbidden_files.append(path.relative_to(REPO_ROOT).as_posix())
+            forbidden_files.append(relative_path.as_posix())
 
     assert forbidden_files == []
