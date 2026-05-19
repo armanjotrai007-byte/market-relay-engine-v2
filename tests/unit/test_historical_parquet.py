@@ -229,6 +229,49 @@ def test_optional_columns_can_be_absent(tmp_path: Path) -> None:
     assert record.local_receive_time is None
 
 
+def test_non_finite_optional_numeric_values_normalize_to_none(tmp_path: Path) -> None:
+    path = _write_table(
+        tmp_path / "non_finite.parquet",
+        pa.table(
+            {
+                "event_time": pa.array([EXAMPLE_TIME], type=pa.timestamp("ns", tz="UTC")),
+                "ticker": pa.array(["XOM"], type=pa.string()),
+                "record_type": pa.array(["quote"], type=pa.string()),
+                "price": pa.array([float("nan")], type=pa.float64()),
+                "bid_price": pa.array([float("inf")], type=pa.float64()),
+                "ask_price": pa.array([float("-inf")], type=pa.float64()),
+            }
+        ),
+    )
+
+    record = read_market_records_from_parquet(path)[0]
+    parsed = from_json_string(to_json_string(record))
+
+    assert record.price is None
+    assert record.bid_price is None
+    assert record.ask_price is None
+    assert parsed["price"] is None
+    assert parsed["bid_price"] is None
+    assert parsed["ask_price"] is None
+
+
+def test_bool_optional_numeric_value_rejected(tmp_path: Path) -> None:
+    path = _write_table(
+        tmp_path / "bool_numeric.parquet",
+        pa.table(
+            {
+                "event_time": pa.array([EXAMPLE_TIME], type=pa.timestamp("ns", tz="UTC")),
+                "ticker": pa.array(["XOM"], type=pa.string()),
+                "record_type": pa.array(["trade"], type=pa.string()),
+                "price": pa.array([True], type=pa.bool_()),
+            }
+        ),
+    )
+
+    with pytest.raises(HistoricalParquetError, match="price must be numeric"):
+        read_market_records_from_parquet(path)
+
+
 def test_limit_zero_one_partial_and_full_reads(tmp_path: Path) -> None:
     path = _write_table(
         tmp_path / "limits.parquet",
