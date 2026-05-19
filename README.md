@@ -115,6 +115,19 @@ Validate the reader without real market data:
 python scripts/check_historical_parquet.py
 ```
 
+## DBN Inspection Utility
+
+The local DBN inspection utility summarizes ignored Databento `.dbn` and
+`.dbn.zst` files or batch folders without Databento cloud/API calls. File-info
+mode works without the optional Databento package and does not read DBN record
+contents. See `docs/dbn_inspection.md`.
+
+Validate the inspector without real market data:
+
+```powershell
+python scripts/check_dbn_inspector.py
+```
+
 ## Safety Defaults
 
 The repository defaults to local development and future paper trading. `.env.example` contains placeholder variable names only. Do not commit real secrets, live credentials, logs, Databento DBN files, Parquet data, QuestDB data folders, or generated API exports.
