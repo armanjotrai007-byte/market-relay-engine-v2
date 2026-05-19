@@ -102,6 +102,19 @@ python scripts/check_fixtures.py
 See `docs/testing_fixtures.md` for fixture scope, scenario descriptions, and the
 fake-data safety rules.
 
+## Historical Parquet Reader
+
+The local historical Parquet reader normalizes small local Parquet samples into
+`MarketRecord` objects for future Databento historical workflows. Test Parquets
+are generated fake files for reader mechanics only; they are not official
+Databento schema fixtures. See `docs/historical_parquet_reader.md`.
+
+Validate the reader without real market data:
+
+```powershell
+python scripts/check_historical_parquet.py
+```
+
 ## Safety Defaults
 
 The repository defaults to local development and future paper trading. `.env.example` contains placeholder variable names only. Do not commit real secrets, live credentials, logs, Databento DBN files, Parquet data, QuestDB data folders, or generated API exports.

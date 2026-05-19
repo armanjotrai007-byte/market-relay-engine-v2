@@ -38,6 +38,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running historical Parquet validation..."
+& $Python scripts/check_historical_parquet.py
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 Write-Host "Running pytest..."
 & $Python -m pytest
 if ($LASTEXITCODE -ne 0) {
