@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import math
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -166,9 +167,12 @@ def _optional_float(
     if isinstance(value, bool):
         raise HistoricalParquetError(f"{field_name} must be numeric")
     try:
-        return float(value)
+        numeric = float(value)
     except (TypeError, ValueError) as exc:
         raise HistoricalParquetError(f"{field_name} must be numeric") from exc
+    if not math.isfinite(numeric):
+        return None
+    return numeric
 
 
 def _optional_timestamp(
