@@ -188,11 +188,12 @@ After the review fix, validation passed locally:
 * `.venv\Scripts\python.exe -m pytest` PASS, 108 passed
 * `powershell -ExecutionPolicy Bypass -File scripts\run_tests.ps1` PASS
 
-## 10. Next Recommended Work
+## 10. PR 6 Handoff Note
 
-Start PR 6: DBN Inspection Utility.
+PR 6:
 
-Keep PR 6 limited to inspection and schema discovery. Do not add live trading,
-Databento API ingestion, QuestDB warehouse writes, feature calculations, model
-logic, risk logic, context collectors, AI calls, or broker execution unless a
-future plan explicitly changes scope.
+* Branch: `pr6-dbn-inspection-utility`.
+* Purpose: local Databento DBN file/folder inspection.
+* Added: DBN inspector, CLI, check script, tests, and docs.
+* Explicitly not added: live Databento, Databento API calls, production DBN adapter, DBN-to-Parquet conversion, QuestDB writes, features, labels, models, risk, Alpaca, live trading, or AI/context collectors.
+* Next PR: PR 7 - Canonical Feature Builder V1.
