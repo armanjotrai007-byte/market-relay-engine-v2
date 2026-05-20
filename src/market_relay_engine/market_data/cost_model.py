@@ -51,30 +51,58 @@ class CostModelConfig:
     assumptions_version: str = "cost_model_v1"
 
     def __post_init__(self) -> None:
-        _finite_non_negative(self.min_edge_bps, "min_edge_bps")
-        _finite_non_negative(
-            self.round_trip_slippage_per_share,
+        object.__setattr__(
+            self,
+            "min_edge_bps",
+            _finite_non_negative(self.min_edge_bps, "min_edge_bps"),
+        )
+        object.__setattr__(
+            self,
             "round_trip_slippage_per_share",
+            _finite_non_negative(
+                self.round_trip_slippage_per_share,
+                "round_trip_slippage_per_share",
+            ),
         )
-        _finite_non_negative(
-            self.market_order_spread_multiplier,
+        object.__setattr__(
+            self,
             "market_order_spread_multiplier",
+            _finite_non_negative(
+                self.market_order_spread_multiplier,
+                "market_order_spread_multiplier",
+            ),
         )
-        _finite_non_negative(
-            self.limit_order_spread_multiplier,
+        object.__setattr__(
+            self,
             "limit_order_spread_multiplier",
+            _finite_non_negative(
+                self.limit_order_spread_multiplier,
+                "limit_order_spread_multiplier",
+            ),
         )
-        _finite_non_negative(
-            self.size_penalty_bps_per_1000_shares,
+        object.__setattr__(
+            self,
             "size_penalty_bps_per_1000_shares",
+            _finite_non_negative(
+                self.size_penalty_bps_per_1000_shares,
+                "size_penalty_bps_per_1000_shares",
+            ),
         )
-        _finite_non_negative(
-            self.size_penalty_free_quantity,
+        object.__setattr__(
+            self,
             "size_penalty_free_quantity",
+            _finite_non_negative(
+                self.size_penalty_free_quantity,
+                "size_penalty_free_quantity",
+            ),
         )
-        _finite_non_negative(
-            self.fallback_minimum_spread_bps,
+        object.__setattr__(
+            self,
             "fallback_minimum_spread_bps",
+            _finite_non_negative(
+                self.fallback_minimum_spread_bps,
+                "fallback_minimum_spread_bps",
+            ),
         )
         if not isinstance(self.assumptions_version, str) or not self.assumptions_version.strip():
             raise CostModelError("assumptions_version must be a non-empty string")
@@ -84,22 +112,35 @@ class CostModelConfig:
             raise CostModelError(
                 "limit_order_missed_fill_probability_by_horizon must be a dictionary"
             )
-        if set(probabilities) != set(SUPPORTED_TRADE_HORIZONS):
+        normalized_probabilities: dict[str, float] = {}
+        for horizon, probability in probabilities.items():
+            normalized_horizon = _validate_horizon(horizon).value
+            probability_value = _finite_non_negative(
+                probability,
+                "limit_order_missed_fill_probability_by_horizon"
+                f"[{normalized_horizon}]",
+            )
+            if probability_value > 1:
+                raise CostModelError(
+                    "missed-fill probability must be between 0 and 1"
+                )
+            normalized_probabilities[normalized_horizon] = probability_value
+        for required_horizon in SUPPORTED_TRADE_HORIZONS:
+            if required_horizon not in normalized_probabilities:
+                raise CostModelError(
+                    "missing missed-fill probability for horizon "
+                    f"{required_horizon}"
+                )
+        if set(normalized_probabilities) != set(SUPPORTED_TRADE_HORIZONS):
             raise CostModelError(
                 "limit_order_missed_fill_probability_by_horizon must define "
                 "1m, 5m, and 15m"
             )
-        for horizon, probability in probabilities.items():
-            _validate_horizon(horizon)
-            probability_value = _finite_float(
-                probability,
-                f"limit_order_missed_fill_probability_by_horizon.{horizon}",
-            )
-            if probability_value < 0 or probability_value > 1:
-                raise CostModelError(
-                    "limit_order_missed_fill_probability_by_horizon "
-                    f"{horizon} must be between 0 and 1"
-                )
+        object.__setattr__(
+            self,
+            "limit_order_missed_fill_probability_by_horizon",
+            normalized_probabilities,
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
