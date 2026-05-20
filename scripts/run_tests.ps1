@@ -56,6 +56,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running feature parity validation..."
+& $Python scripts/check_feature_parity.py
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 Write-Host "Running pytest..."
 & $Python -m pytest
 if ($LASTEXITCODE -ne 0) {
