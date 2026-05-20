@@ -197,3 +197,14 @@ PR 6:
 * Added: DBN inspector, CLI, check script, tests, and docs.
 * Explicitly not added: live Databento, Databento API calls, production DBN adapter, DBN-to-Parquet conversion, QuestDB writes, features, labels, models, risk, Alpaca, live trading, or AI/context collectors.
 * Next PR: PR 7 - Canonical Feature Builder V1.
+
+## 11. PR 7 Handoff Note
+
+PR 7:
+
+* Branch: `pr7-canonical-feature-builder-v1`.
+* Purpose: canonical `MarketRecord` to `FeatureSnapshot` builder.
+* Added: feature builder, V1 feature keys, quote normalization, rolling window, check script, tests, and docs.
+* Explicitly not added: DBN parsing, Databento API calls, live feed, QuestDB writes, model training/inference, risk logic, Alpaca, live trading, context collectors, AI calls, or notebook-only logic.
+* PR 8 note: parity tests must account for batch sorting vs live arrival order. Compare batch and stateful paths with event-time-ordered inputs unless testing out-of-order behavior directly.
+* Next PR: PR 8 - Historical/Live Feature Parity Tests.

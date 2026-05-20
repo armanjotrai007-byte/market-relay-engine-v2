@@ -57,7 +57,8 @@ python scripts/check_environment.py
 ```
 
 The full local validation runner executes the health check, config validation,
-contract validation, fixture validation, and then pytest:
+contract validation, fixture validation, local market-data checks, and then
+pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -126,6 +127,21 @@ Validate the inspector without real market data:
 
 ```powershell
 python scripts/check_dbn_inspector.py
+```
+
+## Canonical Feature Builder
+
+The canonical feature builder converts normalized `MarketRecord` objects into
+`FeatureSnapshot` objects through one shared path for historical and future live
+use. V1 features live inside `FeatureSnapshot.features`; the builder computes
+basic quote normalization and small rolling-window features without DBN parsing,
+QuestDB writes, model logic, or trading behavior. See
+`docs/feature_builder.md`.
+
+Validate the builder without external services:
+
+```powershell
+python scripts/check_feature_builder.py
 ```
 
 ## Safety Defaults
