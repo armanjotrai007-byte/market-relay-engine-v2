@@ -13,6 +13,7 @@ from market_relay_engine.market_data.cost_model import (
     CostModelConfig,
     CostModelError,
     OrderStyle,
+    TradeHorizon,
     estimate_cost_from_expected_move,
     estimate_cost_from_mid_prices,
     exceeds_min_edge_threshold,
@@ -41,6 +42,67 @@ def test_default_config_values() -> None:
     assert config.assumptions_version == "cost_model_v1"
 
 
+def test_config_normalizes_numeric_like_values_to_floats() -> None:
+    config = CostModelConfig(
+        min_edge_bps="1.0",
+        round_trip_slippage_per_share="0.02",
+        market_order_spread_multiplier="1.0",
+        limit_order_spread_multiplier="0.0",
+        size_penalty_bps_per_1000_shares="0.25",
+        size_penalty_free_quantity="100",
+        fallback_minimum_spread_bps="1.0",
+    )
+
+    assert config.min_edge_bps == 1.0
+    assert config.round_trip_slippage_per_share == 0.02
+    assert config.market_order_spread_multiplier == 1.0
+    assert config.limit_order_spread_multiplier == 0.0
+    assert config.size_penalty_bps_per_1000_shares == 0.25
+    assert config.size_penalty_free_quantity == 100.0
+    assert config.fallback_minimum_spread_bps == 1.0
+    assert isinstance(config.round_trip_slippage_per_share, float)
+
+
+def test_string_numeric_config_values_work_in_cost_estimate() -> None:
+    config = CostModelConfig(
+        round_trip_slippage_per_share="0.02",
+        market_order_spread_multiplier="1.0",
+    )
+
+    estimate = estimate_cost_from_expected_move(
+        ticker="XOM",
+        side=SignalSide.BUY,
+        expected_gross_move_bps=10.0,
+        horizon="1m",
+        midprice=100.0,
+        spread_bps=2.0,
+        config=config,
+    )
+
+    assert estimate.estimated_slippage_bps == pytest.approx(2.0)
+    assert estimate.spread_cost_bps == pytest.approx(2.0)
+
+
+def test_config_normalizes_string_missed_fill_probabilities_to_floats() -> None:
+    config = CostModelConfig(
+        limit_order_missed_fill_probability_by_horizon={
+            "1m": "0.30",
+            TradeHorizon.FIVE_MINUTES: "0.20",
+            "15m": "0.10",
+        }
+    )
+
+    assert config.limit_order_missed_fill_probability_by_horizon == {
+        "1m": 0.30,
+        "5m": 0.20,
+        "15m": 0.10,
+    }
+    assert all(
+        isinstance(value, float)
+        for value in config.limit_order_missed_fill_probability_by_horizon.values()
+    )
+
+
 @pytest.mark.parametrize(
     ("field_name", "value"),
     [
@@ -58,8 +120,25 @@ def test_config_rejects_negative_numbers(field_name: str, value: float) -> None:
         CostModelConfig(**{field_name: value})
 
 
+def test_config_rejects_invalid_numeric_strings() -> None:
+    with pytest.raises(CostModelError, match="round_trip_slippage_per_share"):
+        CostModelConfig(round_trip_slippage_per_share="bad")
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_config_rejects_bool_numeric_values(value: bool) -> None:
+    with pytest.raises(CostModelError, match="round_trip_slippage_per_share"):
+        CostModelConfig(round_trip_slippage_per_share=value)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_config_rejects_non_finite_numeric_strings(value: str) -> None:
+    with pytest.raises(CostModelError, match="round_trip_slippage_per_share"):
+        CostModelConfig(round_trip_slippage_per_share=value)
+
+
 def test_config_rejects_invalid_probability_mapping() -> None:
-    with pytest.raises(CostModelError, match="1m, 5m, and 15m"):
+    with pytest.raises(CostModelError, match="missing missed-fill probability"):
         CostModelConfig(limit_order_missed_fill_probability_by_horizon={"1m": 0.3})
 
     with pytest.raises(CostModelError, match="between 0 and 1"):
