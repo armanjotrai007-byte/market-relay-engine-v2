@@ -57,8 +57,8 @@ python scripts/check_environment.py
 ```
 
 The full local validation runner executes the health check, config validation,
-contract validation, fixture validation, local market-data checks, and then
-pytest:
+contract validation, fixture validation, local market-data checks, feature
+builder checks, feature parity checks, and then pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -142,6 +142,19 @@ Validate the builder without external services:
 
 ```powershell
 python scripts/check_feature_builder.py
+```
+
+## Historical/Live Feature Parity
+
+Historical-style and live-style feature paths both use the canonical
+`FeatureBuilder`. PR 8 adds deterministic parity helpers and tests for
+equivalent event-time-ordered `MarketRecord` inputs, while keeping live-style
+processing in caller arrival order. See `docs/feature_parity.md`.
+
+Validate parity without external services:
+
+```powershell
+python scripts/check_feature_parity.py
 ```
 
 ## Safety Defaults
