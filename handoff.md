@@ -1,4 +1,4 @@
-# handoff.md — Trading System V2 Clean Handoff
+# handoff.md - Trading System V2 Clean Handoff
 
 ## Current Status
 
@@ -8,16 +8,14 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 7 — Canonical Feature Builder V1**
-- Branch: `pr7-canonical-feature-builder-v1`
-- PR: `https://github.com/armanjotrai007-byte/market-relay-engine-v2/pull/7`
-- Head SHA: `635f938651bb865a87be2282695a10d97484bf58`
-- Status: open and ready for review
-- Next PR after merge: **PR 8 — Historical/Live Feature Parity Tests**
+- **PR 8 - Historical/Live Feature Parity Tests**
+- Branch: `pr8-historical-live-feature-parity`
+- Purpose: prove historical-style and live-style feature paths use the same canonical feature builder for equivalent event-time-ordered inputs.
+- Next PR after merge: **PR 9 - Cost Model V1**
 
-Latest confirmed merged base before PR 7:
+Latest confirmed merged base before PR 8:
 
-- **PR 6 merge commit:** `a3c5f8a5156e9b2a2789db50a9d4d638f7cc3c2a`
+- **PR 7 merge commit:** `bd561148de4de5ddd4025959b3bffa74cb2ffa8a`
 
 ---
 
@@ -29,12 +27,12 @@ Core flow:
 
 ```text
 Databento market data
-→ normalized MarketRecord
-→ canonical feature builder
-→ model signal
-→ deterministic risk filter
-→ Alpaca paper/live execution
-→ QuestDB bot ledger
+-> normalized MarketRecord
+-> canonical feature builder
+-> model signal
+-> deterministic risk filter
+-> Alpaca paper/live execution
+-> QuestDB bot ledger
 ```
 
 QuestDB is only the bot ledger. It must not be used as a historical market-data warehouse.
@@ -60,38 +58,17 @@ Historical market truth comes from official Databento historical DBN/Parquet fil
 
 ## Completed PRs
 
-### PR 1 — Clean Repo Skeleton
+### PR 1 - Clean Repo Skeleton
 
-Added:
-
-- base repo structure
-- Python package layout
-- docs/config placeholders
-- `.env.example`
-- `.gitignore`
-- basic tests
-- environment check
-- PowerShell test runner
+Added base repo structure, Python package layout, docs/config placeholders, `.env.example`, `.gitignore`, basic tests, environment check, PowerShell test runner, and empty tracked data/log directories.
 
 Did not add external APIs, live trading, model code, QuestDB writes, or broker logic.
 
 ---
 
-### PR 2 — Config Organization and Validation
+### PR 2 - Config Organization and Validation
 
-Added:
-
-- `config/symbols.yaml`
-- `config/context_sources.yaml`
-- `config/risk_limits.yaml`
-- `config/questdb.yaml`
-- `config/model_config.yaml`
-- `config/calendar_events.yaml`
-- `config/execution.yaml`
-- config loader
-- `scripts/check_config.py`
-- config tests
-- `docs/configuration.md`
+Added YAML config organization, config loader, config validation script/tests, and `docs/configuration.md`.
 
 Purpose:
 
@@ -102,84 +79,33 @@ Purpose:
 
 ---
 
-### PR 3 — Core Contracts + Timestamp Standards
+### PR 3 - Core Contracts + Timestamp Standards
 
-Added typed contracts for:
+Added typed contracts for market records, feature snapshots, model signals, risk decisions, context records, execution records, ledger records, and system health records.
 
-- `MarketRecord`
-- `FeatureSnapshot`
-- `ModelSignal`
-- `RiskDecision`
-- `ContextIndicatorSnapshot`
-- `ContextAIEvent`
-- `ContextFlag`
-- `OrderEvent`
-- `FillEvent`
-- `TradeOutcome`
-- `LatencyMetric`
-- `SystemHealthEvent`
+Added UTC timestamp helpers, run/session/trace ID helpers, JSON serialization helpers, logging context helper, `scripts/check_contracts.py`, and `docs/data_contracts.md`.
 
-Added:
-
-- UTC timestamp helpers
-- run/session/trace ID helpers
-- JSON serialization helpers
-- logging context helper
-- `scripts/check_contracts.py`
-- `docs/data_contracts.md`
-
-Purpose:
-
-Define stable record shapes for the whole system.
+Purpose: define stable record shapes for the whole system.
 
 ---
 
-### PR 4 — Reusable Test Fixtures and Sample Records
+### PR 4 - Reusable Test Fixtures and Sample Records
 
-Added reusable fake fixture factories under:
+Added reusable fake fixture factories under `tests/fixtures/` and scenario fixtures for approved, blocked, reduced-size, latency/slippage, and stale-context cases.
 
-```text
-tests/fixtures/
-```
-
-Added scenarios:
-
-- approved oil trade
-- blocked defense trade
-- reduced-size context-risk trade
-- latency/slippage warning
-- stale context block
-
-Added:
-
-- `scripts/check_fixtures.py`
-- `docs/testing_fixtures.md`
-
-Purpose:
-
-Give future PRs consistent fake data built from PR 3 contracts.
-
-No real Databento data was added.
+Purpose: give future PRs consistent fake data built from PR 3 contracts. No real Databento data was added.
 
 ---
 
-### PR 5 — Historical Databento Parquet Reader Stub
+### PR 5 - Historical Databento Parquet Reader Stub
 
-Added:
-
-- `src/market_relay_engine/market_data/historical_parquet.py`
-- `scripts/inspect_historical_parquets.py`
-- `scripts/check_historical_parquet.py`
-- `docs/historical_parquet_reader.md`
-- Parquet reader tests
+Added `src/market_relay_engine/market_data/historical_parquet.py`, local inspection/check scripts, docs, and Parquet reader tests.
 
 Purpose:
-
-Create the local historical Parquet boundary:
 
 ```text
 official Databento historical Parquet
-→ MarketRecord
+-> MarketRecord
 ```
 
 Important behavior:
@@ -192,38 +118,20 @@ Important behavior:
 
 ---
 
-### PR 6 — DBN Inspection Utility
+### PR 6 - DBN Inspection Utility
 
 Merged into `main`.
 
-Added:
+Added DBN file/folder inspection helpers, CLI, check script, docs, and tests.
 
-- `src/market_relay_engine/market_data/dbn_inspector.py`
-- `scripts/inspect_dbn_file.py`
-- `scripts/check_dbn_inspector.py`
-- `docs/dbn_inspection.md`
-- DBN inspector tests
-
-Purpose:
-
-Inspect local Databento DBN files/folders safely without committing raw data.
-
-Supported:
-
-- `.dbn`
-- `.dbn.zst`
-- Databento batch/job folders
-- sidecar JSON files:
-  - `condition.json`
-  - `manifest.json`
-  - `metadata.json`
+Purpose: inspect local Databento DBN files/folders safely without committing raw data.
 
 Important behavior:
 
+- supports `.dbn`, `.dbn.zst`, batch/job folders, and sidecar JSON files
 - file-info-only mode does not require Databento package
 - record preview is optional and bounded
 - schema values are `schema_hint`, not guaranteed truth
-- sidecar schema hints are preferred over filename hints
 - no DBN files are committed
 - no live Databento, QuestDB writes, model logic, or trading logic
 
@@ -238,94 +146,63 @@ schemas: trades, mbp-1, tbbo, bbo-1s, bbo-1m, ohlcv-1s, ohlcv-1m, ohlcv-1h, ohlc
 
 ---
 
-## Current PR
+### PR 7 - Canonical Feature Builder V1
 
-### PR 7 — Canonical Feature Builder V1
+Merged into `main`.
 
-Open PR:
-
-```text
-https://github.com/armanjotrai007-byte/market-relay-engine-v2/pull/7
-```
-
-Branch:
-
-```text
-pr7-canonical-feature-builder-v1
-```
-
-Purpose:
-
-Create the first canonical feature builder:
-
-```text
-MarketRecord
-→ FeatureSnapshot
-```
-
-Added:
-
-- `src/market_relay_engine/market_data/feature_builder.py`
-- `scripts/check_feature_builder.py`
-- `docs/feature_builder.md`
-- `tests/unit/test_feature_builder.py`
-
-Modified:
-
-- `README.md`
-- `handoff.md`
-- `scripts/check_environment.py`
-- `scripts/run_tests.ps1`
+Added canonical `MarketRecord -> FeatureSnapshot` builder, V1 feature keys, quote normalization, rolling window behavior, check script, docs, and tests.
 
 Important PR 7 behavior:
 
 - `FeatureSnapshot` contract is unchanged.
 - V1 features live inside `FeatureSnapshot.features`.
-- `V1_FEATURE_KEYS` defines the stable feature dictionary schema.
-- `FeatureBuilderConfig` defaults:
-  - `lookback_window_seconds=60`
-  - `feature_version="feature_v1"`
-  - `max_records_per_ticker=50000`
 - `FeatureBuilder.update(record)` processes caller order for live-style use.
 - `build_feature_snapshot(records, ...)` sorts by `event_time` for batch/test convenience.
 - Per-ticker rolling windows use `max_event_time_seen`, so late records cannot move the window backward.
-- Update order:
-  1. validate
-  2. append
-  3. update max event time
-  4. prune by time
-  5. apply record cap
 - Non-finite numbers are normalized to `None`.
 - Features are JSON-safe.
-- Unrecognized records contribute only to `record_count_window` unless they contain usable trade/quote fields.
 
-PR 7 explicitly does not add:
+PR 7 explicitly did not add DBN parsing, Databento API, live feed, QuestDB writes, model training/inference, risk logic, Alpaca, live trading, or heavy dependencies.
 
-- DBN parsing
-- Databento API
-- live feed
-- QuestDB writes
-- model training/inference
-- risk logic
-- Alpaca
-- live trading
-- heavy dependencies
+---
 
-PR 7 validation reported by Codex:
+## Current PR
+
+### PR 8 - Historical/Live Feature Parity Tests
+
+Branch:
 
 ```text
-check_environment.py PASS
-check_config.py PASS
-check_contracts.py PASS
-check_fixtures.py PASS
-check_historical_parquet.py PASS
-check_dbn_inspector.py PASS
-check_feature_builder.py PASS
-pytest: 157 passed
-run_tests.ps1 PASS
+pr8-historical-live-feature-parity
 ```
 
-Before merge, run validation on the server laptop.
+Purpose:
+
+Prove historical-style and live-style feature paths use the same canonical feature builder for equivalent event-time-ordered inputs.
+
+Added:
+
+- `src/market_relay_engine/market_data/feature_parity.py`
+- `scripts/check_feature_parity.py`
+- `docs/feature_parity.md`
+- `tests/unit/test_feature_parity.py`
+
+Important PR 8 behavior:
+
+- Historical helper sorts normalized `MarketRecord` inputs by `event_time`.
+- Live helper processes caller order and does not sort.
+- Live helper does not reject out-of-order event times because PR 7 `FeatureBuilder.update(record)` supports live-style arrival order.
+- Formal parity assertions compare equivalent event-time-ordered inputs.
+- Same-timestamp records are allowed, but deterministic parity requires the same relative input order for records with equal `event_time`.
+- Semantic comparison checks market-derived `snapshot_time` and feature values, but ignores generated `feature_snapshot_id`.
+
+PR 8 explicitly does not add Databento parsing, real DBN/Parquet usage, QuestDB writes, model training/inference, risk logic, Alpaca, live trading, AI/context collectors, or heavy dependencies.
+
+Next PR:
+
+```text
+PR 9 - Cost Model V1
+```
 
 ---
 
@@ -341,48 +218,18 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_historical_parquet.py
 .\.venv\Scripts\python.exe scripts/check_dbn_inspector.py
 .\.venv\Scripts\python.exe scripts/check_feature_builder.py
+.\.venv\Scripts\python.exe scripts/check_feature_parity.py
 .\.venv\Scripts\python.exe -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
 
-After PR 8 is added, also run:
-
-```powershell
-.\.venv\Scripts\python.exe scripts/check_feature_parity.py
-```
-
 ---
 
-## PR 8 Guidance
+## PR 8 Rule
 
-Next PR:
+Formal parity assertions compare historical and live outputs only when both paths receive equivalent event-time-ordered inputs. The historical helper sorts by `event_time`; the live helper processes caller order and does not reject out-of-order records.
 
-```text
-PR 8 — Historical/Live Feature Parity Tests
-```
-
-Purpose:
-
-Prove historical-style and live-style feature paths use the same canonical feature builder.
-
-Important rule:
-
-```text
-build_feature_snapshot() sorts by event_time.
-FeatureBuilder.update() processes arrival order and does not sort.
-```
-
-Therefore, PR 8 parity tests must compare batch and stateful paths using event-time-ordered inputs unless the test is specifically about out-of-order behavior.
-
-PR 8 should not add:
-
-- Databento parsing
-- real DBN/Parquet usage
-- QuestDB writes
-- model training/inference
-- risk logic
-- Alpaca
-- live trading
+Out-of-order live arrival is supported by PR 7's `FeatureBuilder`, but it is not the main parity condition. Same-timestamp ordering matters because equal timestamps do not define a unique order by themselves. This preserves the PR 7 batch sorting vs live arrival order distinction.
 
 ---
 
@@ -428,6 +275,7 @@ scripts/check_fixtures.py
 scripts/check_historical_parquet.py
 scripts/check_dbn_inspector.py
 scripts/check_feature_builder.py
+scripts/check_feature_parity.py
 scripts/run_tests.ps1
 ```
 
@@ -439,6 +287,7 @@ docs/testing_fixtures.md
 docs/historical_parquet_reader.md
 docs/dbn_inspection.md
 docs/feature_builder.md
+docs/feature_parity.md
 docs/configuration.md
 ```
 
@@ -446,7 +295,7 @@ docs/configuration.md
 
 ## Next Steps
 
-1. Review PR 7.
-2. Run PR 7 validation on the server laptop.
-3. Merge PR 7 if validation and review are clean.
-4. Start PR 8 — Historical/Live Feature Parity Tests.
+1. Review PR 8.
+2. Run PR 8 validation on the server laptop.
+3. Merge PR 8 if validation and review are clean.
+4. Start PR 9 - Cost Model V1.
