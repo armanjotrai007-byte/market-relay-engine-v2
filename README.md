@@ -58,7 +58,8 @@ python scripts/check_environment.py
 
 The full local validation runner executes the health check, config validation,
 contract validation, fixture validation, local market-data checks, feature
-builder checks, feature parity checks, cost model checks, and then pytest:
+builder checks, feature parity checks, cost model checks, label builder checks,
+and then pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -169,6 +170,21 @@ Validate the cost model without external services:
 
 ```powershell
 python scripts/check_cost_model.py
+```
+
+## Label Builder
+
+The label builder creates deterministic cost-aware labels for future supervised
+training. It combines an existing `FeatureSnapshot`, a future normalized
+midprice observation at `1m`, `5m`, or `15m`, regular-hours protection, and the
+PR 9 cost model to produce `profitable_after_costs`. PR 10 does not train a
+model, run inference, call external APIs, read real market files, write QuestDB
+records, or place broker orders. See `docs/label_builder.md`.
+
+Validate the label builder without external services:
+
+```powershell
+python scripts/check_label_builder.py
 ```
 
 ## Safety Defaults
