@@ -58,7 +58,7 @@ python scripts/check_environment.py
 
 The full local validation runner executes the health check, config validation,
 contract validation, fixture validation, local market-data checks, feature
-builder checks, feature parity checks, and then pytest:
+builder checks, feature parity checks, cost model checks, and then pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -155,6 +155,20 @@ Validate parity without external services:
 
 ```powershell
 python scripts/check_feature_parity.py
+```
+
+## Cost Model V1
+
+The cost model estimates whether a mid-to-mid expected move exceeds spread,
+round-trip slippage, size penalty, missed-fill risk, and the minimum edge
+buffer. PR 9 keeps this as a pure calculation module without labels, risk
+logic, broker execution, QuestDB writes, live data, or external APIs. See
+`docs/cost_model.md`.
+
+Validate the cost model without external services:
+
+```powershell
+python scripts/check_cost_model.py
 ```
 
 ## Safety Defaults

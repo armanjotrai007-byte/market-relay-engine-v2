@@ -8,19 +8,15 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 8 - Historical/Live Feature Parity Tests**
-- PR: `https://github.com/armanjotrai007-byte/market-relay-engine-v2/pull/8`
-- Status: open on GitHub
-- Branch: `pr8-historical-live-feature-parity`
-- Branch head SHA: `edf750f7faf90f876b9cc0a794534be7763f3ee4`
-- Base: `main` at `0cc5f03f0349e65d10f5f5903517bd85ce5f2f5f`
-- Purpose: prove historical-style and live-style feature paths use the same
-  canonical feature builder for equivalent event-time-ordered inputs.
-- Next PR after merge: **PR 9 - Cost Model V1**
+- **PR 9 - Cost Model V1**
+- Branch: `pr9-cost-model-v1`
+- Purpose: pure cost model for spread, round-trip slippage, size penalty,
+  missed-fill, and minimum-edge estimates.
+- Next PR after merge: **PR 10 - Label Builder for Supervised Model**
 
-Latest confirmed merged base before PR 8:
+Latest confirmed merged base before PR 9:
 
-- **PR 7 merge commit:** `bd561148de4de5ddd4025959b3bffa74cb2ffa8a`
+- **PR 8 merge commit:** `5f3547dfaae66bddc0d2f64ebf0c691629683ee1`
 
 Local workspace and publishing note:
 
@@ -249,7 +245,7 @@ schemas: trades, mbp-1, tbbo, bbo-1s, bbo-1m, ohlcv-1s, ohlcv-1m, ohlcv-1h, ohlc
 
 ---
 
-## Current PR
+## Previous PR Context
 
 ### PR 8 - Historical/Live Feature Parity Tests
 
@@ -357,6 +353,59 @@ PR 9 - Cost Model V1
 
 ---
 
+## Current PR
+
+### PR 9 - Cost Model V1
+
+Branch:
+
+```text
+pr9-cost-model-v1
+```
+
+Purpose:
+
+Create a pure cost calculation layer that estimates whether a hypothetical
+mid-to-mid expected move clears spread, round-trip slippage, size penalty,
+missed-fill risk, and the minimum edge buffer.
+
+Added:
+
+- `src/market_relay_engine/market_data/cost_model.py`
+- `scripts/check_cost_model.py`
+- `docs/cost_model.md`
+- `tests/unit/test_cost_model.py`
+
+Key PR 9 decisions:
+
+- Supported horizons are `1m`, `5m`, and `15m`.
+- Expected gross move is mid-to-mid; spread is subtracted separately.
+- Default round-trip slippage is `$0.02/share`.
+- Default `min_edge_bps` is `1.0`.
+- LIMIT_AT_MID missed-fill probabilities are horizon-specific.
+- Crossed/locked books are rejected, and zero or missing spread uses fallback
+  spread bps.
+- BUY and SELL math are supported through existing `SignalSide`.
+- First model target remains classification: `profitable_after_costs`.
+
+Explicitly not added:
+
+- label builder
+- model training or inference
+- risk engine
+- Alpaca or broker execution
+- QuestDB schemas or writes
+- Databento API, DBN parsing, or Parquet reader changes
+- live data, AI/context collectors, or live trading
+
+Next PR:
+
+```text
+PR 10 - Label Builder for Supervised Model
+```
+
+---
+
 ## Standard Server-Laptop Validation
 
 Run from the repo root after checking out the PR branch:
@@ -370,6 +419,7 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_dbn_inspector.py
 .\.venv\Scripts\python.exe scripts/check_feature_builder.py
 .\.venv\Scripts\python.exe scripts/check_feature_parity.py
+.\.venv\Scripts\python.exe scripts/check_cost_model.py
 .\.venv\Scripts\python.exe -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
@@ -402,6 +452,7 @@ Feature builder:
 
 ```text
 src/market_relay_engine/market_data/feature_builder.py
+src/market_relay_engine/market_data/cost_model.py
 ```
 
 Historical Parquet reader:
@@ -433,6 +484,7 @@ scripts/check_historical_parquet.py
 scripts/check_dbn_inspector.py
 scripts/check_feature_builder.py
 scripts/check_feature_parity.py
+scripts/check_cost_model.py
 scripts/run_tests.ps1
 ```
 
@@ -445,6 +497,7 @@ docs/historical_parquet_reader.md
 docs/dbn_inspection.md
 docs/feature_builder.md
 docs/feature_parity.md
+docs/cost_model.md
 docs/configuration.md
 ```
 
@@ -452,11 +505,9 @@ docs/configuration.md
 
 ## Next Steps
 
-1. Review PR 8 on GitHub:
-   `https://github.com/armanjotrai007-byte/market-relay-engine-v2/pull/8`
-2. Check out or pull branch `pr8-historical-live-feature-parity` on the server
-   laptop from GitHub.
+1. Review PR 9 on GitHub after it is opened.
+2. Check out or pull branch `pr9-cost-model-v1` on the server laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation
    section.
-4. Merge PR 8 if review and server-laptop validation are clean.
-5. Start PR 9 - Cost Model V1.
+4. Merge PR 9 if review and server-laptop validation are clean.
+5. Start PR 10 - Label Builder for Supervised Model.
