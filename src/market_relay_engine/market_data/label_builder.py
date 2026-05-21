@@ -313,9 +313,11 @@ def build_label_for_snapshot(
     resolved_config = config or LabelBuilderConfig()
     resolved_side = _validate_label_side(side)
     resolved_horizon = normalize_horizon(horizon)
-    resolved_order_style = _validate_order_style(
-        order_style or resolved_config.default_order_style
-    )
+    if order_style is None:
+        raw_order_style = resolved_config.default_order_style
+    else:
+        raw_order_style = order_style
+    resolved_order_style = _validate_order_style(raw_order_style)
     resolved_quantity = _positive_finite_float(
         resolved_config.default_quantity if quantity is None else quantity,
         "quantity",
