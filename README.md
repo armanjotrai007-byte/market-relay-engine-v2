@@ -56,10 +56,10 @@ The environment health check verifies Python 3.12+, required files, required dir
 python scripts/check_environment.py
 ```
 
-The full local validation runner executes the health check, config validation,
-contract validation, fixture validation, local market-data checks, feature
-builder checks, feature parity checks, cost model checks, label builder checks,
-and then pytest:
+The full local validation runner executes the environment health check, config
+validation, optional QuestDB health check, contract validation, fixture
+validation, local market-data checks, feature builder checks, feature parity
+checks, cost model checks, label builder checks, and then pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -78,6 +78,25 @@ python scripts/check_config.py
 ```
 
 See `docs/configuration.md` for the config file map and safety rules.
+
+## QuestDB Health Check
+
+The QuestDB health check validates the local HTTP `/exec` endpoint with
+`SELECT 1`. It is optional by default so Codex and offline validation can pass
+without QuestDB running:
+
+```powershell
+python scripts/check_questdb.py
+```
+
+On the server laptop, run the required integration check with QuestDB running:
+
+```powershell
+python scripts/check_questdb.py --required
+```
+
+See `docs/questdb_health.md` for the bot-ledger-only scope and PR 12 schema
+note.
 
 ## Core Contracts
 
