@@ -21,6 +21,7 @@ from market_relay_engine.questdb.health import (
     check_questdb_http,
     format_questdb_health_result,
     load_questdb_health_config,
+    _validate_exec_payload,
 )
 
 
@@ -203,6 +204,37 @@ def test_build_exec_url_returns_expected_endpoint() -> None:
     assert build_questdb_exec_url(config) == "http://localhost:9000/exec"
 
 
+def test_validate_exec_payload_accepts_full_select_one_result() -> None:
+    assert (
+        _validate_exec_payload(
+            {
+                "columns": [{"name": "1", "type": "INT"}],
+                "dataset": [[1]],
+                "count": 1,
+            }
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"query": "SELECT 1"},
+        {"columns": [{"name": "1", "type": "INT"}]},
+        {"dataset": [[1]]},
+        {"error": "bad query"},
+        {"columns": [{"name": "1", "type": "INT"}], "dataset": []},
+        {"columns": [{"name": "1", "type": "INT"}], "dataset": [[]]},
+        {"columns": [{"name": "1", "type": "INT"}], "dataset": [[2]]},
+        {"columns": [{"name": "1", "type": "INT"}], "dataset": [[1]], "count": 0},
+        {"columns": [{"name": "1", "type": "INT"}], "dataset": [[1]], "count": "bad"},
+    ],
+)
+def test_validate_exec_payload_rejects_malformed_select_one_results(payload: object) -> None:
+    assert _validate_exec_payload(payload) is not None
+
+
 def test_check_http_success_parses_select_one_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -216,6 +248,7 @@ def test_check_http_success_parses_select_one_json(
                 "query": "SELECT 1",
                 "columns": [{"name": "1", "type": "INT"}],
                 "dataset": [[1]],
+                "count": 1,
             },
         )
 
@@ -288,7 +321,23 @@ def test_check_http_unrecognized_success_json_is_unhealthy(
 
     assert result.reachable is False
     assert result.failure_kind == FAILURE_UNHEALTHY
-    assert "SELECT 1" in result.message
+    assert "columns" in result.message
+
+
+def test_check_http_query_only_payload_is_unhealthy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        requests,
+        "get",
+        lambda *args, **kwargs: FakeResponse(200, {"query": "SELECT 1"}),
+    )
+
+    result = check_questdb_http(QuestDBHealthConfig())
+
+    assert result.reachable is False
+    assert result.failure_kind == FAILURE_UNHEALTHY
+    assert "columns" in result.message
 
 
 def test_connection_exception_is_not_reachable(monkeypatch: pytest.MonkeyPatch) -> None:
