@@ -475,6 +475,17 @@ def test_unsupported_horizon_rejected_in_single_label() -> None:
         )
 
 
+def test_explicit_empty_order_style_is_rejected_in_single_label() -> None:
+    with pytest.raises(LabelBuilderError, match="order_style"):
+        build_label_for_snapshot(
+            _snapshot(),
+            [_forward(1)],
+            SignalSide.BUY,
+            "1m",
+            order_style="",
+        )
+
+
 def test_missing_midprice_fails() -> None:
     with pytest.raises(LabelBuilderError, match="midprice"):
         build_label_for_snapshot(
