@@ -281,12 +281,36 @@ def _raise_if_required(
 def _validate_exec_payload(payload: Any) -> str | None:
     if not isinstance(payload, dict):
         return "QuestDB /exec response was not a JSON object"
+
     if "error" in payload:
-        error = payload.get("error") or "QuestDB /exec returned an error"
-        return f"QuestDB /exec returned error: {error}"
-    success_fields = {"dataset", "columns", "count", "query"}
-    if not success_fields.intersection(payload):
-        return "QuestDB /exec response did not look like a SELECT 1 result"
+        return f"QuestDB /exec returned error: {payload.get('error')}"
+
+    columns = payload.get("columns")
+    if not isinstance(columns, list) or not columns:
+        return "QuestDB /exec response did not include result columns"
+
+    dataset = payload.get("dataset")
+    if not isinstance(dataset, list) or not dataset:
+        return "QuestDB /exec response did not include a result dataset"
+
+    first_row = dataset[0]
+    if not isinstance(first_row, (list, tuple)) or not first_row:
+        return "QuestDB /exec response dataset did not include a SELECT 1 row"
+
+    first_value = first_row[0]
+    if isinstance(first_value, bool) or first_value not in (1, "1"):
+        return "QuestDB /exec SELECT 1 result was not 1"
+
+    count = payload.get("count")
+    if count is not None:
+        if isinstance(count, bool):
+            return "QuestDB /exec response count was not numeric"
+        try:
+            if int(count) < 1:
+                return "QuestDB /exec response count was less than 1"
+        except (TypeError, ValueError):
+            return "QuestDB /exec response count was not numeric"
+
     return None
 
 
