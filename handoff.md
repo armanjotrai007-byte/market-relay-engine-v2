@@ -1,4 +1,4 @@
-# handoff.md — Trading System V2 Clean Handoff
+# handoff.md â€” Trading System V2 Clean Handoff
 
 ## Current Status
 
@@ -8,23 +8,21 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 9 - Cost Model V1**
-- Branch: `pr9-cost-model-v1`
-- Purpose: pure cost model for spread, round-trip slippage, size penalty,
-  missed-fill, and minimum-edge estimates.
-- Next PR after merge: **PR 10 - Label Builder for Supervised Model**
+- **PR 10 - Label Builder for Supervised Model**
+- Branch: `pr10-label-builder-for-supervised-model`
+- Purpose: cost-aware label builder for supervised model training.
+- Next PR after merge: **PR 11 - QuestDB Health Check / Ledger Foundation**
 
-Latest confirmed merged base before PR 9:
+Latest confirmed merged base before PR 10:
 
-- **PR 8 merge commit:** `5f3547dfaae66bddc0d2f64ebf0c691629683ee1`
+- **PR 9 merge commit:** `d06c2b21bb2e5d1aa7183bb23caa6aa1b0c6770e`
 
 Local workspace and publishing note:
 
 - This local workspace is not a usable Git checkout: `.git` is absent, and
   `git` / `gh` were not available on PATH during PR 8 publishing.
-- PR 8 was created on GitHub with the GitHub connector instead of local git.
-- The connector wrote the branch with 8 per-file commits, each using commit
-  message `Add historical live feature parity tests`.
+- Recent branches may need to be created on GitHub with the GitHub connector
+  instead of local git when this workspace remains connector-only.
 
 ---
 
@@ -36,12 +34,12 @@ Core flow:
 
 ```text
 Databento market data
-→ normalized MarketRecord
-→ canonical feature builder
-→ model signal
-→ deterministic risk filter
-→ Alpaca paper/live execution
-→ QuestDB bot ledger
+â†’ normalized MarketRecord
+â†’ canonical feature builder
+â†’ model signal
+â†’ deterministic risk filter
+â†’ Alpaca paper/live execution
+â†’ QuestDB bot ledger
 ```
 
 QuestDB is only the bot ledger. It must not be used as a historical market-data warehouse.
@@ -67,7 +65,7 @@ Historical market truth comes from official Databento historical DBN/Parquet fil
 
 ## Completed PRs
 
-### PR 1 — Clean Repo Skeleton
+### PR 1 â€” Clean Repo Skeleton
 
 Added:
 
@@ -84,7 +82,7 @@ Did not add external APIs, live trading, model code, QuestDB writes, or broker l
 
 ---
 
-### PR 2 — Config Organization and Validation
+### PR 2 â€” Config Organization and Validation
 
 Added:
 
@@ -109,7 +107,7 @@ Purpose:
 
 ---
 
-### PR 3 — Core Contracts + Timestamp Standards
+### PR 3 â€” Core Contracts + Timestamp Standards
 
 Added typed contracts for:
 
@@ -141,7 +139,7 @@ Define stable record shapes for the whole system.
 
 ---
 
-### PR 4 — Reusable Test Fixtures and Sample Records
+### PR 4 â€” Reusable Test Fixtures and Sample Records
 
 Added reusable fake fixture factories under:
 
@@ -170,7 +168,7 @@ No real Databento data was added.
 
 ---
 
-### PR 5 — Historical Databento Parquet Reader Stub
+### PR 5 â€” Historical Databento Parquet Reader Stub
 
 Added:
 
@@ -186,7 +184,7 @@ Create the local historical Parquet boundary:
 
 ```text
 official Databento historical Parquet
-→ MarketRecord
+â†’ MarketRecord
 ```
 
 Important behavior:
@@ -199,7 +197,7 @@ Important behavior:
 
 ---
 
-### PR 6 — DBN Inspection Utility
+### PR 6 â€” DBN Inspection Utility
 
 Merged into `main`.
 
@@ -353,7 +351,7 @@ PR 9 - Cost Model V1
 
 ---
 
-## Current PR
+## Previous PR
 
 ### PR 9 - Cost Model V1
 
@@ -406,6 +404,54 @@ PR 10 - Label Builder for Supervised Model
 
 ---
 
+## Current PR
+
+### PR 10 - Label Builder for Supervised Model
+
+Branch:
+
+```text
+pr10-label-builder-for-supervised-model
+```
+
+Purpose:
+
+Create cost-aware labels for future supervised model training.
+
+Added:
+
+- `src/market_relay_engine/market_data/label_builder.py`
+- `scripts/check_label_builder.py`
+- `docs/label_builder.md`
+- `tests/unit/test_label_builder.py`
+
+Key PR 10 decisions:
+
+- Supported label horizons are `1m`, `5m`, and `15m`.
+- Labels are generated for BUY and SELL sides only.
+- Forward movement is mid-to-mid and uses the PR 9 cost model.
+- Regular-hours protection rejects after-hours horizon targets and forward
+  observations outside 09:30-16:00 America/New_York.
+- Forward price selection never uses observations before the target horizon,
+  which prevents lookahead leakage.
+
+Explicitly not added:
+
+- model training or inference
+- risk engine
+- Alpaca or broker execution
+- QuestDB schemas or writes
+- Databento API, DBN parsing, or Parquet reader changes
+- live data, AI/context collectors, or live trading
+
+Next PR:
+
+```text
+PR 11 - QuestDB Health Check / Ledger Foundation
+```
+
+---
+
 ## Standard Server-Laptop Validation
 
 Run from the repo root after checking out the PR branch:
@@ -420,6 +466,7 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_feature_builder.py
 .\.venv\Scripts\python.exe scripts/check_feature_parity.py
 .\.venv\Scripts\python.exe scripts/check_cost_model.py
+.\.venv\Scripts\python.exe scripts/check_label_builder.py
 .\.venv\Scripts\python.exe -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
@@ -453,6 +500,7 @@ Feature builder:
 ```text
 src/market_relay_engine/market_data/feature_builder.py
 src/market_relay_engine/market_data/cost_model.py
+src/market_relay_engine/market_data/label_builder.py
 ```
 
 Historical Parquet reader:
@@ -485,6 +533,7 @@ scripts/check_dbn_inspector.py
 scripts/check_feature_builder.py
 scripts/check_feature_parity.py
 scripts/check_cost_model.py
+scripts/check_label_builder.py
 scripts/run_tests.ps1
 ```
 
@@ -498,6 +547,7 @@ docs/dbn_inspection.md
 docs/feature_builder.md
 docs/feature_parity.md
 docs/cost_model.md
+docs/label_builder.md
 docs/configuration.md
 ```
 
@@ -505,9 +555,10 @@ docs/configuration.md
 
 ## Next Steps
 
-1. Review PR 9 on GitHub after it is opened.
-2. Check out or pull branch `pr9-cost-model-v1` on the server laptop.
+1. Review PR 10 on GitHub after it is opened.
+2. Check out or pull branch `pr10-label-builder-for-supervised-model` on the
+   server laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation
    section.
-4. Merge PR 9 if review and server-laptop validation are clean.
-5. Start PR 10 - Label Builder for Supervised Model.
+4. Merge PR 10 if review and server-laptop validation are clean.
+5. Start PR 11 - QuestDB Health Check / Ledger Foundation.
