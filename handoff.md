@@ -8,14 +8,14 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 11 - QuestDB Health Check / Ledger Foundation**
-- Branch: `pr11-questdb-health-check-ledger-foundation`
-- Purpose: local QuestDB health check and ledger foundation.
-- Next PR after merge: **PR 12 - QuestDB Ledger Schema SQL**
+- **PR 12 - QuestDB Ledger Schema SQL**
+- Branch: `pr12-questdb-ledger-schema-sql`
+- Purpose: official QuestDB V2 ledger schema SQL.
+- Next PR after merge: **PR 13 - QuestDB Ledger Writer**
 
-Latest confirmed merged base before PR 11:
+Latest confirmed merged base before PR 12:
 
-- **PR 10 merge commit:** `953246de65b7426a9838b5eb4ae1660bba6f9a90`
+- **PR 11 merge commit:** `69384aeac7ed6ef5d4a0091f602956fb4181904f`
 
 Local workspace and publishing note:
 
@@ -452,53 +452,48 @@ PR 11 - QuestDB Health Check / Ledger Foundation
 
 ## Current PR
 
-### PR 11 - QuestDB Health Check / Ledger Foundation
+### PR 12 - QuestDB Ledger Schema SQL
 
 Branch:
 
 ```text
-pr11-questdb-health-check-ledger-foundation
+pr12-questdb-ledger-schema-sql
 ```
 
 Purpose:
 
-Create the local QuestDB health/config foundation while preserving the rule that
-QuestDB is the bot ledger only.
+Create the official QuestDB V2 ledger schema SQL.
 
 Added:
 
-- QuestDB health module
-- optional/required `scripts/check_questdb.py`
-- config precedence through `config/questdb.yaml`, environment, and explicit overrides
-- tests and docs
+- destructive local-dev reset schema at `db/schema/questdb_ledger_v1.sql`
+- offline schema validation and optional apply script
+- schema docs and tests
 
 Key behavior:
 
-- Optional mode supports Codex/offline validation without QuestDB running.
-- Required mode is for server-laptop validation with QuestDB running.
-- `/exec` with `SELECT 1` is used because the future ledger writer needs the
-  SQL query engine ready.
+- QuestDB remains bot ledger only.
+- The schema drops and recreates V2 ledger tables for local setup.
+- Default schema check is offline and does not require QuestDB.
+- Optional real apply uses one documented `/exec` GET request per SQL statement.
+- `context_state_snapshots` resolves `risk_decisions.context_snapshot_id`.
 
 Explicitly not added:
 
-- schema creation
-- inserts or writer classes
+- ledger writer
+- inserts from app code
 - raw market-data tables
 - Databento API
 - Alpaca or broker execution
 - live trading
-
-PR 12 warning:
-
-Before PR 13 adds a ledger writer, PR 12 should resolve the meaning of
-`risk_decisions.context_snapshot_id`. The preferred direction is a
-`context_state_snapshots` table that can be the single target for a risk
-decision's context state.
+- JSONL fallback implementation
+- model training
+- risk engine logic
 
 Next PR:
 
 ```text
-PR 12 - QuestDB Ledger Schema SQL
+PR 13 - QuestDB Ledger Writer
 ```
 
 ---
@@ -511,6 +506,7 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_environment.py
 .\.venv\Scripts\python.exe scripts/check_config.py
 .\.venv\Scripts\python.exe scripts/check_questdb.py
+.\.venv\Scripts\python.exe scripts/check_questdb_schema.py
 .\.venv\Scripts\python.exe scripts/check_contracts.py
 .\.venv\Scripts\python.exe scripts/check_fixtures.py
 .\.venv\Scripts\python.exe scripts/check_historical_parquet.py
@@ -527,6 +523,7 @@ With QuestDB running on the server laptop, also run:
 
 ```powershell
 .\.venv\Scripts\python.exe scripts/check_questdb.py --required
+.\.venv\Scripts\python.exe scripts/check_questdb_schema.py --apply --required
 ```
 
 ---
@@ -621,11 +618,12 @@ docs/configuration.md
 
 ## Next Steps
 
-1. Review PR 11 on GitHub after it is opened.
-2. Check out or pull branch `pr11-questdb-health-check-ledger-foundation` on the
+1. Review PR 12 on GitHub after it is opened.
+2. Check out or pull branch `pr12-questdb-ledger-schema-sql` on the
    server laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation
    section.
-4. Run `scripts/check_questdb.py --required` with QuestDB running on the server laptop.
-5. Merge PR 11 if review and server-laptop validation are clean.
-6. Start PR 12 - QuestDB Ledger Schema SQL.
+4. Run `scripts/check_questdb.py --required` and
+   `scripts/check_questdb_schema.py --apply --required` with QuestDB running.
+5. Merge PR 12 if review and server-laptop validation are clean.
+6. Start PR 13 - QuestDB Ledger Writer.
