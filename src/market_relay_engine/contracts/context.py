@@ -95,3 +95,31 @@ class ContextFlag:
         object.__setattr__(self, "valid_until", optional_utc_datetime(self.valid_until))
         require_non_empty_string(self.context_flag_id, "context_flag_id")
         require_optional_non_empty_string(self.trace_id, "trace_id")
+
+
+@dataclass(frozen=True, kw_only=True)
+class ContextStateSnapshot:
+    """Context state snapshot consumed by the deterministic risk gate."""
+
+    snapshot_time: datetime
+    ticker: str
+    context_snapshot_id: str = field(
+        default_factory=lambda: new_record_id("context_snapshot")
+    )
+    sector: str | None = None
+    active_indicator_ids: list[str] = field(default_factory=list)
+    active_context_event_ids: list[str] = field(default_factory=list)
+    active_context_flag_ids: list[str] = field(default_factory=list)
+    context_summary: dict[str, Any] = field(default_factory=dict)
+    highest_severity: str | None = None
+    risk_level: str | None = None
+    valid_until: datetime | None = None
+    schema_version: str = DEFAULT_SCHEMA_VERSION
+    trace_id: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "snapshot_time", utc_datetime(self.snapshot_time))
+        object.__setattr__(self, "valid_until", optional_utc_datetime(self.valid_until))
+        require_non_empty_string(self.context_snapshot_id, "context_snapshot_id")
+        require_non_empty_string(self.ticker, "ticker")
+        require_optional_non_empty_string(self.trace_id, "trace_id")
