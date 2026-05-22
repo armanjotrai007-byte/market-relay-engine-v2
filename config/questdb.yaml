@@ -5,14 +5,23 @@ metadata:
   not_market_data_warehouse: true
 
 connection:
+  http_scheme_env: QUESTDB_HTTP_SCHEME
   http_host_env: QUESTDB_HTTP_HOST
   http_port_env: QUESTDB_HTTP_PORT
+  health_timeout_seconds_env: QUESTDB_HEALTH_TIMEOUT_SECONDS
   pg_host_env: QUESTDB_PG_HOST
   pg_port_env: QUESTDB_PG_PORT
+  default_http_scheme: http
   default_http_host: localhost
   default_http_port: 9000
+  default_health_timeout_seconds: 3.0
   default_pg_host: localhost
   default_pg_port: 8812
+
+health_check:
+  endpoint: /exec
+  query: "SELECT 1"
+  required_by_default: false
 
 ledger_tables:
   - model_signals
