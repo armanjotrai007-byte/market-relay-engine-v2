@@ -6,6 +6,7 @@ from market_relay_engine.contracts.context import (
     ContextAIEvent,
     ContextFlag,
     ContextIndicatorSnapshot,
+    ContextStateSnapshot,
 )
 from tests.fixtures.ids import TRACE_ID_APPROVED_OIL, stable_record_id
 from tests.fixtures.times import minutes_after_market_open, seconds_after_market_open
@@ -181,6 +182,29 @@ def make_social_context_flag(**overrides: object) -> ContextFlag:
     )
 
 
+def make_context_state_snapshot(
+    *,
+    ticker: str = "XOM",
+    sector: str | None = "oil",
+    index: int = 1,
+    trace_id: str = TRACE_ID_APPROVED_OIL,
+) -> ContextStateSnapshot:
+    """Return a fake context state snapshot for risk-decision ledger joins."""
+    return ContextStateSnapshot(
+        snapshot_time=seconds_after_market_open(index + 9),
+        ticker=ticker,
+        sector=sector,
+        active_indicator_ids=[stable_record_id("context_indicator", index)],
+        active_context_event_ids=[stable_record_id("context_event", index)],
+        active_context_flag_ids=[stable_record_id("context_flag", index)],
+        context_summary={"fixture": "context_state"},
+        highest_severity="normal",
+        risk_level="normal",
+        valid_until=minutes_after_market_open(15),
+        trace_id=trace_id,
+    )
+
+
 def build_context_examples() -> list[object]:
     """Return representative fake context records."""
     return [
@@ -192,5 +216,5 @@ def build_context_examples() -> list[object]:
         make_ai_news_context_flag(index=1),
         make_sec_context_flag(index=2),
         make_social_context_flag(index=3),
+        make_context_state_snapshot(index=1),
     ]
-
