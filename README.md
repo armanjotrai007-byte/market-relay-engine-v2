@@ -57,9 +57,10 @@ python scripts/check_environment.py
 ```
 
 The full local validation runner executes the environment health check, config
-validation, optional QuestDB health check, contract validation, fixture
-validation, local market-data checks, feature builder checks, feature parity
-checks, cost model checks, label builder checks, and then pytest:
+validation, optional QuestDB health check, QuestDB schema validation, contract
+validation, fixture validation, local market-data checks, feature builder
+checks, feature parity checks, cost model checks, label builder checks, and then
+pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -97,6 +98,34 @@ python scripts/check_questdb.py --required
 
 See `docs/questdb_health.md` for the bot-ledger-only scope and PR 12 schema
 note.
+
+## QuestDB Ledger Schema
+
+The official QuestDB V2 ledger schema lives at:
+
+```powershell
+db/schema/questdb_ledger_v1.sql
+```
+
+It is a destructive local-development reset for the bot ledger only. It drops
+old raw/PDF-era table names, drops existing V2 ledger tables, and recreates the
+V2 ledger schema. QuestDB must not store raw Databento market data or act as a
+historical market-data warehouse.
+
+Run the offline schema validation without QuestDB:
+
+```powershell
+python scripts/check_questdb_schema.py
+```
+
+On the server laptop, with QuestDB running, apply and validate the schema with:
+
+```powershell
+python scripts/check_questdb_schema.py --apply --required
+```
+
+See `docs/questdb_schema.md` for the table categories, context snapshot link,
+and scope restrictions.
 
 ## Core Contracts
 
