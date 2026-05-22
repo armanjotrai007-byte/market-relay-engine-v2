@@ -2,6 +2,7 @@ from market_relay_engine.contracts.context import (
     ContextAIEvent,
     ContextFlag,
     ContextIndicatorSnapshot,
+    ContextStateSnapshot,
 )
 from tests.unit.contract_test_utils import assert_contract_serializes, example_for
 
@@ -28,4 +29,14 @@ def test_context_flag_serializes_with_id() -> None:
 
     assert parsed["context_flag_id"]
     assert parsed["flag_type"] == "context_risk"
+    assert parsed["valid_until"].endswith("Z")
+
+
+def test_context_state_snapshot_serializes_with_id_lists_and_validity() -> None:
+    parsed = assert_contract_serializes(example_for(ContextStateSnapshot))
+
+    assert parsed["context_snapshot_id"]
+    assert parsed["ticker"] == "XOM"
+    assert parsed["active_indicator_ids"] == ["context_indicator_example"]
+    assert parsed["context_summary"] == {"summary": "example_only"}
     assert parsed["valid_until"].endswith("Z")
