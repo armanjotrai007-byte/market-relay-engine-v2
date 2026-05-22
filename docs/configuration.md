@@ -54,3 +54,7 @@ validation uses optional mode, while the server laptop should run:
 ```powershell
 python scripts/check_questdb.py --required
 ```
+
+The QuestDB writer uses the same HTTP host, port, scheme, and timeout defaults.
+It also has `QUESTDB_MAX_SQL_LENGTH_CHARS`, which defaults to `7000`, so large
+JSON payloads are rejected before the documented `/exec` GET path is used.
