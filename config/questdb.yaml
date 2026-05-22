@@ -24,15 +24,23 @@ health_check:
   required_by_default: false
 
 ledger_tables:
+  - bot_runs
+  - bot_sessions
+  - feature_snapshots
   - model_signals
+  - cost_estimates
+  - context_state_snapshots
   - risk_decisions
   - context_indicator_snapshots
   - context_ai_events
-  - orders
-  - fills
+  - context_flags
+  - order_events
+  - fill_events
   - trade_outcomes
   - latency_metrics
-  - system_health
+  - system_health_events
+  - ledger_write_errors
+  - jsonl_fallback_events
 
 forbidden_uses:
   - historical_databento_market_warehouse
