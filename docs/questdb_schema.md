@@ -62,6 +62,10 @@ The apply command uses QuestDB's documented `/exec` GET endpoint, sends one SQL
 statement at a time with `fmt=json`, fails fast on errors, and verifies the
 expected tables exist afterward.
 
+If schema apply fails mid-execution, the reset is destructive and may leave a
+partial schema. For local development, rerun the same schema apply command from
+scratch as the recovery path.
+
 ## Not Added
 
 PR 12 does not add:
