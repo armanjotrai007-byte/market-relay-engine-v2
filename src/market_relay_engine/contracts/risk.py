@@ -39,6 +39,7 @@ class RiskDecision:
     reduce_size_factor: float | None = None
     reasons: list[str] = field(default_factory=list)
     thresholds_used: dict[str, Any] = field(default_factory=dict)
+    cost_estimate_id: str | None = None
     context_snapshot_id: str | None = None
     risk_decision_id: str = field(default_factory=lambda: new_record_id("risk_decision"))
     schema_version: str = DEFAULT_SCHEMA_VERSION
@@ -47,4 +48,5 @@ class RiskDecision:
     def __post_init__(self) -> None:
         object.__setattr__(self, "decision_time", utc_datetime(self.decision_time))
         require_non_empty_string(self.risk_decision_id, "risk_decision_id")
+        require_optional_non_empty_string(self.cost_estimate_id, "cost_estimate_id")
         require_optional_non_empty_string(self.trace_id, "trace_id")
