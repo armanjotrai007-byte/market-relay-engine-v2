@@ -1,4 +1,4 @@
-# handoff.md â€” Trading System V2 Clean Handoff
+# handoff.md - Trading System V2 Clean Handoff
 
 ## Current Status
 
@@ -8,14 +8,15 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 13 - QuestDB Ledger Writer**
-- Branch: `pr13-questdb-ledger-writer`
-- Purpose: first simple QuestDB ledger writer.
-- Next PR after merge: **PR 14 - JSONL Fallback for Ledger Write Failures**
+- **PR 15 - QuestDB Ledger Readback and Basic Analysis**
+- Branch: `pr15-questdb-ledger-readback-analysis`
+- Purpose: read-only QuestDB ledger readback and basic summaries.
+- Note: PR 14 JSONL fallback is intentionally skipped for now.
+- Next PR after merge: **PR 16 - Structured Context Collectors Skeleton**
 
-Latest confirmed merged base before PR 13:
+Latest confirmed merged base before PR 15:
 
-- **PR 12 merge commit:** `5d54197db83069a24d978596f36e586c7d941a51`
+- **PR 13 merge commit:** `8e2fab7fe04a61399d3b587f06a95d76ed0e5c1d`
 
 Local workspace and publishing note:
 
@@ -34,12 +35,12 @@ Core flow:
 
 ```text
 Databento market data
-â†’ normalized MarketRecord
-â†’ canonical feature builder
-â†’ model signal
-â†’ deterministic risk filter
-â†’ Alpaca paper/live execution
-â†’ QuestDB bot ledger
+-> normalized MarketRecord
+-> canonical feature builder
+-> model signal
+-> deterministic risk filter
+-> Alpaca paper/live execution
+-> QuestDB bot ledger
 ```
 
 QuestDB is only the bot ledger. It must not be used as a historical market-data warehouse.
@@ -65,7 +66,7 @@ Historical market truth comes from official Databento historical DBN/Parquet fil
 
 ## Completed PRs
 
-### PR 1 â€” Clean Repo Skeleton
+### PR 1 - Clean Repo Skeleton
 
 Added:
 
@@ -82,7 +83,7 @@ Did not add external APIs, live trading, model code, QuestDB writes, or broker l
 
 ---
 
-### PR 2 â€” Config Organization and Validation
+### PR 2 - Config Organization and Validation
 
 Added:
 
@@ -107,7 +108,7 @@ Purpose:
 
 ---
 
-### PR 3 â€” Core Contracts + Timestamp Standards
+### PR 3 - Core Contracts + Timestamp Standards
 
 Added typed contracts for:
 
@@ -139,7 +140,7 @@ Define stable record shapes for the whole system.
 
 ---
 
-### PR 4 â€” Reusable Test Fixtures and Sample Records
+### PR 4 - Reusable Test Fixtures and Sample Records
 
 Added reusable fake fixture factories under:
 
@@ -168,7 +169,7 @@ No real Databento data was added.
 
 ---
 
-### PR 5 â€” Historical Databento Parquet Reader Stub
+### PR 5 - Historical Databento Parquet Reader Stub
 
 Added:
 
@@ -184,7 +185,7 @@ Create the local historical Parquet boundary:
 
 ```text
 official Databento historical Parquet
-â†’ MarketRecord
+-> MarketRecord
 ```
 
 Important behavior:
@@ -197,7 +198,7 @@ Important behavior:
 
 ---
 
-### PR 6 â€” DBN Inspection Utility
+### PR 6 - DBN Inspection Utility
 
 Merged into `main`.
 
@@ -452,34 +453,35 @@ PR 11 - QuestDB Health Check / Ledger Foundation
 
 ## Current PR
 
-### PR 13 - QuestDB Ledger Writer
+### PR 15 - QuestDB Ledger Readback and Basic Analysis
 
 Branch:
 
 ```text
-pr13-questdb-ledger-writer
+pr15-questdb-ledger-readback-analysis
 ```
 
 Purpose:
 
-Create the first simple QuestDB V2 bot-ledger writer.
+Create a read-only QuestDB V2 bot-ledger readback and basic analysis layer.
 
 Added:
 
-- QuestDB writer module with whitelisted INSERT builder and `/exec` GET writes
-- explicit row mappers for existing contract/cost records
-- minimal `ContextStateSnapshot` contract
-- offline writer check and required real write check
-- writer docs and unit tests
+- QuestDB analysis module with read-only `/exec` GET queries
+- conservative SQL guard that rejects semicolons and write/schema tokens
+- basic ledger summaries for signals, risk, costs, execution, outcomes, and health
+- offline analysis check and required real local QuestDB summary check
+- analysis docs and unit tests
 
 Key behavior:
 
 - QuestDB remains bot ledger only.
-- Default writer check is offline and does not require QuestDB.
-- Required writer check writes tiny test rows after health/schema validation.
-- SQL strings are escaped and control characters are sanitized.
-- Oversized SQL raises before `/exec` GET so PR 14 can add fallback.
-- Mappers generate and preserve `write_time` for future replay.
+- PR 15 is read-only and does not modify schema or write rows.
+- PR 14 JSONL fallback is intentionally skipped for now.
+- Default analysis check is offline and does not require QuestDB.
+- Required analysis check runs read-only summaries after health/schema/writer validation.
+- Stacked SQL statements with semicolons are rejected.
+- Oversized encoded `/exec` GET URLs raise before requests are sent.
 
 Explicitly not added:
 
@@ -487,17 +489,20 @@ Explicitly not added:
 - retries or queues
 - async/background writing
 - batching
+- dashboards or charts
+- pandas
 - raw market-data tables
 - Databento API
 - Alpaca or broker execution
 - live trading
 - model training
-- risk engine logic
+- automatic risk tuning or risk engine logic
+- schema migrations or TTL changes
 
 Next PR:
 
 ```text
-PR 14 - JSONL Fallback for Ledger Write Failures
+PR 16 - Structured Context Collectors Skeleton
 ```
 
 ---
@@ -512,6 +517,7 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_questdb.py
 .\.venv\Scripts\python.exe scripts/check_questdb_schema.py
 .\.venv\Scripts\python.exe scripts/check_questdb_writer.py
+.\.venv\Scripts\python.exe scripts/check_questdb_analysis.py
 .\.venv\Scripts\python.exe scripts/check_contracts.py
 .\.venv\Scripts\python.exe scripts/check_fixtures.py
 .\.venv\Scripts\python.exe scripts/check_historical_parquet.py
@@ -530,6 +536,7 @@ With QuestDB running on the server laptop, also run:
 .\.venv\Scripts\python.exe scripts/check_questdb.py --required
 .\.venv\Scripts\python.exe scripts/check_questdb_schema.py --apply --required
 .\.venv\Scripts\python.exe scripts/check_questdb_writer.py --required
+.\.venv\Scripts\python.exe scripts/check_questdb_analysis.py --required
 ```
 
 ---
@@ -576,10 +583,12 @@ DBN inspector:
 src/market_relay_engine/market_data/dbn_inspector.py
 ```
 
-QuestDB health:
+QuestDB:
 
 ```text
 src/market_relay_engine/questdb/health.py
+src/market_relay_engine/questdb/writer.py
+src/market_relay_engine/questdb/analysis.py
 ```
 
 Fixtures:
@@ -602,6 +611,7 @@ scripts/check_feature_parity.py
 scripts/check_cost_model.py
 scripts/check_label_builder.py
 scripts/check_questdb.py
+scripts/check_questdb_analysis.py
 scripts/run_tests.ps1
 ```
 
@@ -619,6 +629,7 @@ docs/label_builder.md
 docs/questdb_health.md
 docs/questdb_schema.md
 docs/questdb_writer.md
+docs/questdb_analysis.md
 docs/configuration.md
 ```
 
@@ -626,13 +637,14 @@ docs/configuration.md
 
 ## Next Steps
 
-1. Review PR 13 on GitHub after it is opened.
-2. Check out or pull branch `pr13-questdb-ledger-writer` on the
+1. Review PR 15 on GitHub after it is opened.
+2. Check out or pull branch `pr15-questdb-ledger-readback-analysis` on the
    server laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation
    section.
 4. Run `scripts/check_questdb.py --required` and
    `scripts/check_questdb_schema.py --apply --required` and
-   `scripts/check_questdb_writer.py --required` with QuestDB running.
-5. Merge PR 13 if review and server-laptop validation are clean.
-6. Start PR 14 - JSONL Fallback for Ledger Write Failures.
+   `scripts/check_questdb_writer.py --required` and
+   `scripts/check_questdb_analysis.py --required` with QuestDB running.
+5. Merge PR 15 if review and server-laptop validation are clean.
+6. Start PR 16 - Structured Context Collectors Skeleton.
