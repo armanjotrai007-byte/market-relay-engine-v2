@@ -10,3 +10,4 @@ def test_risk_decision_serializes_enum_reasons_and_thresholds() -> None:
     assert parsed["approved"] is False
     assert parsed["reasons"] == ["example_only"]
     assert parsed["thresholds_used"]["max_spread_bps"] == 10
+    assert parsed["cost_estimate_id"] == "cost_estimate_example"
