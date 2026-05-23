@@ -58,3 +58,6 @@ python scripts/check_questdb.py --required
 The QuestDB writer uses the same HTTP host, port, scheme, and timeout defaults.
 It also has `QUESTDB_MAX_SQL_LENGTH_CHARS`, which defaults to `7000`, so large
 JSON payloads are rejected before the documented `/exec` GET path is used.
+The QuestDB analysis reader is read-only and uses the same connection defaults.
+It also has `QUESTDB_ANALYSIS_MAX_ENCODED_URL_LENGTH_CHARS`, which defaults to
+`7000`, so oversized readback URLs are rejected before `/exec` is called.
