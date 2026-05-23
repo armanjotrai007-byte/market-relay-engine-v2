@@ -186,6 +186,17 @@ def build_questdb_write_exec_url(config: QuestDBWriteConfig) -> str:
     return f"{config.http_scheme}://{config.http_host}:{config.http_port}/exec"
 
 
+def encoded_exec_url_length(exec_url: str, sql: str) -> int:
+    """Return the encoded GET URL length for a QuestDB /exec query."""
+    request = requests.Request(
+        "GET",
+        exec_url,
+        params={"query": sql, "fmt": "json"},
+    )
+    prepared = request.prepare()
+    return len(prepared.url or "")
+
+
 def sanitize_sql_string(value: str) -> str:
     """Return a simple SQL-safe string body without adding quote delimiters."""
     if not isinstance(value, str):
@@ -259,10 +270,11 @@ class QuestDBLedgerWriter:
 
     def write_row(self, table_name: str, row: Mapping[str, Any]) -> QuestDBWriteResult:
         sql = build_insert_sql(table_name, row)
-        if len(sql) > self.config.max_sql_length_chars:
+        encoded_length = encoded_exec_url_length(self.exec_url, sql)
+        if encoded_length > self.config.max_sql_length_chars:
             raise QuestDBWriteError(
-                "SQL is too long for safe /exec GET; PR14 fallback or a future "
-                "bulk ingestion path is required",
+                "encoded /exec GET request is too long for safe /exec GET; "
+                "PR14 fallback or a future bulk ingestion path is required",
                 table_name=table_name,
             )
 
@@ -753,25 +765,45 @@ def _load_yaml_write_values(config_path: Path) -> dict[str, Any]:
     if not isinstance(loaded, dict):
         raise QuestDBWriteError("QuestDB YAML config must be a mapping")
 
-    connection = loaded.get("connection", {}) or {}
-    health_check = loaded.get("health_check", {}) or {}
-    writer = loaded.get("writer", {}) or {}
-    for name, section in {
-        "connection": connection,
-        "health_check": health_check,
-        "writer": writer,
-    }.items():
-        if not isinstance(section, dict):
-            raise QuestDBWriteError(f"questdb.yaml {name} section must be a mapping")
+    connection = _yaml_section_mapping(loaded, "connection")
+    health_check = _yaml_section_mapping(loaded, "health_check")
+    writer = _yaml_section_mapping(loaded, "writer")
 
     return {
-        "http_scheme": connection.get("default_http_scheme") or writer.get("http_scheme"),
-        "http_host": connection.get("default_http_host") or writer.get("http_host"),
-        "http_port": connection.get("default_http_port") or writer.get("http_port"),
-        "timeout_seconds": connection.get("default_health_timeout_seconds") or writer.get("timeout_seconds"),
+        "http_scheme": _yaml_value(writer, "http_scheme", connection, "default_http_scheme"),
+        "http_host": _yaml_value(writer, "http_host", connection, "default_http_host"),
+        "http_port": _yaml_value(writer, "http_port", connection, "default_http_port"),
+        "timeout_seconds": _yaml_value(
+            writer,
+            "timeout_seconds",
+            connection,
+            "default_health_timeout_seconds",
+        ),
         "required": writer.get("required_by_default", health_check.get("required_by_default")),
         "max_sql_length_chars": writer.get("max_sql_length_chars"),
     }
+
+
+def _yaml_section_mapping(loaded: Mapping[str, Any], name: str) -> dict[str, Any]:
+    section = loaded.get(name, {})
+    if section is None:
+        return {}
+    if not isinstance(section, dict):
+        raise QuestDBWriteError(f"questdb.yaml {name} section must be a mapping")
+    return section
+
+
+def _yaml_value(
+    primary: Mapping[str, Any],
+    primary_key: str,
+    fallback: Mapping[str, Any],
+    fallback_key: str,
+) -> Any:
+    if primary_key in primary and primary[primary_key] is not None:
+        return primary[primary_key]
+    if fallback_key in fallback and fallback[fallback_key] is not None:
+        return fallback[fallback_key]
+    return None
 
 
 def _optional_bool_from_env(value: str | None, env_name: str) -> bool | None:
