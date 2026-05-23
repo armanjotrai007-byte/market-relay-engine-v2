@@ -16,6 +16,7 @@ def test_common_utilities_import() -> None:
 def test_questdb_health_import() -> None:
     assert importlib.import_module("market_relay_engine.questdb.health")
     assert importlib.import_module("market_relay_engine.questdb.writer")
+    assert importlib.import_module("market_relay_engine.questdb.analysis")
 
 
 def test_contract_modules_import() -> None:

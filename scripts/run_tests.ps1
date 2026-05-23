@@ -44,6 +44,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running QuestDB analysis validation..."
+& $Python scripts/check_questdb_analysis.py
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 Write-Host "Running contract validation..."
 & $Python scripts/check_contracts.py
 if ($LASTEXITCODE -ne 0) {

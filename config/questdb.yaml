@@ -29,6 +29,12 @@ writer:
   required_by_default: false
   max_sql_length_chars: 7000
 
+analysis:
+  endpoint: /exec
+  method: GET
+  required_by_default: false
+  max_encoded_url_length_chars: 7000
+
 ledger_tables:
   - bot_runs
   - bot_sessions
