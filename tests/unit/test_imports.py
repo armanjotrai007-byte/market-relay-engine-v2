@@ -19,6 +19,13 @@ def test_questdb_health_import() -> None:
     assert importlib.import_module("market_relay_engine.questdb.analysis")
 
 
+def test_risk_filter_import() -> None:
+    assert importlib.import_module("market_relay_engine.risk")
+    assert importlib.import_module("market_relay_engine.risk.risk_filter")
+    assert importlib.import_module("market_relay_engine.risk.rules")
+    assert importlib.import_module("market_relay_engine.risk.decisions")
+
+
 def test_contract_modules_import() -> None:
     assert importlib.import_module("market_relay_engine.contracts")
     assert importlib.import_module("market_relay_engine.contracts.base")
