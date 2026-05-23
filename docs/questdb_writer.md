@@ -27,11 +27,14 @@ has not been proven to support POST for this path.
 
 ## Safety Guards
 
-`QuestDBWriteConfig.max_sql_length_chars` defaults to `7000`. If an INSERT is
-larger than that, the writer raises `QuestDBWriteError` before sending the
-request. Oversized rows are not truncated, and JSON fields are not dropped.
-PR 14 is expected to add JSONL fallback for failed or oversized ledger writes;
-a future bulk ingestion path can handle larger payloads later.
+`QuestDBWriteConfig.max_sql_length_chars` defaults to `7000`. The guard is
+checked against the encoded `/exec` GET URL, not just the raw SQL string,
+because spaces, quotes, JSON punctuation, and timestamps expand when sent as
+query parameters. If the encoded request is larger than the configured limit,
+the writer raises `QuestDBWriteError` before sending the request. Oversized rows
+are not truncated, and JSON fields are not dropped. PR 14 is expected to add
+JSONL fallback for failed or oversized ledger writes; a future bulk ingestion
+path can handle larger payloads later.
 
 String literals are sanitized before SQL quoting:
 
