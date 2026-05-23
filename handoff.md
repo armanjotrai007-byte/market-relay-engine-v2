@@ -64,6 +64,12 @@ Historical market truth comes from official Databento historical DBN/Parquet fil
 
 ---
 
+## Compatibility Notes
+
+PR8 feature parity note: historical batch sorting vs live arrival order must remain documented because historical replay sorts by event_time while live processing preserves arrival order.
+
+---
+
 ## Current PR
 
 ### PR 16 - Risk Filter V1
