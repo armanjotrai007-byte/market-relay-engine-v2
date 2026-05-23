@@ -89,6 +89,7 @@ def build_contract_examples() -> list[Any]:
         reduce_size_factor=None,
         reasons=["example_only"],
         thresholds_used={"max_spread_bps": 10},
+        cost_estimate_id="cost_estimate_example",
         context_snapshot_id=context_state.context_snapshot_id,
         risk_version="risk_v0_placeholder",
         trace_id=trace_id,
