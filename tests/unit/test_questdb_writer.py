@@ -36,6 +36,7 @@ from market_relay_engine.questdb.writer import (
     context_indicator_snapshot_to_row,
     context_state_snapshot_to_row,
     cost_estimate_to_row,
+    encoded_exec_url_length,
     feature_snapshot_to_row,
     fill_event_to_row,
     latency_metric_to_row,
@@ -150,6 +151,7 @@ def test_load_write_config_uses_env_max_sql_length(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    _clear_write_env(monkeypatch)
     monkeypatch.setenv("QUESTDB_MAX_SQL_LENGTH_CHARS", "1234")
 
     config = load_questdb_write_config(
@@ -158,6 +160,122 @@ def test_load_write_config_uses_env_max_sql_length(
     )
 
     assert config.max_sql_length_chars == 1234
+
+
+def test_load_write_config_writer_yaml_overrides_connection_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_write_env(monkeypatch)
+    config_path = tmp_path / "questdb.yaml"
+    config_path.write_text(
+        """
+connection:
+  default_http_scheme: http
+  default_http_host: connection-host
+  default_http_port: 9000
+  default_health_timeout_seconds: 3.0
+writer:
+  http_scheme: https
+  http_host: writer-host
+  http_port: 9100
+  timeout_seconds: 4.5
+""",
+        encoding="utf-8",
+    )
+
+    config = load_questdb_write_config(config_path, load_dotenv_file=False)
+
+    assert config.http_scheme == "https"
+    assert config.http_host == "writer-host"
+    assert config.http_port == 9100
+    assert config.timeout_seconds == 4.5
+
+
+def test_load_write_config_yaml_falls_back_to_connection_defaults(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_write_env(monkeypatch)
+    config_path = tmp_path / "questdb.yaml"
+    config_path.write_text(
+        """
+connection:
+  default_http_host: connection-host
+  default_http_port: 9000
+  default_health_timeout_seconds: 2.5
+writer:
+  max_sql_length_chars: 5000
+""",
+        encoding="utf-8",
+    )
+
+    config = load_questdb_write_config(config_path, load_dotenv_file=False)
+
+    assert config.http_host == "connection-host"
+    assert config.http_port == 9000
+    assert config.timeout_seconds == 2.5
+    assert config.max_sql_length_chars == 5000
+
+
+def test_load_write_config_empty_writer_value_does_not_fall_back(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_write_env(monkeypatch)
+    config_path = tmp_path / "questdb.yaml"
+    config_path.write_text(
+        """
+connection:
+  default_http_host: connection-host
+writer:
+  http_host: ""
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(QuestDBWriteError, match="http_host"):
+        load_questdb_write_config(config_path, load_dotenv_file=False)
+
+
+def test_load_write_config_env_and_explicit_override_yaml(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_write_env(monkeypatch)
+    config_path = tmp_path / "questdb.yaml"
+    config_path.write_text(
+        """
+connection:
+  default_http_host: connection-host
+writer:
+  http_host: writer-host
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("QUESTDB_HTTP_HOST", "env-host")
+
+    env_config = load_questdb_write_config(config_path, load_dotenv_file=False)
+    explicit_config = load_questdb_write_config(
+        config_path,
+        http_host="explicit-host",
+        load_dotenv_file=False,
+    )
+
+    assert env_config.http_host == "env-host"
+    assert explicit_config.http_host == "explicit-host"
+
+
+def test_encoded_exec_url_length_exceeds_raw_sql_for_encoded_values() -> None:
+    sql = build_insert_sql(
+        "feature_snapshots",
+        {
+            "snapshot_time": EXAMPLE_TIME,
+            "features_json": {"summary": "Fed's rate hike with spaces"},
+        },
+    )
+
+    assert encoded_exec_url_length("http://localhost:9000/exec", sql) > len(sql)
 
 
 def test_write_row_success_uses_get_exec_with_fmt_json(
@@ -212,6 +330,31 @@ def test_write_row_rejects_long_sql_before_request(
                 "message": "x" * 200,
             },
         )
+
+    assert calls == []
+
+
+def test_write_row_rejects_encoded_url_over_limit_when_raw_sql_is_under_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    row = {
+        "snapshot_time": EXAMPLE_TIME,
+        "features_json": {"summary": "Fed's rate hike with spaces"},
+    }
+    raw_sql = build_insert_sql("feature_snapshots", row)
+
+    def fake_get(*args: object, **kwargs: object) -> FakeResponse:
+        calls.append("called")
+        return FakeResponse(200, {"ddl": "OK"})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    writer = QuestDBLedgerWriter(
+        QuestDBWriteConfig(max_sql_length_chars=len(raw_sql) + 1)
+    )
+
+    with pytest.raises(QuestDBWriteError, match="encoded /exec GET request"):
+        writer.write_raw_row("feature_snapshots", row)
 
     assert calls == []
 
@@ -525,3 +668,15 @@ def _context_state() -> ContextStateSnapshot:
         risk_level="normal",
         valid_until=EXAMPLE_TIME + timedelta(minutes=30),
     )
+
+
+def _clear_write_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "QUESTDB_HTTP_SCHEME",
+        "QUESTDB_HTTP_HOST",
+        "QUESTDB_HTTP_PORT",
+        "QUESTDB_HEALTH_TIMEOUT_SECONDS",
+        "QUESTDB_WRITE_REQUIRED",
+        "QUESTDB_MAX_SQL_LENGTH_CHARS",
+    ):
+        monkeypatch.delenv(name, raising=False)
