@@ -14,6 +14,7 @@ The contracts standardize how future layers will pass and log facts:
 - model signals, including blocked or ignored signals
 - deterministic risk decisions
 - structured context indicators, AI context events, and context flags
+- context state snapshots seen by the deterministic risk gate
 - order and fill events for paper execution metrics
 - trade outcomes, latency metrics, and system health records
 
@@ -48,8 +49,8 @@ the record IDs that are needed later for ledger joins and weekly analysis.
 - `session_id`: one paper/live session.
 - `trace_id`: correlates related records across components.
 - Record IDs include `feature_snapshot_id`, `signal_id`, `risk_decision_id`,
-  `context_event_id`, `context_flag_id`, `order_id`, `fill_id`, `outcome_id`,
-  `latency_metric_id`, and `health_event_id`.
+  `context_snapshot_id`, `context_event_id`, `context_flag_id`, `order_id`,
+  `fill_id`, `outcome_id`, `latency_metric_id`, and `health_event_id`.
 
 ## Contract List
 
@@ -60,6 +61,8 @@ the record IDs that are needed later for ledger joins and weekly analysis.
 - `ContextIndicatorSnapshot`: structured context indicator snapshot.
 - `ContextAIEvent`: structured AI-context output shape, without AI calls.
 - `ContextFlag`: risk flag shape for future context and risk layers.
+- `ContextStateSnapshot`: typed context state row for the QuestDB
+  `context_state_snapshots` ledger table, without building a context cache.
 - `OrderEvent`: order event shape, without broker placement.
 - `FillEvent`: fill event shape, without broker integration.
 - `TradeOutcome`: future trade result and return measurement shape.

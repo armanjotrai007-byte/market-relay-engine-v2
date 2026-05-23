@@ -5,6 +5,7 @@ from market_relay_engine.contracts.context import (
     ContextAIEvent,
     ContextFlag,
     ContextIndicatorSnapshot,
+    ContextStateSnapshot,
 )
 from market_relay_engine.contracts.execution import (
     FillEvent,
@@ -25,6 +26,7 @@ __all__ = [
     "ContextAIEvent",
     "ContextFlag",
     "ContextIndicatorSnapshot",
+    "ContextStateSnapshot",
     "FeatureSnapshot",
     "FillEvent",
     "LatencyMetric",

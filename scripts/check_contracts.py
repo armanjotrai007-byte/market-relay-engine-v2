@@ -23,6 +23,7 @@ from market_relay_engine.contracts.context import (  # noqa: E402
     ContextAIEvent,
     ContextFlag,
     ContextIndicatorSnapshot,
+    ContextStateSnapshot,
 )
 from market_relay_engine.contracts.execution import (  # noqa: E402
     FillEvent,
@@ -66,6 +67,19 @@ def build_contract_examples() -> list[Any]:
         feature_snapshot_id=feature_snapshot.feature_snapshot_id,
         trace_id=trace_id,
     )
+    context_state = ContextStateSnapshot(
+        snapshot_time=EXAMPLE_TIME,
+        ticker="XOM",
+        sector="oil",
+        active_indicator_ids=["context_indicator_example"],
+        active_context_event_ids=["context_event_example"],
+        active_context_flag_ids=["context_flag_example"],
+        context_summary={"summary": "example_only"},
+        highest_severity="normal",
+        risk_level="normal",
+        valid_until=EXAMPLE_TIME + timedelta(minutes=30),
+        trace_id=trace_id,
+    )
     risk_decision = RiskDecision(
         decision_time=EXAMPLE_TIME,
         ticker="XOM",
@@ -75,6 +89,7 @@ def build_contract_examples() -> list[Any]:
         reduce_size_factor=None,
         reasons=["example_only"],
         thresholds_used={"max_spread_bps": 10},
+        context_snapshot_id=context_state.context_snapshot_id,
         risk_version="risk_v0_placeholder",
         trace_id=trace_id,
     )
@@ -123,6 +138,7 @@ def build_contract_examples() -> list[Any]:
         ),
         feature_snapshot,
         model_signal,
+        context_state,
         risk_decision,
         ContextIndicatorSnapshot(
             snapshot_time=EXAMPLE_TIME,

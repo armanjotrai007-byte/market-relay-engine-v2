@@ -8,14 +8,14 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 12 - QuestDB Ledger Schema SQL**
-- Branch: `pr12-questdb-ledger-schema-sql`
-- Purpose: official QuestDB V2 ledger schema SQL.
-- Next PR after merge: **PR 13 - QuestDB Ledger Writer**
+- **PR 13 - QuestDB Ledger Writer**
+- Branch: `pr13-questdb-ledger-writer`
+- Purpose: first simple QuestDB ledger writer.
+- Next PR after merge: **PR 14 - JSONL Fallback for Ledger Write Failures**
 
-Latest confirmed merged base before PR 12:
+Latest confirmed merged base before PR 13:
 
-- **PR 11 merge commit:** `69384aeac7ed6ef5d4a0091f602956fb4181904f`
+- **PR 12 merge commit:** `5d54197db83069a24d978596f36e586c7d941a51`
 
 Local workspace and publishing note:
 
@@ -452,48 +452,52 @@ PR 11 - QuestDB Health Check / Ledger Foundation
 
 ## Current PR
 
-### PR 12 - QuestDB Ledger Schema SQL
+### PR 13 - QuestDB Ledger Writer
 
 Branch:
 
 ```text
-pr12-questdb-ledger-schema-sql
+pr13-questdb-ledger-writer
 ```
 
 Purpose:
 
-Create the official QuestDB V2 ledger schema SQL.
+Create the first simple QuestDB V2 bot-ledger writer.
 
 Added:
 
-- destructive local-dev reset schema at `db/schema/questdb_ledger_v1.sql`
-- offline schema validation and optional apply script
-- schema docs and tests
+- QuestDB writer module with whitelisted INSERT builder and `/exec` GET writes
+- explicit row mappers for existing contract/cost records
+- minimal `ContextStateSnapshot` contract
+- offline writer check and required real write check
+- writer docs and unit tests
 
 Key behavior:
 
 - QuestDB remains bot ledger only.
-- The schema drops and recreates V2 ledger tables for local setup.
-- Default schema check is offline and does not require QuestDB.
-- Optional real apply uses one documented `/exec` GET request per SQL statement.
-- `context_state_snapshots` resolves `risk_decisions.context_snapshot_id`.
+- Default writer check is offline and does not require QuestDB.
+- Required writer check writes tiny test rows after health/schema validation.
+- SQL strings are escaped and control characters are sanitized.
+- Oversized SQL raises before `/exec` GET so PR 14 can add fallback.
+- Mappers generate and preserve `write_time` for future replay.
 
 Explicitly not added:
 
-- ledger writer
-- inserts from app code
+- JSONL fallback
+- retries or queues
+- async/background writing
+- batching
 - raw market-data tables
 - Databento API
 - Alpaca or broker execution
 - live trading
-- JSONL fallback implementation
 - model training
 - risk engine logic
 
 Next PR:
 
 ```text
-PR 13 - QuestDB Ledger Writer
+PR 14 - JSONL Fallback for Ledger Write Failures
 ```
 
 ---
@@ -507,6 +511,7 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_config.py
 .\.venv\Scripts\python.exe scripts/check_questdb.py
 .\.venv\Scripts\python.exe scripts/check_questdb_schema.py
+.\.venv\Scripts\python.exe scripts/check_questdb_writer.py
 .\.venv\Scripts\python.exe scripts/check_contracts.py
 .\.venv\Scripts\python.exe scripts/check_fixtures.py
 .\.venv\Scripts\python.exe scripts/check_historical_parquet.py
@@ -524,6 +529,7 @@ With QuestDB running on the server laptop, also run:
 ```powershell
 .\.venv\Scripts\python.exe scripts/check_questdb.py --required
 .\.venv\Scripts\python.exe scripts/check_questdb_schema.py --apply --required
+.\.venv\Scripts\python.exe scripts/check_questdb_writer.py --required
 ```
 
 ---
@@ -611,6 +617,8 @@ docs/feature_parity.md
 docs/cost_model.md
 docs/label_builder.md
 docs/questdb_health.md
+docs/questdb_schema.md
+docs/questdb_writer.md
 docs/configuration.md
 ```
 
@@ -618,12 +626,13 @@ docs/configuration.md
 
 ## Next Steps
 
-1. Review PR 12 on GitHub after it is opened.
-2. Check out or pull branch `pr12-questdb-ledger-schema-sql` on the
+1. Review PR 13 on GitHub after it is opened.
+2. Check out or pull branch `pr13-questdb-ledger-writer` on the
    server laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation
    section.
 4. Run `scripts/check_questdb.py --required` and
-   `scripts/check_questdb_schema.py --apply --required` with QuestDB running.
-5. Merge PR 12 if review and server-laptop validation are clean.
-6. Start PR 13 - QuestDB Ledger Writer.
+   `scripts/check_questdb_schema.py --apply --required` and
+   `scripts/check_questdb_writer.py --required` with QuestDB running.
+5. Merge PR 13 if review and server-laptop validation are clean.
+6. Start PR 14 - JSONL Fallback for Ledger Write Failures.

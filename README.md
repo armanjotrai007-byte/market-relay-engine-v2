@@ -58,9 +58,9 @@ python scripts/check_environment.py
 
 The full local validation runner executes the environment health check, config
 validation, optional QuestDB health check, QuestDB schema validation, contract
-validation, fixture validation, local market-data checks, feature builder
-checks, feature parity checks, cost model checks, label builder checks, and then
-pytest:
+validation, QuestDB writer validation, fixture validation, local market-data
+checks, feature builder checks, feature parity checks, cost model checks, label
+builder checks, and then pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -126,6 +126,26 @@ python scripts/check_questdb_schema.py --apply --required
 
 See `docs/questdb_schema.md` for the table categories, context snapshot link,
 and scope restrictions.
+
+## QuestDB Ledger Writer
+
+The QuestDB ledger writer maps existing project records into PR 12 V2 ledger
+tables and writes one safe `INSERT` at a time through the documented `/exec` GET
+path. Offline validation does not require QuestDB:
+
+```powershell
+python scripts/check_questdb_writer.py
+```
+
+On the server laptop, run the required writer check only after health and schema
+validation:
+
+```powershell
+python scripts/check_questdb_writer.py --required
+```
+
+See `docs/questdb_writer.md` for SQL length limits, escaping behavior, and PR 14
+fallback notes.
 
 ## Core Contracts
 
