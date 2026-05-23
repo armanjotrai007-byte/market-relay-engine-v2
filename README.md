@@ -57,10 +57,10 @@ python scripts/check_environment.py
 ```
 
 The full local validation runner executes the environment health check, config
-validation, optional QuestDB health check, QuestDB schema validation, contract
-validation, QuestDB writer validation, fixture validation, local market-data
-checks, feature builder checks, feature parity checks, cost model checks, label
-builder checks, and then pytest:
+validation, optional QuestDB health check, QuestDB schema validation, QuestDB
+writer validation, QuestDB analysis validation, contract validation, fixture
+validation, local market-data checks, feature builder checks, feature parity
+checks, cost model checks, label builder checks, and then pytest:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
@@ -146,6 +146,28 @@ python scripts/check_questdb_writer.py --required
 
 See `docs/questdb_writer.md` for SQL length limits, escaping behavior, and PR 14
 fallback notes.
+
+## QuestDB Ledger Analysis
+
+The QuestDB ledger analysis reader is read-only. It runs small `SELECT`/`WITH`
+queries against existing PR 12 ledger tables through the documented `/exec` GET
+path and produces basic counts, slippage, PnL, risk, and system health
+summaries. It does not modify schema, write rows, tune risk, train models, or
+trade.
+
+Validate analysis behavior without QuestDB:
+
+```powershell
+python scripts/check_questdb_analysis.py
+```
+
+On the server laptop, after required health, schema, and writer checks:
+
+```powershell
+python scripts/check_questdb_analysis.py --required
+```
+
+See `docs/questdb_analysis.md` for read-only SQL guardrails and scope.
 
 ## Core Contracts
 
