@@ -10,7 +10,7 @@ Build a local AI-assisted trading research and paper/live execution system.
 
 The system uses Databento live DBN market data to build market features for a trained neural-network signal model. A deterministic Python risk filter then approves, blocks, or reduces trades using market conditions, structured context, AI-generated context flags, portfolio state, and execution limits. Alpaca is used for execution, starting with paper trading. QuestDB is used only as a live bot ledger / black-box recorder, not as a historical market-data warehouse.
 
-## Non-Negotiable Architecture Rules
+## Non-Negotiable Architecture Rules 
 
 1. Do not use QuestDB as a historical Databento market-data warehouse.
 2. Historical market truth comes from official Databento historical Parquets or DBN converted to Parquet using Databento tooling.
