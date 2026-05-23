@@ -25,6 +25,7 @@ from tests.fixtures.model_signals import make_model_signal
 
 
 EVALUATION_TIME = datetime(2024, 1, 2, 15, 30, tzinfo=UTC)
+_DEFAULT_COST = object()
 
 
 def test_existing_risk_limits_yaml_loads_successfully() -> None:
@@ -236,7 +237,7 @@ def _evaluate(
     *,
     signal=None,
     market: MarketRiskInput | None = None,
-    cost_estimate: object | None = None,
+    cost_estimate: object = _DEFAULT_COST,
     cost_estimate_id: str | None = None,
     context: ContextRiskInput | None = None,
     account: AccountRiskInput | None = None,
@@ -245,9 +246,11 @@ def _evaluate(
     config: RiskFilterConfig | None = None,
 ) -> RiskDecision:
     resolved_signal = signal or make_model_signal()
-    resolved_cost = _cost(ticker=resolved_signal.ticker, side=resolved_signal.signal) if cost_estimate is None else cost_estimate
-    if cost_estimate is None and cost_estimate_id is None:
-        resolved_cost = _cost(ticker=resolved_signal.ticker, side=resolved_signal.signal)
+    resolved_cost = (
+        _cost(ticker=resolved_signal.ticker, side=resolved_signal.signal)
+        if cost_estimate is _DEFAULT_COST
+        else cost_estimate
+    )
     return evaluate_risk(
         signal=resolved_signal,
         market=market or _market(ticker=resolved_signal.ticker),
