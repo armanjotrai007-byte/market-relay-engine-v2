@@ -8,11 +8,12 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 16 - Risk Filter V1**
-- Branch: `pr16-risk-filter-v1`
-- Purpose: deterministic final risk gate for existing model signals.
-- Adds simple market, cost, context, account, and portfolio placeholder inputs.
-- Next PR after merge: **PR 17 - Risk Decision Logging**
+- **PR 17 - Risk Decision Logging**
+- Branch: `pr17-risk-decision-logging`
+- Purpose: log every `RiskDecision` through a simple writer interface.
+- Safety exclusions: no Alpaca, live trading, model inference, external
+  collectors, async services, JSONL fallback, or new heavy dependencies.
+- Next PR after merge: **PR 18 - Order Manager V1**
 
 Latest confirmed merged base before PR 15:
 
@@ -72,53 +73,54 @@ PR8 feature parity note: historical batch sorting vs live arrival order must rem
 
 ## Current PR
 
-### PR 16 - Risk Filter V1
+### PR 17 - Risk Decision Logging
 
 Branch:
 
 ```text
-pr16-risk-filter-v1
+pr17-risk-decision-logging
 ```
 
 Purpose:
 
-Add a deterministic Risk Filter V1 that evaluates an existing `ModelSignal`,
-PR9 `CostEstimate`, simple market quality facts, generic context risk booleans,
-and account/portfolio placeholder inputs into a `RiskDecision`.
+Log every `RiskDecision` through a simple writer interface after PR16 produces
+the decision.
 
 Key behavior:
 
-- BUY and SELL entry signals require a profitable cost estimate when configured.
-- HOLD and DO_NOTHING return `DO_NOTHING`.
-- EXIT returns `EXIT` and bypasses entry blocking checks.
-- Market data staleness uses explicit `evaluation_time - market_data_time`.
-- Context risk is generic only: event window, high risk, elevated risk, optional
-  snapshot ID, and machine-readable reasons.
-- REDUCE_SIZE is conditionally approved and requires downstream consumers to
-  apply `reduce_size_factor`.
-- `thresholds_used` records only the decision-relevant rule data.
+- `evaluate_risk(...)` remains pure and deterministic.
+- Logging is opt-in through `log_risk_decision(...)` or
+  `evaluate_risk_and_log(...)`.
+- Logging returns `RiskDecisionLogResult` so callers can inspect both the
+  decision and ledger write outcome.
+- Approved, blocked, reduced-size, exit, and do-nothing decisions can all be
+  logged.
+- Logging uses a generic writer protocol, not a direct QuestDB dependency in
+  risk logic.
+- Writer failures are explicit and non-raising by default.
+- EXIT decisions remain available to future execution logic even if logging
+  fails.
 
 Explicitly not added:
 
 - Alpaca
-- broker execution
-- QuestDB writes
 - live trading
 - model inference
 - model training
 - AI calls
 - external context collectors
-- EIA/FRED/USAspending/SEC/yfinance logic
 - order manager
 - full account state
 - full portfolio state
 - async/background services
+- JSONL fallback
+- retries/queues
 - new heavy dependencies
 
 Next PR:
 
 ```text
-PR 17 - Risk Decision Logging
+PR 18 - Order Manager V1
 ```
 
 ---
@@ -143,6 +145,7 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_cost_model.py
 .\.venv\Scripts\python.exe scripts/check_label_builder.py
 .\.venv\Scripts\python.exe scripts/check_risk_filter.py
+.\.venv\Scripts\python.exe scripts/check_risk_logging.py
 .\.venv\Scripts\python.exe -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
@@ -160,13 +163,16 @@ With QuestDB running on the server laptop, also run:
 
 ## Files To Know
 
-Risk filter:
+Risk:
 
 ```text
 src/market_relay_engine/risk/
 docs/risk_filter.md
+docs/risk_logging.md
 scripts/check_risk_filter.py
+scripts/check_risk_logging.py
 tests/unit/test_risk_filter.py
+tests/unit/test_risk_logging.py
 ```
 
 Core contracts:
@@ -205,6 +211,7 @@ scripts/check_feature_parity.py
 scripts/check_cost_model.py
 scripts/check_label_builder.py
 scripts/check_risk_filter.py
+scripts/check_risk_logging.py
 scripts/check_questdb.py
 scripts/check_questdb_analysis.py
 scripts/run_tests.ps1
@@ -214,9 +221,9 @@ scripts/run_tests.ps1
 
 ## Next Steps
 
-1. Review PR 16 on GitHub after it is opened.
-2. Check out or pull branch `pr16-risk-filter-v1` on the server laptop.
+1. Review PR 17 on GitHub after it is opened.
+2. Check out or pull branch `pr17-risk-decision-logging` on the server laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation section.
 4. Run required QuestDB checks with QuestDB running.
-5. Merge PR 16 if review and server-laptop validation are clean.
-6. Start PR 17 - Risk Decision Logging.
+5. Merge PR 17 if review and server-laptop validation are clean.
+6. Start PR 18 - Order Manager V1.

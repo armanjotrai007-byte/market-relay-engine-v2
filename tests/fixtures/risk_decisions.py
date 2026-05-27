@@ -22,6 +22,7 @@ def make_risk_decision(
     reduce_size_factor: float | None = None,
     reasons: list[str] | None = None,
     thresholds_used: dict[str, object] | None = None,
+    cost_estimate_id: str | None = None,
     context_snapshot_id: str | None = None,
     trace_id: str = TRACE_ID_APPROVED_OIL,
 ) -> RiskDecision:
@@ -46,6 +47,7 @@ def make_risk_decision(
             "max_latency_ms": 250.0,
             "min_confidence": 0.55,
         },
+        cost_estimate_id=cost_estimate_id,
         context_snapshot_id=context_snapshot_id,
         risk_decision_id=stable_record_id("risk_decision", index),
         trace_id=trace_id,
