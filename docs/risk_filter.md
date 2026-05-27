@@ -135,4 +135,4 @@ PR16 intentionally does not add:
 - async/background services
 - new heavy dependencies
 
-PR17 should add Risk Decision Logging.
+PR17 adds opt-in Risk Decision Logging through a separate writer interface.
