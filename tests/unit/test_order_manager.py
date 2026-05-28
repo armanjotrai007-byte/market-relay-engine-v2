@@ -132,6 +132,28 @@ def test_invalid_reduce_size_factor_blocks(factor: float | None) -> None:
     assert result.reasons == ["invalid_reduce_size_factor"]
 
 
+@pytest.mark.parametrize("factor", [float("nan"), float("inf")])
+def test_non_finite_reduce_size_factor_blocks(factor: float) -> None:
+    signal = make_model_signal(signal=SignalSide.BUY, index=105)
+    decision = _decision(
+        signal=signal,
+        decision=RiskDecisionType.REDUCE_SIZE,
+        reduce_size_factor=factor,
+    )
+
+    result = build_order_intent(
+        signal=signal,
+        decision=decision,
+        risk_log_succeeded=True,
+        desired_quantity=10,
+        config=_config(),
+    )
+
+    assert result.allowed is False
+    assert result.intent is None
+    assert result.reasons == ["invalid_reduce_size_factor"]
+
+
 def test_block_creates_no_intent() -> None:
     signal = make_model_signal(signal=SignalSide.BUY, index=6)
     decision = _decision(signal=signal, decision=RiskDecisionType.BLOCK)
@@ -491,6 +513,23 @@ def test_invalid_entry_quantity_blocks() -> None:
         decision=decision,
         risk_log_succeeded=True,
         desired_quantity=0,
+        config=_config(),
+    )
+
+    assert result.allowed is False
+    assert result.reasons == ["invalid_quantity"]
+
+
+@pytest.mark.parametrize("desired_quantity", [float("nan"), float("inf")])
+def test_non_finite_desired_quantity_blocks(desired_quantity: float) -> None:
+    signal = make_model_signal(signal=SignalSide.BUY, index=106)
+    decision = _decision(signal=signal, decision=RiskDecisionType.APPROVE)
+
+    result = build_order_intent(
+        signal=signal,
+        decision=decision,
+        risk_log_succeeded=True,
+        desired_quantity=desired_quantity,
         config=_config(),
     )
 
