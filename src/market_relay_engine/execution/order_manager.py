@@ -144,6 +144,20 @@ def build_order_intent(
     state = state or OrderManagerState()
     config = config or OrderManagerConfig.from_yaml()
 
+    if decision.model_signal_id != signal.signal_id:
+        return _blocked(
+            reason="risk_decision_signal_mismatch",
+            signal=signal,
+            decision=decision,
+        )
+
+    if decision.ticker.upper() != signal.ticker.upper():
+        return _blocked(
+            reason="risk_decision_ticker_mismatch",
+            signal=signal,
+            decision=decision,
+        )
+
     if signal.signal_id in state.used_signal_ids:
         return _blocked(
             reason="duplicate_signal_id",
