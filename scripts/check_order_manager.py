@@ -84,6 +84,24 @@ def main() -> int:
     assert blocked_result.allowed is False
     assert blocked_result.intent is None
 
+    mismatch_signal = make_model_signal(signal=SignalSide.BUY, index=30)
+    stale_signal = make_model_signal(signal=SignalSide.BUY, index=31)
+    mismatch_decision = make_risk_decision(
+        model_signal=stale_signal,
+        ticker=stale_signal.ticker,
+        decision=RiskDecisionType.APPROVE,
+        approved=True,
+    )
+    mismatch_result = build_order_intent(
+        signal=mismatch_signal,
+        decision=mismatch_decision,
+        risk_log_succeeded=True,
+        desired_quantity=10,
+        config=config,
+    )
+    assert mismatch_result.allowed is False
+    assert mismatch_result.reasons == ["risk_decision_signal_mismatch"]
+
     exit_signal = make_model_signal(signal=SignalSide.EXIT, index=4)
     exit_decision = make_risk_decision(
         model_signal=exit_signal,
