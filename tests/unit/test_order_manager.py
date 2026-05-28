@@ -167,6 +167,91 @@ def test_entries_with_failed_risk_logging_block_by_default() -> None:
     assert result.reasons == ["risk_log_failed"]
 
 
+def test_approve_decision_with_mismatched_model_signal_id_blocks() -> None:
+    signal = make_model_signal(signal=SignalSide.BUY, index=20)
+    stale_signal = make_model_signal(signal=SignalSide.BUY, index=21)
+    result = build_order_intent(
+        signal=signal,
+        decision=_decision(stale_signal, RiskDecisionType.APPROVE),
+        risk_log_succeeded=True,
+        desired_quantity=10,
+        config=_config(),
+    )
+
+    assert result.allowed is False
+    assert result.reasons == ["risk_decision_signal_mismatch"]
+
+
+def test_approve_decision_with_mismatched_ticker_blocks() -> None:
+    signal = make_model_signal(signal=SignalSide.BUY, ticker="XOM", index=22)
+    decision = make_risk_decision(
+        model_signal=signal,
+        ticker="LMT",
+        decision=RiskDecisionType.APPROVE,
+        approved=True,
+    )
+
+    result = build_order_intent(
+        signal=signal,
+        decision=decision,
+        risk_log_succeeded=True,
+        desired_quantity=10,
+        config=_config(),
+    )
+
+    assert result.allowed is False
+    assert result.reasons == ["risk_decision_ticker_mismatch"]
+
+
+def test_reduce_size_decision_with_mismatched_model_signal_id_blocks() -> None:
+    signal = make_model_signal(signal=SignalSide.BUY, index=23)
+    stale_signal = make_model_signal(signal=SignalSide.BUY, index=24)
+    result = build_order_intent(
+        signal=signal,
+        decision=_decision(
+            stale_signal,
+            RiskDecisionType.REDUCE_SIZE,
+            reduce_size_factor=0.5,
+        ),
+        risk_log_succeeded=True,
+        desired_quantity=10,
+        config=_config(),
+    )
+
+    assert result.allowed is False
+    assert result.reasons == ["risk_decision_signal_mismatch"]
+
+
+def test_exit_decision_with_mismatched_model_signal_id_blocks() -> None:
+    signal = make_model_signal(signal=SignalSide.EXIT, index=25)
+    stale_signal = make_model_signal(signal=SignalSide.EXIT, index=26)
+    result = build_order_intent(
+        signal=signal,
+        decision=_decision(stale_signal, RiskDecisionType.EXIT),
+        risk_log_succeeded=False,
+        desired_quantity=None,
+        config=_config(),
+    )
+
+    assert result.allowed is False
+    assert result.reasons == ["risk_decision_signal_mismatch"]
+
+
+def test_matching_signal_and_decision_still_works() -> None:
+    signal = make_model_signal(signal=SignalSide.BUY, index=27)
+    result = build_order_intent(
+        signal=signal,
+        decision=_decision(signal, RiskDecisionType.APPROVE),
+        risk_log_succeeded=True,
+        desired_quantity=10,
+        config=_config(),
+    )
+
+    assert result.allowed is True
+    assert result.intent is not None
+    assert result.intent.source_signal_id == signal.signal_id
+
+
 def test_duplicate_signal_same_side_opposite_side_max_and_invalid_quantity_block() -> None:
     signal = make_model_signal(signal=SignalSide.BUY, index=8)
     decision = _decision(signal, RiskDecisionType.APPROVE)
