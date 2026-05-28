@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 
@@ -217,10 +218,17 @@ def build_order_intent(
     requested_quantity = float(
         config.default_quantity if desired_quantity is None else desired_quantity
     )
+    if not math.isfinite(requested_quantity):
+        return _blocked(
+            reason="invalid_quantity",
+            signal=signal,
+            decision=decision,
+        )
+
     effective_quantity = requested_quantity
     if decision.decision is RiskDecisionType.REDUCE_SIZE:
         factor = decision.reduce_size_factor
-        if factor is None or factor <= 0 or factor > 1:
+        if factor is None or not math.isfinite(factor) or factor <= 0 or factor > 1:
             return _blocked(
                 reason="invalid_reduce_size_factor",
                 signal=signal,
@@ -234,7 +242,7 @@ def build_order_intent(
             decision=decision,
         )
 
-    if effective_quantity <= 0:
+    if not math.isfinite(effective_quantity) or effective_quantity <= 0:
         return _blocked(
             reason="invalid_quantity",
             signal=signal,
