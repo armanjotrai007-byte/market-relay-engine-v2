@@ -179,6 +179,17 @@ def build_order_intent(
             decision=decision,
         )
 
+    if decision.decision in {
+        RiskDecisionType.APPROVE,
+        RiskDecisionType.REDUCE_SIZE,
+        RiskDecisionType.EXIT,
+    } and not decision.approved:
+        return _blocked(
+            reason="risk_decision_not_approved",
+            signal=signal,
+            decision=decision,
+        )
+
     if decision.decision is RiskDecisionType.EXIT:
         return _build_close_position_intent(
             signal=signal,
