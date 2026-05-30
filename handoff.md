@@ -1,4 +1,4 @@
-# handoff.md â€” Trading System V2 Clean Handoff
+# handoff.md - Trading System V2 Clean Handoff
 
 ## Current Status
 
@@ -8,45 +8,52 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 17 - Risk Decision Logging**
-- Branch: `pr17-risk-decision-logging`
-- Purpose: log every `RiskDecision` through a simple writer interface.
-- Safety exclusions: no Alpaca, live trading, model inference, external
-  collectors, async services, JSONL fallback, or new heavy dependencies.
-- Next PR after merge: **PR 18 - Order Manager V1**
+- **PR 18 - Order Manager V1**
+- Branch: `pr18-order-manager-v1`
+- Purpose: create a lightweight local order-intent safety layer after PR16 risk
+  decisions and PR17 risk logging.
+- Safety exclusions: no Alpaca, broker submission, live trading, QuestDB
+  writes, model inference, AI calls, external collectors, async services, JSONL
+  fallback, retry queues, full account/position state, broker-specific rounding,
+  lot-size rules, or new heavy dependencies.
+- Next PR after merge: **PR 19 - Position and Account State V1**
 
-Latest confirmed merged base before PR 15:
+Latest confirmed merged base before PR18:
 
-- **PR 13 merge commit:** `8e2fab7fe04a61399d3b587f06a95d76ed0e5c1d`
+- **PR 17 merge commit:** `690146659ce1ed50039309b1569104ff59d22520`
 
 Local workspace and publishing note:
 
 - This local workspace is not a usable Git checkout: `.git` is absent, and
-  `git` / `gh` were not available on PATH during PR 8 publishing.
-- Recent branches may need to be created on GitHub with the GitHub connector
-  instead of local git when this workspace remains connector-only.
+  `git` / `gh` were not available on PATH during recent publishing work.
+- Branches may need to be created on GitHub with the GitHub connector when this
+  workspace remains connector-only.
 
 ---
 
 ## Project Summary
 
-This repo builds a local AI-assisted trading research and paper/live execution system.
+This repo builds a local AI-assisted trading research and paper/live execution
+system.
 
 Core flow:
 
 ```text
 Databento market data
-â†’ normalized MarketRecord
-â†’ canonical feature builder
-â†’ model signal
-â†’ deterministic risk filter
-â†’ Alpaca paper/live execution
-â†’ QuestDB bot ledger
+-> normalized MarketRecord
+-> canonical feature builder
+-> model signal
+-> deterministic risk filter
+-> local order intent
+-> future Alpaca paper/live execution
+-> QuestDB bot ledger
 ```
 
-QuestDB is only the bot ledger. It must not be used as a historical market-data warehouse.
+QuestDB is only the bot ledger. It must not be used as a historical market-data
+warehouse.
 
-Historical market truth comes from official Databento historical DBN/Parquet files, not QuestDB.
+Historical market truth comes from official Databento historical DBN/Parquet
+files, not QuestDB.
 
 ---
 
@@ -59,68 +66,79 @@ Historical market truth comes from official Databento historical DBN/Parquet fil
 5. Do not use QuestDB as historical market-data storage.
 6. Use one canonical feature builder for historical and live paths.
 7. AI context may produce structured risk flags only; it must not directly trade.
-8. The deterministic Python risk filter is the final gate before execution.
-9. Alpaca starts as paper trading only.
+8. The deterministic Python risk filter is the final gate before local order
+   intent creation.
+9. Alpaca starts as paper trading only and is not added in PR18.
 10. Keep PRs small, simple, testable, and reviewable.
 
 ---
 
 ## Compatibility Notes
 
-PR8 feature parity note: historical batch sorting vs live arrival order must remain documented because historical replay sorts by event_time while live processing preserves arrival order.
+PR8 feature parity note: historical batch sorting vs live arrival order must
+remain documented because historical replay sorts by event_time while live
+processing preserves arrival order.
 
 ---
 
 ## Current PR
 
-### PR 17 - Risk Decision Logging
+### PR 18 - Order Manager V1
 
 Branch:
 
 ```text
-pr17-risk-decision-logging
+pr18-order-manager-v1
 ```
 
 Purpose:
 
-Log every `RiskDecision` through a simple writer interface after PR16 produces
-the decision.
+Turn an existing `ModelSignal`, a PR16 `RiskDecision`, PR17 risk log success
+state, desired quantity, and in-memory order state into a safe local
+`OrderManagerResult`.
 
 Key behavior:
 
-- `evaluate_risk(...)` remains pure and deterministic.
-- Logging is opt-in through `log_risk_decision(...)` or
-  `evaluate_risk_and_log(...)`.
-- Logging returns `RiskDecisionLogResult` so callers can inspect both the
-  decision and ledger write outcome.
-- Approved, blocked, reduced-size, exit, and do-nothing decisions can all be
-  logged.
-- Logging uses a generic writer protocol, not a direct QuestDB dependency in
-  risk logic.
-- Writer failures are explicit and non-raising by default.
-- EXIT decisions remain available to future execution logic even if logging
-  fails.
+- `build_order_intent(...)` is pure and does not mutate state.
+- `OrderIntent` is a local intent, not a broker order.
+- `OrderIntentSide.CLOSE_POSITION` is a local intent side, not a broker side.
+- Entry orders require successful risk logging by default.
+- `EXIT` / `CLOSE_POSITION` can proceed when risk logging failed if configured,
+  preserving emergency exit behavior.
+- `CLOSE_POSITION` uses `quantity=None` because PR18 does not have position
+  state.
+- `REDUCE_SIZE` preserves fractional quantities with
+  `desired_quantity * reduce_size_factor`.
+- Broker-specific rounding, lot-size handling, and position translation are
+  deferred to later PRs.
+- `reserve_order_intent(...)` marks a signal used and adds an in-memory
+  placeholder for `BUY`, `SELL`, and `CLOSE_POSITION`.
+- A reserved `CLOSE_POSITION` blocks new entries for that ticker until
+  `release_open_order(...)` clears the placeholder.
+- Releasing an open-order placeholder does not unmark the source signal ID.
 
 Explicitly not added:
 
 - Alpaca
+- broker submission
 - live trading
+- QuestDB writes
 - model inference
 - model training
 - AI calls
 - external context collectors
-- order manager
-- full account state
-- full portfolio state
 - async/background services
 - JSONL fallback
 - retries/queues
+- full account state
+- full position state
+- broker-specific rounding or lot-size rules
 - new heavy dependencies
 
 Next PR:
 
 ```text
-PR 18 - Order Manager V1
+PR 19 - Position and Account State V1
 ```
 
 ---
@@ -146,6 +164,7 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_label_builder.py
 .\.venv\Scripts\python.exe scripts/check_risk_filter.py
 .\.venv\Scripts\python.exe scripts/check_risk_logging.py
+.\.venv\Scripts\python.exe scripts/check_order_manager.py
 .\.venv\Scripts\python.exe -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
@@ -173,6 +192,15 @@ scripts/check_risk_filter.py
 scripts/check_risk_logging.py
 tests/unit/test_risk_filter.py
 tests/unit/test_risk_logging.py
+```
+
+Execution:
+
+```text
+src/market_relay_engine/execution/order_manager.py
+docs/order_manager.md
+scripts/check_order_manager.py
+tests/unit/test_order_manager.py
 ```
 
 Core contracts:
@@ -212,6 +240,7 @@ scripts/check_cost_model.py
 scripts/check_label_builder.py
 scripts/check_risk_filter.py
 scripts/check_risk_logging.py
+scripts/check_order_manager.py
 scripts/check_questdb.py
 scripts/check_questdb_analysis.py
 scripts/run_tests.ps1
@@ -221,9 +250,10 @@ scripts/run_tests.ps1
 
 ## Next Steps
 
-1. Review PR 17 on GitHub after it is opened.
-2. Check out or pull branch `pr17-risk-decision-logging` on the server laptop.
-3. Run the full validation commands from the Standard Server-Laptop Validation section.
+1. Review PR 18 on GitHub after it is opened.
+2. Check out or pull branch `pr18-order-manager-v1` on the server laptop.
+3. Run the full validation commands from the Standard Server-Laptop Validation
+   section.
 4. Run required QuestDB checks with QuestDB running.
-5. Merge PR 17 if review and server-laptop validation are clean.
-6. Start PR 18 - Order Manager V1.
+5. Merge PR 18 if review and server-laptop validation are clean.
+6. Start PR 19 - Position and Account State V1.
