@@ -122,6 +122,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running Alpaca paper validation..."
+& $Python scripts/check_alpaca_paper.py
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 Write-Host "Running pytest..."
 & $Python -m pytest
 if ($LASTEXITCODE -ne 0) {

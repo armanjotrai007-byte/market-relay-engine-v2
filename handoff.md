@@ -8,18 +8,20 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 19 - Position and Account State V1**
-- Branch: `pr19-position-account-state-v1`
-- Purpose: create lightweight local position/account state from fills and
-  resolve PR18 close-position intents into concrete buy/sell details.
-- Safety exclusions: no Alpaca, broker submission, live trading, QuestDB
-  writes, model inference, AI calls, external collectors, async services, or new
-  heavy dependencies.
-- Next PR after merge: **PR 20 - Alpaca Paper Client Wrapper**
+- **PR 20 - Alpaca Paper Client Wrapper**
+- Branch: `pr20-alpaca-paper-client-wrapper`
+- Purpose: add a lightweight paper-only Alpaca wrapper for PR19 resolved order
+  intents.
+- Safety exclusions: no live trading, no live endpoint, no real order submission
+  in tests/check scripts, no automatic retries, no bracket orders, no stop loss,
+  no take profit, no limit order support, no options, no crypto, no QuestDB
+  writes, no model inference, no AI calls, no external collectors, no async
+  services, and no new heavy dependencies.
+- Next PR after merge: **PR 21 - Execution Metrics / Order Result Capture**
 
-Latest confirmed merged base before PR19:
+Latest confirmed merged base before PR20:
 
-- **PR 18 merge commit:** `5d8959555146fe719049570b0239eb1171f12960`
+- **PR 19 merge commit:** `7f1f9d2deaac437b226604ed15dda2f54a1b3b27`
 
 Local workspace and publishing note:
 
@@ -67,7 +69,7 @@ files, not QuestDB.
 7. AI context may produce structured risk flags only; it must not directly trade.
 8. The deterministic Python risk filter is the final gate before local order
    intent creation.
-9. Alpaca starts as paper trading only and is not added in PR19.
+9. Alpaca starts as paper trading only; PR20 must not support live trading.
 10. Keep PRs small, simple, testable, and reviewable.
 
 ---
@@ -82,47 +84,61 @@ processing preserves arrival order.
 
 ## Current PR
 
-### PR 19 - Position and Account State V1
+### PR 20 - Alpaca Paper Client Wrapper
 
 Branch:
 
 ```text
-pr19-position-account-state-v1
+pr20-alpaca-paper-client-wrapper
 ```
 
 Purpose:
 
-Track local position and account state from `FillEvent` records, resolve PR18
-`CLOSE_POSITION` intents into concrete buy/sell details, and provide minimal
-account/portfolio inputs for the risk filter.
+Add the first lightweight Alpaca paper-trading client wrapper. PR20 takes a PR19
+`ResolvedOrderIntent` and submits it to Alpaca paper trading only when explicitly
+enabled.
 
 Key behavior:
 
-- Signed quantity convention: positive is long, negative is short, zero or
-  absent is flat.
-- BUY fills increase signed quantity; SELL fills decrease signed quantity.
-- Same-side adds update weighted average price.
-- Partial closes realize PnL and keep the remaining average price unchanged.
-- Full closes remove the position.
-- Fills that cross zero split accounting into old-position close and new
-  opposite-side open.
-- Duplicate fill IDs are ignored and do not mutate quantity or PnL.
-- Account state separates `total_realized_pnl`, `daily_realized_pnl`,
-  `daily_loss_dollars`, and `consecutive_losses`.
-- `daily_loss_dollars` is based only on `daily_realized_pnl`.
-- Daily reset helpers clear daily PnL/loss without erasing total realized PnL.
-- `CLOSE_POSITION` resolves to SELL for long, BUY for short, and quantity `0`
-  when flat.
-- Optional PR18 `OrderManagerState` can feed duplicate/conflicting order
-  placeholder state into risk inputs.
-- Sector exposure is local only and groups `abs(quantity) * mark_price` by
-  optional local sector labels.
+- Paper-only base URL is exactly `https://paper-api.alpaca.markets` after
+  trimming trailing slashes.
+- Live URLs, lookalike paper hostnames, URL paths, and non-HTTPS paper URLs are
+  rejected.
+- `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` are required only when paper trading
+  is enabled.
+- Secrets are hidden from reprs and redacted from broker/network error messages.
+- `get_account()` calls `GET /v2/account`.
+- `submit_order(...)` calls `POST /v2/orders`.
+- The client uses Alpaca `APCA-API-KEY-ID` and `APCA-API-SECRET-KEY` headers,
+  not bearer authorization.
+- `submit_order(...)` accepts only resolved BUY/SELL intents.
+- PR18 `CLOSE_POSITION` intents must go through PR19
+  `resolve_close_position_intent(...)` before submission.
+- `CLOSE_POSITION` is rejected with local safety guidance.
+- Every order payload includes deterministic `client_order_id` for idempotency.
+- `client_order_id` prefers `intent.order_id`, then `intent.source_signal_id`,
+  is sanitized, and is kept at 128 characters or less with a stable hash suffix
+  for longer local IDs.
+- Quantity is formatted as a safe string with at most 9 decimal places and no
+  scientific notation.
+- PR20 supports MARKET orders only; limit-style intents are rejected.
+- Broker/network failures return `AlpacaPaperResponse(success=False, ...)`.
+- Local safety/config failures raise `AlpacaPaperError`.
+- Default check script mode uses a fake HTTP client and makes no network calls.
+- Required check mode only calls account connectivity and never submits an order.
 
 Explicitly not added:
 
-- Alpaca
-- broker submission
 - live trading
+- live endpoint
+- real order submission in tests/check scripts
+- automatic retries
+- bracket orders
+- stop loss
+- take profit
+- limit order support
+- options
+- crypto
 - QuestDB writes
 - model inference
 - model training
@@ -134,7 +150,7 @@ Explicitly not added:
 Next PR:
 
 ```text
-PR 20 - Alpaca Paper Client Wrapper
+PR 21 - Execution Metrics / Order Result Capture
 ```
 
 ---
@@ -162,9 +178,19 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_risk_logging.py
 .\.venv\Scripts\python.exe scripts/check_order_manager.py
 .\.venv\Scripts\python.exe scripts/check_position_state.py
+.\.venv\Scripts\python.exe scripts/check_alpaca_paper.py
 .\.venv\Scripts\python.exe -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
+
+Optional real Alpaca paper account validation on the server laptop:
+
+```powershell
+.\.venv\Scripts\python.exe scripts/check_alpaca_paper.py --required
+```
+
+The required Alpaca check must only call `GET /v2/account`. It must not submit a
+paper order.
 
 With QuestDB running on the server laptop, also run:
 
@@ -196,12 +222,16 @@ Execution:
 ```text
 src/market_relay_engine/execution/order_manager.py
 src/market_relay_engine/execution/position_state.py
+src/market_relay_engine/execution/alpaca_paper.py
 docs/order_manager.md
 docs/position_state.md
+docs/alpaca_paper.md
 scripts/check_order_manager.py
 scripts/check_position_state.py
+scripts/check_alpaca_paper.py
 tests/unit/test_order_manager.py
 tests/unit/test_position_state.py
+tests/unit/test_alpaca_paper.py
 ```
 
 Core contracts:
@@ -243,6 +273,7 @@ scripts/check_risk_filter.py
 scripts/check_risk_logging.py
 scripts/check_order_manager.py
 scripts/check_position_state.py
+scripts/check_alpaca_paper.py
 scripts/check_questdb.py
 scripts/check_questdb_analysis.py
 scripts/run_tests.ps1
@@ -252,10 +283,13 @@ scripts/run_tests.ps1
 
 ## Next Steps
 
-1. Review PR 19 on GitHub after it is opened.
-2. Check out or pull branch `pr19-position-account-state-v1` on the server laptop.
+1. Review PR 20 on GitHub after it is opened.
+2. Check out or pull branch `pr20-alpaca-paper-client-wrapper` on the server
+   laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation
    section.
-4. Run required QuestDB checks with QuestDB running.
-5. Merge PR 19 if review and server-laptop validation are clean.
-6. Start PR 20 - Alpaca Paper Client Wrapper.
+4. Optionally run account-only Alpaca paper validation with local server-laptop
+   keys.
+5. Run required QuestDB checks with QuestDB running.
+6. Merge PR 20 if review and server-laptop validation are clean.
+7. Start PR 21 - Execution Metrics / Order Result Capture.

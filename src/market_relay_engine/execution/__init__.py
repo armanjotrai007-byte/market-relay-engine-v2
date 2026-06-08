@@ -1,5 +1,13 @@
 """Local execution intent helpers."""
 
+from market_relay_engine.execution.alpaca_paper import (
+    PAPER_BASE_URL,
+    AlpacaPaperClient,
+    AlpacaPaperConfig,
+    AlpacaPaperError,
+    AlpacaPaperResponse,
+    format_alpaca_quantity,
+)
 from market_relay_engine.execution.order_manager import (
     OpenOrderState,
     OrderIntent,
@@ -28,12 +36,17 @@ from market_relay_engine.execution.position_state import (
 
 __all__ = [
     "AccountState",
+    "AlpacaPaperClient",
+    "AlpacaPaperConfig",
+    "AlpacaPaperError",
+    "AlpacaPaperResponse",
     "OpenOrderState",
     "OrderIntent",
     "OrderIntentSide",
     "OrderManagerConfig",
     "OrderManagerResult",
     "OrderManagerState",
+    "PAPER_BASE_URL",
     "PortfolioState",
     "PositionState",
     "PositionUpdateResult",
@@ -41,6 +54,7 @@ __all__ = [
     "apply_fill_to_portfolio",
     "build_order_intent",
     "build_risk_state_inputs",
+    "format_alpaca_quantity",
     "release_open_order",
     "reset_consecutive_losses",
     "reset_daily_account_state",
