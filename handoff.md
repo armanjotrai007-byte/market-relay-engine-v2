@@ -117,7 +117,8 @@ Key behavior:
 - `CLOSE_POSITION` is rejected with local safety guidance.
 - Every order payload includes deterministic `client_order_id` for idempotency.
 - `client_order_id` prefers `intent.order_id`, then `intent.source_signal_id`,
-  is sanitized, and is kept at 48 characters or less.
+  is sanitized, and is kept at 128 characters or less with a stable hash suffix
+  for longer local IDs.
 - Quantity is formatted as a safe string with at most 9 decimal places and no
   scientific notation.
 - PR20 supports MARKET orders only; limit-style intents are rejected.
