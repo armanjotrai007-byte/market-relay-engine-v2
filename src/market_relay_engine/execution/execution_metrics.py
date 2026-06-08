@@ -7,6 +7,7 @@ from datetime import datetime
 import math
 from typing import Any
 
+from market_relay_engine.common.ids import new_record_id
 from market_relay_engine.common.time import ensure_timezone_aware_utc
 from market_relay_engine.contracts.base import DEFAULT_SCHEMA_VERSION
 from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse
@@ -33,6 +34,22 @@ ORDER_EVENTS_PAYLOAD_KEYS = frozenset(
         "model_signal_id",
         "risk_decision_id",
         "feature_snapshot_id",
+        "run_id",
+        "session_id",
+        "schema_version",
+        "trace_id",
+    }
+)
+LATENCY_METRICS_PAYLOAD_KEYS = frozenset(
+    {
+        "measured_time",
+        "write_time",
+        "latency_metric_id",
+        "component",
+        "source",
+        "latency_ms",
+        "ticker",
+        "event_type",
         "run_id",
         "session_id",
         "schema_version",
@@ -250,22 +267,25 @@ def build_order_event_payload(result: OrderSubmissionResult) -> dict[str, object
 
 
 def build_latency_metric_payload(result: OrderSubmissionResult) -> dict[str, object]:
-    """Build a JSON-serializable latency metric payload for future writing."""
-    return {
-        "metric_name": ORDER_SUBMIT_LATENCY_METRIC_NAME,
+    """Build a schema-compatible future ``latency_metrics`` payload."""
+    payload: dict[str, object] = {
         "measured_time": result.submit_completed_at,
-        "component": "alpaca_paper",
-        "source": "local_clock",
+        "write_time": None,
+        "latency_metric_id": new_record_id("latency_metric"),
+        "component": "execution",
+        "source": "alpaca_paper",
         "latency_ms": result.latency_ms,
         "ticker": result.ticker,
-        "event_type": "order_submit",
-        "broker_order_id": result.broker_order_id,
-        "client_order_id": result.client_order_id,
-        "source_signal_id": result.source_signal_id,
-        "risk_decision_id": result.risk_decision_id,
-        "paper_trading": result.paper_trading,
+        "event_type": ORDER_SUBMIT_LATENCY_METRIC_NAME,
+        "run_id": None,
+        "session_id": None,
+        "schema_version": DEFAULT_SCHEMA_VERSION,
         "trace_id": result.trace_id,
     }
+    unknown_keys = set(payload) - LATENCY_METRICS_PAYLOAD_KEYS
+    if unknown_keys:
+        raise ExecutionCaptureError(f"latency metric payload has unknown keys: {sorted(unknown_keys)}")
+    return payload
 
 
 def _utc_datetime(value: datetime, field_name: str) -> datetime:
