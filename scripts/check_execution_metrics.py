@@ -70,7 +70,10 @@ def main() -> int:
     to_json_string(order_payload)
 
     latency_payload = build_latency_metric_payload(success_result)
-    assert latency_payload["metric_name"] == ORDER_SUBMIT_LATENCY_METRIC_NAME
+    assert "metric_name" not in latency_payload
+    assert latency_payload["component"] == "execution"
+    assert latency_payload["source"] == "alpaca_paper"
+    assert latency_payload["event_type"] == ORDER_SUBMIT_LATENCY_METRIC_NAME
     assert latency_payload["latency_ms"] == 100.0
     to_json_string(latency_payload)
 
