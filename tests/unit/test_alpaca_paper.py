@@ -8,6 +8,7 @@ import pytest
 import requests
 
 from market_relay_engine.execution.alpaca_paper import (
+    MAX_CLIENT_ORDER_ID_LENGTH,
     PAPER_BASE_URL,
     AlpacaPaperClient,
     AlpacaPaperConfig,
@@ -234,12 +235,46 @@ def test_client_order_id_prefers_intent_order_id() -> None:
     assert fake_http.calls[-1]["json"]["client_order_id"] == "order_123"
 
 
-def test_long_client_order_id_is_safely_truncated() -> None:
-    long_id = "signal_" + ("x" * 100)
+def test_short_client_order_id_is_unchanged_after_sanitizing() -> None:
+    safe_id = client_order_id_for_intent(
+        FlexibleIntent(source_signal_id="order_ABC-123")
+    )
+
+    assert safe_id == "order_ABC-123"
+
+
+def test_long_client_order_id_stays_within_max_length() -> None:
+    long_id = "signal_" + ("x" * 200)
     safe_id = client_order_id_for_intent(_intent(source_signal_id=long_id))
 
     assert safe_id.startswith("signal_")
-    assert len(safe_id) == 48
+    assert len(safe_id) <= MAX_CLIENT_ORDER_ID_LENGTH
+
+
+def test_long_client_order_id_includes_hash_suffix() -> None:
+    long_id = "signal_" + ("x" * 200)
+    safe_id = client_order_id_for_intent(_intent(source_signal_id=long_id))
+    suffix = safe_id.rsplit("-", 1)[-1]
+
+    assert len(suffix) == 12
+    int(suffix, 16)
+
+
+def test_long_client_order_ids_with_same_prefix_do_not_collide() -> None:
+    shared_prefix = "signal_" + ("x" * 200)
+    first = client_order_id_for_intent(_intent(source_signal_id=f"{shared_prefix}_one"))
+    second = client_order_id_for_intent(_intent(source_signal_id=f"{shared_prefix}_two"))
+
+    assert first != second
+    assert first[:80] == second[:80]
+
+
+def test_same_long_client_order_id_is_deterministic() -> None:
+    long_id = "signal_" + ("x" * 200) + "_same"
+
+    assert client_order_id_for_intent(_intent(source_signal_id=long_id)) == (
+        client_order_id_for_intent(_intent(source_signal_id=long_id))
+    )
 
 
 def test_missing_usable_client_order_id_raises() -> None:
