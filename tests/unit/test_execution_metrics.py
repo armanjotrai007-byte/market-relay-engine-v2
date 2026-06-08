@@ -10,6 +10,7 @@ import pytest
 from market_relay_engine.common.serialization import to_json_string
 from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse
 from market_relay_engine.execution.execution_metrics import (
+    LATENCY_METRICS_PAYLOAD_KEYS,
     ORDER_EVENTS_PAYLOAD_KEYS,
     ORDER_SUBMIT_LATENCY_METRIC_NAME,
     ExecutionCaptureError,
@@ -40,6 +41,20 @@ ORDER_EVENT_KEYS = {
     "model_signal_id",
     "risk_decision_id",
     "feature_snapshot_id",
+    "run_id",
+    "session_id",
+    "schema_version",
+    "trace_id",
+}
+LATENCY_METRIC_KEYS = {
+    "measured_time",
+    "write_time",
+    "latency_metric_id",
+    "component",
+    "source",
+    "latency_ms",
+    "ticker",
+    "event_type",
     "run_id",
     "session_id",
     "schema_version",
@@ -451,10 +466,31 @@ def test_order_event_payload_is_project_json_serializable() -> None:
     assert "arrival_midprice" not in serialized
 
 
-def test_latency_payload_metric_name_uses_constant() -> None:
+def test_latency_payload_uses_schema_compatible_event_type() -> None:
     payload = build_latency_metric_payload(_result())
 
-    assert payload["metric_name"] == ORDER_SUBMIT_LATENCY_METRIC_NAME
+    assert "metric_name" not in payload
+    assert payload["component"] == "execution"
+    assert payload["source"] == "alpaca_paper"
+    assert payload["event_type"] == ORDER_SUBMIT_LATENCY_METRIC_NAME
+    assert payload["latency_ms"] == 100.0
+    assert payload["ticker"] == "AAPL"
+    assert payload["trace_id"] == "trace_1"
+    assert payload["measured_time"] == COMPLETED_AT
+    assert isinstance(payload["latency_metric_id"], str)
+    assert str(payload["latency_metric_id"]).startswith("latency_metric_")
+
+
+def test_latency_payload_contains_only_schema_writer_compatible_keys() -> None:
+    payload = build_latency_metric_payload(_result())
+
+    assert set(payload) == LATENCY_METRIC_KEYS
+    assert set(payload) == LATENCY_METRICS_PAYLOAD_KEYS
+    assert "broker_order_id" not in payload
+    assert "client_order_id" not in payload
+    assert "source_signal_id" not in payload
+    assert "risk_decision_id" not in payload
+    assert "metric_name" not in payload
 
 
 def test_latency_payload_is_project_json_serializable() -> None:
@@ -463,6 +499,7 @@ def test_latency_payload_is_project_json_serializable() -> None:
     serialized = to_json_string(payload)
 
     assert ORDER_SUBMIT_LATENCY_METRIC_NAME in serialized
+    assert "metric_name" not in serialized
 
 
 def test_execution_metrics_source_keeps_pr21_scope_small() -> None:
