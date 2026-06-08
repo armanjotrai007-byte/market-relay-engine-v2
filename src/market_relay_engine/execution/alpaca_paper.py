@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ from market_relay_engine.execution.order_manager import OrderIntentSide
 
 
 PAPER_BASE_URL = "https://paper-api.alpaca.markets"
-MAX_CLIENT_ORDER_ID_LENGTH = 48
+MAX_CLIENT_ORDER_ID_LENGTH = 128
 _QUANTITY_QUANTIZER = Decimal("0.000000001")
 _CLIENT_ORDER_ID_SAFE_PATTERN = re.compile(r"[^A-Za-z0-9_-]+")
 
@@ -287,7 +288,12 @@ def client_order_id_for_intent(intent: object) -> str:
     safe_id = re.sub(r"_+", "_", safe_id).strip("_-")
     if not safe_id:
         raise AlpacaPaperError("Resolved order intent ID is not usable as client_order_id")
-    return safe_id[:MAX_CLIENT_ORDER_ID_LENGTH]
+    if len(safe_id) <= MAX_CLIENT_ORDER_ID_LENGTH:
+        return safe_id
+
+    digest = hashlib.sha256(safe_id.encode("utf-8")).hexdigest()[:12]
+    prefix_len = MAX_CLIENT_ORDER_ID_LENGTH - len(digest) - 1
+    return f"{safe_id[:prefix_len]}-{digest}"
 
 
 def _redact_payload(value: object, secrets: Sequence[str]) -> object:
