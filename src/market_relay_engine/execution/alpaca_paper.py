@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation, ROUND_DOWN
 import math
 import os
 from pathlib import Path
 import re
-from typing import Any
 
 from dotenv import load_dotenv
 import requests
@@ -186,14 +186,15 @@ class AlpacaPaperClient:
                 ),
             )
 
+        redacted_response = _redact_payload_dict(raw_response, self._secrets())
         success = isinstance(status_code, int) and 200 <= status_code < 300
-        broker_order_id = _optional_string(raw_response.get("id")) if success else None
+        broker_order_id = _optional_string(redacted_response.get("id")) if success else None
         error_message = None if success else self._redact(_broker_error_message(raw_response))
         return AlpacaPaperResponse(
             success=success,
             status_code=status_code,
             broker_order_id=broker_order_id,
-            raw_response=raw_response,
+            raw_response=redacted_response,
             error_message=error_message,
         )
 
@@ -215,12 +216,15 @@ class AlpacaPaperClient:
         if not self.config.secret_key:
             raise AlpacaPaperError("ALPACA_SECRET_KEY is required for Alpaca paper requests")
 
+    def _secrets(self) -> tuple[str, ...]:
+        return tuple(
+            secret
+            for secret in (self.config.api_key, self.config.secret_key)
+            if secret
+        )
+
     def _redact(self, message: str) -> str:
-        redacted = message
-        for secret in (self.config.api_key, self.config.secret_key):
-            if secret:
-                redacted = redacted.replace(secret, "[REDACTED]")
-        return redacted
+        return str(_redact_payload(message, self._secrets()))
 
 
 def normalize_paper_base_url(base_url: str | None) -> str:
@@ -284,6 +288,40 @@ def client_order_id_for_intent(intent: object) -> str:
     if not safe_id:
         raise AlpacaPaperError("Resolved order intent ID is not usable as client_order_id")
     return safe_id[:MAX_CLIENT_ORDER_ID_LENGTH]
+
+
+def _redact_payload(value: object, secrets: Sequence[str]) -> object:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        redacted = value
+        for secret in secrets:
+            if secret:
+                redacted = redacted.replace(secret, "<redacted>")
+        return redacted
+    if isinstance(value, dict):
+        return {
+            _redact_payload(key, secrets): _redact_payload(child, secrets)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_payload(child, secrets) for child in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_payload(child, secrets) for child in value)
+    return value
+
+
+def _redact_payload_dict(
+    value: dict[str, object],
+    secrets: Sequence[str],
+) -> dict[str, object]:
+    redacted = _redact_payload(value, secrets)
+    if not isinstance(redacted, dict):
+        return {}
+    return {
+        str(key): child
+        for key, child in redacted.items()
+    }
 
 
 def _clean_optional_secret(value: str | None) -> str | None:
