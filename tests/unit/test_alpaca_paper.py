@@ -196,6 +196,7 @@ def test_submit_order_uses_order_endpoint_and_expected_payload() -> None:
 
     assert response.success is True
     assert response.broker_order_id == "paper_order_1"
+    assert response.raw_response == {"id": "paper_order_1", "status": "accepted"}
     call = fake_http.calls[-1]
     assert call["url"] == f"{PAPER_BASE_URL}/v2/orders"
     assert call["json"] == {
@@ -364,6 +365,78 @@ def test_network_exception_returns_failure_without_crash() -> None:
     assert "timed out" in (response.error_message or "")
 
 
+def test_failed_raw_response_redacts_api_key() -> None:
+    client = AlpacaPaperClient(
+        config=_config(api_key="key_123", secret_key="secret_123"),
+        http_client=FakeHTTPClient(
+            post_response=FakeResponse(
+                422,
+                {
+                    "message": "broker echoed key_123",
+                    "headers": {"APCA-API-KEY-ID": "key_123"},
+                },
+            )
+        ),
+    )
+
+    response = client.submit_order(_intent())
+
+    raw_text = repr(response.raw_response)
+    assert "key_123" not in raw_text
+    assert "<redacted>" in raw_text
+
+
+def test_failed_raw_response_redacts_secret_key() -> None:
+    client = AlpacaPaperClient(
+        config=_config(api_key="key_123", secret_key="secret_123"),
+        http_client=FakeHTTPClient(
+            post_response=FakeResponse(
+                403,
+                {
+                    "message": "broker echoed secret_123",
+                    "headers": {"APCA-API-SECRET-KEY": "secret_123"},
+                },
+            )
+        ),
+    )
+
+    response = client.submit_order(_intent())
+
+    raw_text = repr(response.raw_response)
+    assert "secret_123" not in raw_text
+    assert "<redacted>" in raw_text
+
+
+def test_nested_raw_response_secrets_are_redacted() -> None:
+    client = AlpacaPaperClient(
+        config=_config(api_key="key_123", secret_key="secret_123"),
+        http_client=FakeHTTPClient(
+            post_response=FakeResponse(
+                422,
+                {
+                    "message": "bad key_123 secret_123",
+                    "details": {
+                        "headers": [
+                            "key_123",
+                            {"secret": "secret_123"},
+                            ("keep", "secret_123"),
+                        ],
+                        "normal": "preserve-me",
+                    },
+                },
+            )
+        ),
+    )
+
+    response = client.submit_order(_intent())
+
+    raw_text = repr(response.raw_response)
+    assert "key_123" not in raw_text
+    assert "secret_123" not in raw_text
+    assert "preserve-me" in raw_text
+    assert raw_text.count("<redacted>") >= 4
+
+
 def test_error_messages_redact_secrets() -> None:
     client = AlpacaPaperClient(
         config=_config(api_key="key_123", secret_key="secret_123"),
@@ -381,7 +454,7 @@ def test_error_messages_redact_secrets() -> None:
     assert response.error_message is not None
     assert "key_123" not in response.error_message
     assert "secret_123" not in response.error_message
-    assert "[REDACTED]" in response.error_message
+    assert "<redacted>" in response.error_message
 
 
 def test_network_exception_redacts_secrets() -> None:
