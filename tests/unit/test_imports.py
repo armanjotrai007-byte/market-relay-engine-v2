@@ -30,6 +30,7 @@ def test_execution_modules_import() -> None:
     assert importlib.import_module("market_relay_engine.execution.order_manager")
     assert importlib.import_module("market_relay_engine.execution.position_state")
     assert importlib.import_module("market_relay_engine.execution.alpaca_paper")
+    assert importlib.import_module("market_relay_engine.execution.execution_metrics")
 
 
 def test_contract_modules_import() -> None:
@@ -58,3 +59,4 @@ def test_imports_do_not_require_external_service_keys(monkeypatch) -> None:
     assert importlib.import_module("market_relay_engine.common.time")
     assert importlib.import_module("market_relay_engine.contracts")
     assert importlib.import_module("market_relay_engine.execution.alpaca_paper")
+    assert importlib.import_module("market_relay_engine.execution.execution_metrics")
