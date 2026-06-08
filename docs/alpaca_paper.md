@@ -50,8 +50,10 @@ paper execution.
 
 Every order payload includes a deterministic `client_order_id` for idempotency.
 The client prefers `intent.order_id` when present, otherwise uses
-`intent.source_signal_id`, sanitizes it, and keeps it at 48 characters or less.
-The payload quantity is always a safe string, never a raw Python float.
+`intent.source_signal_id`, sanitizes it, and keeps it at 128 characters or less.
+If a sanitized local ID is too long, the client keeps a prefix and appends a
+stable hash suffix so long IDs with the same prefix do not collide. The payload
+quantity is always a safe string, never a raw Python float.
 
 ## Failure Handling
 
