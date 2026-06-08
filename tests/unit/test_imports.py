@@ -26,6 +26,12 @@ def test_risk_filter_import() -> None:
     assert importlib.import_module("market_relay_engine.risk.decisions")
 
 
+def test_execution_modules_import() -> None:
+    assert importlib.import_module("market_relay_engine.execution.order_manager")
+    assert importlib.import_module("market_relay_engine.execution.position_state")
+    assert importlib.import_module("market_relay_engine.execution.alpaca_paper")
+
+
 def test_contract_modules_import() -> None:
     assert importlib.import_module("market_relay_engine.contracts")
     assert importlib.import_module("market_relay_engine.contracts.base")
@@ -51,3 +57,4 @@ def test_imports_do_not_require_external_service_keys(monkeypatch) -> None:
 
     assert importlib.import_module("market_relay_engine.common.time")
     assert importlib.import_module("market_relay_engine.contracts")
+    assert importlib.import_module("market_relay_engine.execution.alpaca_paper")
