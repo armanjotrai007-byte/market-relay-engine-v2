@@ -11,7 +11,11 @@ from market_relay_engine.common.ids import new_record_id
 from market_relay_engine.common.time import ensure_timezone_aware_utc
 from market_relay_engine.contracts.base import DEFAULT_SCHEMA_VERSION
 from market_relay_engine.contracts.execution import OrderStatus, OrderType
-from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse
+from market_relay_engine.execution.alpaca_paper import (
+    AlpacaPaperError,
+    AlpacaPaperResponse,
+    client_order_id_for_intent,
+)
 from market_relay_engine.execution.order_manager import OrderIntentSide
 from market_relay_engine.execution.position_state import ResolvedOrderIntent
 
@@ -203,7 +207,7 @@ def capture_order_submission_result(
     resolved_client_order_id = _first_present_string(
         client_order_id,
         _safe_raw_string(raw_response, "client_order_id"),
-        intent_order_id,
+        _generated_client_order_id_for_intent(intent),
         source_signal_id,
         local_order_id,
     )
@@ -390,6 +394,13 @@ def _raw_response_dict(response: AlpacaPaperResponse) -> dict[str, object]:
     if isinstance(raw_response, dict):
         return raw_response
     return {}
+
+
+def _generated_client_order_id_for_intent(intent: object) -> str | None:
+    try:
+        return client_order_id_for_intent(intent)
+    except AlpacaPaperError:
+        return None
 
 
 def _safe_raw_string(raw_response: dict[str, object], *keys: str) -> str | None:
