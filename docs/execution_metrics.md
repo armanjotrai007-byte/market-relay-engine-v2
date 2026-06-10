@@ -50,6 +50,10 @@ Any future wrapper that captures timestamps should use the project UTC helpers i
   idempotency and correlation.
 - `status_code` and `error_message` preserve broker/network failure context for
   local analysis without storing the full raw response.
+- `order_type` is normalized to canonical `OrderType` contract values before it
+  is stored or emitted in payloads. Missing order type metadata falls back to
+  `OrderType.MARKET.value` (`"MARKET"`); unsupported non-empty string values fail
+  capture instead of writing mixed casing into `order_events.order_type`.
 - `raw_response` is never stored in `OrderSubmissionResult`.
 
 PR21 expects a PR19 `ResolvedOrderIntent`. PR20 should not submit unresolved
@@ -99,7 +103,8 @@ limit price is available from a future input.
 `build_order_event_payload(...)` prepares a schema-compatible dictionary for the
 existing `order_events` writer path. It only emits accepted `order_events` column
 names and does not include `arrival_midprice`, `client_order_id`, `status_code`,
-`error_message`, `submit_started_at`, or `submit_completed_at`.
+`error_message`, `submit_started_at`, or `submit_completed_at`. The emitted
+`order_type` value is the canonical uppercase contract value, such as `MARKET`.
 
 `build_latency_metric_payload(...)` prepares a schema-compatible dictionary for
 the existing `latency_metrics` writer path. It only emits accepted
