@@ -120,7 +120,10 @@ def main() -> int:
         submit_started_at=started_at,
         submit_completed_at=completed_at,
     )
-    assert build_order_event_payload(server_error_result)["status"] == ORDER_STATUS_UNKNOWN
+    server_error_payload = build_order_event_payload(server_error_result)
+    assert server_error_payload["status"] == ORDER_STATUS_UNKNOWN
+    assert server_error_payload["order_id"] == server_error_result.client_order_id
+    assert server_error_payload["broker_order_id"] is None
 
     timeout_response = AlpacaPaperResponse(
         success=False,
@@ -139,6 +142,8 @@ def main() -> int:
     timeout_payload = build_order_event_payload(timeout_result)
     assert timeout_payload["status"] == ORDER_STATUS_UNKNOWN
     assert timeout_payload["status"] != OrderStatus.REJECTED.value
+    assert timeout_payload["order_id"] == timeout_result.client_order_id
+    assert timeout_payload["broker_order_id"] is None
 
     print("Execution metrics check PASS")
     return 0
