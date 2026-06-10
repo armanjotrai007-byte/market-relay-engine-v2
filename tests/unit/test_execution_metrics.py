@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from market_relay_engine.common.serialization import to_json_string
+from market_relay_engine.contracts.execution import OrderType
 from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse
 from market_relay_engine.execution.execution_metrics import (
     LATENCY_METRICS_PAYLOAD_KEYS,
@@ -71,7 +72,7 @@ class FlexibleResolvedIntent:
     risk_decision_id: str | None = "risk_decision_1"
     reason: str = "test"
     order_id: str | None = None
-    order_type: str | None = None
+    order_type: OrderType | str | None = None
     time_in_force: str | None = None
 
 
@@ -359,19 +360,30 @@ def test_invalid_arrival_midprice_rejected(arrival_midprice: float) -> None:
         )
 
 
-def test_intent_order_type_and_time_in_force_are_used_when_present() -> None:
+def test_intent_order_type_string_is_normalized_and_time_in_force_is_used() -> None:
     result = capture_order_submission_result(
-        intent=_intent(order_type="limit", time_in_force="gtc"),
-        response=_success_response(raw_response={"type": "market", "time_in_force": "day"}),
+        intent=_intent(order_type="market", time_in_force="gtc"),
+        response=_success_response(raw_response={"type": "limit", "time_in_force": "day"}),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
     )
 
-    assert result.order_type == "limit"
+    assert result.order_type == OrderType.MARKET.value
     assert result.time_in_force == "gtc"
 
 
-def test_raw_response_order_type_is_used_when_intent_missing() -> None:
+def test_intent_order_type_enum_is_used_when_present() -> None:
+    result = capture_order_submission_result(
+        intent=_intent(order_type=OrderType.MARKET),
+        response=_success_response(raw_response={"type": "limit"}),
+        submit_started_at=STARTED_AT,
+        submit_completed_at=COMPLETED_AT,
+    )
+
+    assert result.order_type == OrderType.MARKET.value
+
+
+def test_raw_response_market_order_type_is_normalized_when_intent_missing() -> None:
     result = capture_order_submission_result(
         intent=_intent(),
         response=_success_response(raw_response={"type": "market", "time_in_force": "day"}),
@@ -379,22 +391,22 @@ def test_raw_response_order_type_is_used_when_intent_missing() -> None:
         submit_completed_at=COMPLETED_AT,
     )
 
-    assert result.order_type == "market"
+    assert result.order_type == OrderType.MARKET.value
     assert result.time_in_force == "day"
 
 
 def test_raw_response_order_type_key_wins_over_type_key() -> None:
     result = capture_order_submission_result(
         intent=_intent(),
-        response=_success_response(raw_response={"order_type": "limit", "type": "market"}),
+        response=_success_response(raw_response={"order_type": "MARKET", "type": "limit"}),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
     )
 
-    assert result.order_type == "limit"
+    assert result.order_type == OrderType.MARKET.value
 
 
-def test_order_type_and_time_in_force_fallback_market_day_work() -> None:
+def test_missing_order_type_falls_back_to_market_contract_value() -> None:
     result = capture_order_submission_result(
         intent=_intent(),
         response=_success_response(raw_response={}),
@@ -402,8 +414,28 @@ def test_order_type_and_time_in_force_fallback_market_day_work() -> None:
         submit_completed_at=COMPLETED_AT,
     )
 
-    assert result.order_type == "market"
+    assert result.order_type == OrderType.MARKET.value
     assert result.time_in_force == "day"
+
+
+@pytest.mark.parametrize(
+    ("intent_order_type", "raw_response"),
+    [
+        ("limit", {}),
+        (None, {"type": "limit"}),
+    ],
+)
+def test_unsupported_order_type_raises(
+    intent_order_type: str | None,
+    raw_response: dict[str, object],
+) -> None:
+    with pytest.raises(ExecutionCaptureError, match="unsupported order_type"):
+        capture_order_submission_result(
+            intent=_intent(order_type=intent_order_type),
+            response=_success_response(raw_response=raw_response),
+            submit_started_at=STARTED_AT,
+            submit_completed_at=COMPLETED_AT,
+        )
 
 
 def test_unresolved_close_position_intent_is_rejected() -> None:
@@ -432,6 +464,7 @@ def test_order_event_payload_maps_arrival_midprice_to_expected_price() -> None:
     assert payload["expected_price"] == 189.25
     assert payload["submitted_price"] is None
     assert payload["order_id"] == "local_order_1"
+    assert payload["order_type"] == OrderType.MARKET.value
     assert payload["broker"] == "alpaca"
     assert payload["broker_order_id"] == "broker_order_1"
     assert payload["model_signal_id"] == "signal_1"
@@ -582,7 +615,7 @@ def _result(
         ticker="AAPL",
         side="BUY",
         quantity=1.5,
-        order_type="market",
+        order_type=OrderType.MARKET.value,
         time_in_force="day",
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
