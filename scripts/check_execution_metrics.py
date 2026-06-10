@@ -16,7 +16,10 @@ if str(SRC_DIR) not in sys.path:
 
 from market_relay_engine.common.serialization import to_json_string  # noqa: E402
 from market_relay_engine.contracts.execution import OrderStatus, OrderType  # noqa: E402
-from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse  # noqa: E402
+from market_relay_engine.execution.alpaca_paper import (  # noqa: E402
+    AlpacaPaperResponse,
+    client_order_id_for_intent,
+)
 from market_relay_engine.execution.execution_metrics import (  # noqa: E402
     ORDER_STATUS_UNKNOWN,
     ORDER_SUBMIT_LATENCY_METRIC_NAME,
@@ -117,6 +120,7 @@ def main() -> int:
         submit_started_at=started_at,
         submit_completed_at=completed_at,
     )
+    assert timeout_result.client_order_id == client_order_id_for_intent(intent)
     timeout_payload = build_order_event_payload(timeout_result)
     assert timeout_payload["status"] == ORDER_STATUS_UNKNOWN
     assert timeout_payload["status"] != OrderStatus.REJECTED.value
