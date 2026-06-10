@@ -216,20 +216,47 @@ def test_explicit_client_order_id_wins() -> None:
     assert result.client_order_id == "explicit_client"
 
 
-def test_raw_client_order_id_is_used_when_safe() -> None:
+def test_raw_client_order_id_wins_when_explicit_missing() -> None:
     result = capture_order_submission_result(
-        intent=_intent(source_signal_id="signal_1"),
+        intent=_intent(order_id="intent_order", source_signal_id="signal_1"),
         response=_success_response(raw_response={"client_order_id": "raw_client"}),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
+        local_order_id="local_order",
     )
 
     assert result.client_order_id == "raw_client"
 
 
-def test_client_order_id_falls_back_to_local_order_id() -> None:
+def test_client_order_id_uses_intent_order_id_before_local_order_id() -> None:
     result = capture_order_submission_result(
-        intent=_intent(source_signal_id="signal_1"),
+        intent=_intent(order_id="intent_order", source_signal_id="signal_1"),
+        response=_success_response(raw_response={}),
+        submit_started_at=STARTED_AT,
+        submit_completed_at=COMPLETED_AT,
+        local_order_id="local_order",
+    )
+
+    assert result.client_order_id == "intent_order"
+    assert result.local_order_id == "local_order"
+
+
+def test_client_order_id_uses_source_signal_id_before_local_order_id() -> None:
+    result = capture_order_submission_result(
+        intent=_intent(source_signal_id="signal_fallback"),
+        response=_success_response(raw_response={}),
+        submit_started_at=STARTED_AT,
+        submit_completed_at=COMPLETED_AT,
+        local_order_id="local_order",
+    )
+
+    assert result.client_order_id == "signal_fallback"
+    assert result.local_order_id == "local_order"
+
+
+def test_client_order_id_uses_local_order_id_only_as_final_fallback() -> None:
+    result = capture_order_submission_result(
+        intent=_intent(source_signal_id=None),
         response=_success_response(raw_response={}),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
@@ -237,29 +264,6 @@ def test_client_order_id_falls_back_to_local_order_id() -> None:
     )
 
     assert result.client_order_id == "local_order"
-
-
-def test_client_order_id_fallback_includes_intent_order_id_before_source_signal_id() -> None:
-    result = capture_order_submission_result(
-        intent=_intent(order_id="intent_order", source_signal_id="signal_1"),
-        response=_success_response(raw_response={}),
-        submit_started_at=STARTED_AT,
-        submit_completed_at=COMPLETED_AT,
-    )
-
-    assert result.client_order_id == "intent_order"
-    assert result.local_order_id == "intent_order"
-
-
-def test_client_order_id_falls_back_to_source_signal_id() -> None:
-    result = capture_order_submission_result(
-        intent=_intent(source_signal_id="signal_fallback"),
-        response=_success_response(raw_response={}),
-        submit_started_at=STARTED_AT,
-        submit_completed_at=COMPLETED_AT,
-    )
-
-    assert result.client_order_id == "signal_fallback"
 
 
 def test_raw_response_none_works() -> None:
@@ -306,6 +310,7 @@ def test_raw_response_invalid_client_order_id_falls_back(raw_response: dict[str,
         response=_success_response(raw_response=raw_response),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
+        local_order_id="local_order",
     )
 
     assert result.client_order_id == "intent_order"
