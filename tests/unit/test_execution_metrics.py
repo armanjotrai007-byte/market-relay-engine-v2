@@ -9,7 +9,11 @@ import pytest
 
 from market_relay_engine.common.serialization import to_json_string
 from market_relay_engine.contracts.execution import OrderStatus, OrderType
-from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse
+from market_relay_engine.execution.alpaca_paper import (
+    MAX_CLIENT_ORDER_ID_LENGTH,
+    AlpacaPaperResponse,
+    client_order_id_for_intent,
+)
 from market_relay_engine.execution.execution_metrics import (
     LATENCY_METRICS_PAYLOAD_KEYS,
     ORDER_EVENTS_PAYLOAD_KEYS,
@@ -229,29 +233,50 @@ def test_raw_client_order_id_wins_when_explicit_missing() -> None:
     assert result.client_order_id == "raw_client"
 
 
-def test_client_order_id_uses_intent_order_id_before_local_order_id() -> None:
+def test_client_order_id_uses_pr20_generated_id_before_local_order_id() -> None:
+    intent = _intent(order_id="intent order / 1", source_signal_id="signal_1")
+
     result = capture_order_submission_result(
-        intent=_intent(order_id="intent_order", source_signal_id="signal_1"),
+        intent=intent,
         response=_success_response(raw_response={}),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
         local_order_id="local_order",
     )
 
-    assert result.client_order_id == "intent_order"
+    assert result.client_order_id == client_order_id_for_intent(intent)
+    assert result.client_order_id != "intent order / 1"
     assert result.local_order_id == "local_order"
 
 
-def test_client_order_id_uses_source_signal_id_before_local_order_id() -> None:
+def test_long_special_character_intent_order_id_uses_pr20_sanitized_hashed_id() -> None:
+    raw_order_id = "order id / with spaces + symbols " + ("x" * 180)
+    intent = _intent(order_id=raw_order_id, source_signal_id="signal_1")
+    expected_client_order_id = client_order_id_for_intent(intent)
+
     result = capture_order_submission_result(
-        intent=_intent(source_signal_id="signal_fallback"),
+        intent=intent,
         response=_success_response(raw_response={}),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
         local_order_id="local_order",
     )
 
-    assert result.client_order_id == "signal_fallback"
+    assert result.client_order_id == expected_client_order_id
+    assert result.client_order_id != raw_order_id
+    assert len(result.client_order_id or "") == MAX_CLIENT_ORDER_ID_LENGTH
+
+
+def test_client_order_id_uses_source_signal_id_when_generated_id_unavailable() -> None:
+    result = capture_order_submission_result(
+        intent=_intent(order_id=None, source_signal_id="!!!"),
+        response=_success_response(raw_response={}),
+        submit_started_at=STARTED_AT,
+        submit_completed_at=COMPLETED_AT,
+        local_order_id="local_order",
+    )
+
+    assert result.client_order_id == "!!!"
     assert result.local_order_id == "local_order"
 
 
@@ -268,20 +293,24 @@ def test_client_order_id_uses_local_order_id_only_as_final_fallback() -> None:
 
 
 def test_raw_response_none_works() -> None:
+    intent = _intent(source_signal_id="signal_none")
+
     result = capture_order_submission_result(
-        intent=_intent(source_signal_id="signal_none"),
+        intent=intent,
         response=_success_response(raw_response=None),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
     )
 
-    assert result.client_order_id == "signal_none"
+    assert result.client_order_id == client_order_id_for_intent(intent)
 
 
 @pytest.mark.parametrize("raw_response", [["client_order_id"], "client_order_id"])
 def test_raw_response_non_dict_does_not_crash(raw_response: object) -> None:
+    intent = _intent(order_id="intent_order")
+
     result = capture_order_submission_result(
-        intent=_intent(order_id="intent_order"),
+        intent=intent,
         response=AlpacaPaperResponse(
             success=True,
             status_code=200,
@@ -293,7 +322,7 @@ def test_raw_response_non_dict_does_not_crash(raw_response: object) -> None:
         submit_completed_at=COMPLETED_AT,
     )
 
-    assert result.client_order_id == "intent_order"
+    assert result.client_order_id == client_order_id_for_intent(intent)
 
 
 @pytest.mark.parametrize(
@@ -306,15 +335,17 @@ def test_raw_response_non_dict_does_not_crash(raw_response: object) -> None:
     ],
 )
 def test_raw_response_invalid_client_order_id_falls_back(raw_response: dict[str, object]) -> None:
+    intent = _intent(order_id="intent_order", source_signal_id="signal_1")
+
     result = capture_order_submission_result(
-        intent=_intent(order_id="intent_order", source_signal_id="signal_1"),
+        intent=intent,
         response=_success_response(raw_response=raw_response),
         submit_started_at=STARTED_AT,
         submit_completed_at=COMPLETED_AT,
         local_order_id="local_order",
     )
 
-    assert result.client_order_id == "intent_order"
+    assert result.client_order_id == client_order_id_for_intent(intent)
 
 
 def test_raw_response_is_not_stored_or_exposed() -> None:
