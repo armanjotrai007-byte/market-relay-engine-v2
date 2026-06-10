@@ -299,6 +299,8 @@ def _order_event_status(result: OrderSubmissionResult) -> str:
         return OrderStatus.SUBMITTED.value
     if result.status_code is None:
         return ORDER_STATUS_UNKNOWN
+    if 500 <= result.status_code <= 599:
+        return ORDER_STATUS_UNKNOWN
     return OrderStatus.REJECTED.value
 
 
