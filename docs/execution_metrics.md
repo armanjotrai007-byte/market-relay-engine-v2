@@ -69,9 +69,13 @@ precedence:
 
 1. explicit `client_order_id` argument
 2. safe `raw_response.get("client_order_id")`
-3. `local_order_id` argument
-4. `getattr(intent, "order_id", None)`
-5. `intent.source_signal_id`
+3. `getattr(intent, "order_id", None)`
+4. `intent.source_signal_id`
+5. `local_order_id` argument
+
+`local_order_id` is a local reservation or tracking id. It is only used as the
+captured `client_order_id` when no explicit, raw-response, or intent-derived
+client-order source exists.
 
 Raw response access is defensive:
 
@@ -106,6 +110,17 @@ names and does not include `arrival_midprice`, `client_order_id`, `status_code`,
 `error_message`, `submit_started_at`, or `submit_completed_at`. The emitted
 `order_type` value is the canonical uppercase contract value, such as `MARKET`.
 `order_time` is the local submit/send timestamp from `submit_started_at`.
+
+Order event `status` is mapped from local submission outcome:
+
+- `SUBMITTED` means the broker accepted the submission path succeeded.
+- `REJECTED` means the broker returned an HTTP status/error response.
+- `UNKNOWN` means local transport or network failure left broker outcome
+  uncertain. The current `OrderStatus` contract has no unknown value, so PR21
+  emits the simple string `UNKNOWN`.
+
+Later reconciliation should query Alpaca by `client_order_id` for `UNKNOWN`
+submissions.
 
 `build_latency_metric_payload(...)` prepares a schema-compatible dictionary for
 the existing `latency_metrics` writer path. It only emits accepted
