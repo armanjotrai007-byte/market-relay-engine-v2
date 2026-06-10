@@ -15,9 +15,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from market_relay_engine.common.serialization import to_json_string  # noqa: E402
-from market_relay_engine.contracts.execution import OrderType  # noqa: E402
+from market_relay_engine.contracts.execution import OrderStatus, OrderType  # noqa: E402
 from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse  # noqa: E402
 from market_relay_engine.execution.execution_metrics import (  # noqa: E402
+    ORDER_STATUS_UNKNOWN,
     ORDER_SUBMIT_LATENCY_METRIC_NAME,
     build_latency_metric_payload,
     build_order_event_payload,
@@ -68,6 +69,7 @@ def main() -> int:
     order_payload = build_order_event_payload(success_result)
     assert "arrival_midprice" not in order_payload
     assert order_payload["order_time"] == started_at
+    assert order_payload["status"] == OrderStatus.SUBMITTED.value
     assert order_payload["expected_price"] == 189.25
     assert order_payload["order_type"] == OrderType.MARKET.value
     assert order_payload["broker_order_id"] == "paper_order_check_execution_metrics"
@@ -100,6 +102,24 @@ def main() -> int:
     assert failed_result.order_type == OrderType.MARKET.value
     assert failed_result.status_code == 422
     assert failed_result.error_message == "qty is invalid"
+    assert build_order_event_payload(failed_result)["status"] == OrderStatus.REJECTED.value
+
+    timeout_response = AlpacaPaperResponse(
+        success=False,
+        status_code=None,
+        broker_order_id=None,
+        raw_response={},
+        error_message="request timed out",
+    )
+    timeout_result = capture_order_submission_result(
+        intent=intent,
+        response=timeout_response,
+        submit_started_at=started_at,
+        submit_completed_at=completed_at,
+    )
+    timeout_payload = build_order_event_payload(timeout_result)
+    assert timeout_payload["status"] == ORDER_STATUS_UNKNOWN
+    assert timeout_payload["status"] != OrderStatus.REJECTED.value
 
     print("Execution metrics check PASS")
     return 0
