@@ -8,11 +8,12 @@ from typing import Any
 import pytest
 
 from market_relay_engine.common.serialization import to_json_string
-from market_relay_engine.contracts.execution import OrderType
+from market_relay_engine.contracts.execution import OrderStatus, OrderType
 from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse
 from market_relay_engine.execution.execution_metrics import (
     LATENCY_METRICS_PAYLOAD_KEYS,
     ORDER_EVENTS_PAYLOAD_KEYS,
+    ORDER_STATUS_UNKNOWN,
     ORDER_SUBMIT_LATENCY_METRIC_NAME,
     ExecutionCaptureError,
     OrderSubmissionResult,
@@ -459,6 +460,12 @@ def test_order_event_payload_uses_submit_started_at_for_order_time() -> None:
     assert payload["order_time"] == STARTED_AT
 
 
+def test_successful_order_event_payload_uses_submitted_status() -> None:
+    payload = build_order_event_payload(_result(success=True, status_code=200))
+
+    assert payload["status"] == OrderStatus.SUBMITTED.value
+
+
 def test_order_event_payload_maps_arrival_midprice_to_expected_price() -> None:
     result = capture_order_submission_result(
         intent=_intent(order_id="local_order_1"),
@@ -477,6 +484,7 @@ def test_order_event_payload_maps_arrival_midprice_to_expected_price() -> None:
     assert payload["submitted_price"] is None
     assert payload["order_id"] == "local_order_1"
     assert payload["order_type"] == OrderType.MARKET.value
+    assert payload["status"] == OrderStatus.SUBMITTED.value
     assert payload["broker"] == "alpaca"
     assert payload["broker_order_id"] == "broker_order_1"
     assert payload["model_signal_id"] == "signal_1"
@@ -496,10 +504,22 @@ def test_order_event_payload_contains_only_schema_writer_compatible_keys() -> No
     assert "submit_completed_at" not in payload
 
 
-def test_failed_order_event_payload_uses_rejected_status() -> None:
-    payload = build_order_event_payload(_result(success=False, status_code=422))
+@pytest.mark.parametrize("status_code", [422, 403])
+def test_failed_order_event_payload_uses_rejected_status_for_http_response(
+    status_code: int,
+) -> None:
+    payload = build_order_event_payload(_result(success=False, status_code=status_code))
 
-    assert payload["status"] == "REJECTED"
+    assert payload["status"] == OrderStatus.REJECTED.value
+
+
+def test_network_transport_failure_order_event_payload_uses_unknown_status() -> None:
+    payload = build_order_event_payload(
+        _result(success=False, status_code=None, error_message="request timed out")
+    )
+
+    assert payload["status"] == ORDER_STATUS_UNKNOWN
+    assert payload["status"] != OrderStatus.REJECTED.value
 
 
 def test_order_event_payload_is_project_json_serializable() -> None:
@@ -596,7 +616,7 @@ def _success_response(
 
 def _failed_response(
     *,
-    status_code: int = 422,
+    status_code: int | None = 422,
     error_message: str = "qty is invalid",
     raw_response: object = None,
 ) -> AlpacaPaperResponse:
