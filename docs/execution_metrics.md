@@ -105,6 +105,7 @@ existing `order_events` writer path. It only emits accepted `order_events` colum
 names and does not include `arrival_midprice`, `client_order_id`, `status_code`,
 `error_message`, `submit_started_at`, or `submit_completed_at`. The emitted
 `order_type` value is the canonical uppercase contract value, such as `MARKET`.
+`order_time` is the local submit/send timestamp from `submit_started_at`.
 
 `build_latency_metric_payload(...)` prepares a schema-compatible dictionary for
 the existing `latency_metrics` writer path. It only emits accepted
@@ -118,7 +119,8 @@ ticker, event_type, run_id, session_id, schema_version, trace_id
 The latency event name is stored in `event_type` as
 `alpaca_order_submit_latency_ms` to match the existing QuestDB schema. The helper
 uses `component="execution"` and `source="alpaca_paper"`; it does not emit a
-`metric_name` key because that column does not exist.
+`metric_name` key because that column does not exist. `measured_time` is the local
+response/completion timestamp from `submit_completed_at`.
 
 Both helpers are capture-only. They do not write to QuestDB.
 
