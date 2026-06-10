@@ -117,6 +117,12 @@ names and does not include `arrival_midprice`, `client_order_id`, `status_code`,
 `order_type` value is the canonical uppercase contract value, such as `MARKET`.
 `order_time` is the local submit/send timestamp from `submit_started_at`.
 
+For `UNKNOWN` submissions, `order_events.order_id` stores the Alpaca
+`client_order_id` when available because that is the reconciliation lookup key if
+`broker_order_id` is missing. This keeps PR21 schema-compatible without adding a
+new `client_order_id` column. For `SUBMITTED` and definitive `REJECTED` events,
+`order_id` keeps the existing local-id-first behavior.
+
 Order event `status` is mapped from local submission outcome:
 
 - `SUBMITTED` means the broker accepted the submission path succeeded.
