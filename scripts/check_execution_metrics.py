@@ -67,6 +67,7 @@ def main() -> int:
 
     order_payload = build_order_event_payload(success_result)
     assert "arrival_midprice" not in order_payload
+    assert order_payload["order_time"] == started_at
     assert order_payload["expected_price"] == 189.25
     assert order_payload["order_type"] == OrderType.MARKET.value
     assert order_payload["broker_order_id"] == "paper_order_check_execution_metrics"
@@ -78,6 +79,7 @@ def main() -> int:
     assert latency_payload["source"] == "alpaca_paper"
     assert latency_payload["event_type"] == ORDER_SUBMIT_LATENCY_METRIC_NAME
     assert latency_payload["latency_ms"] == 100.0
+    assert latency_payload["measured_time"] == completed_at
     to_json_string(latency_payload)
 
     failed_response = AlpacaPaperResponse(
