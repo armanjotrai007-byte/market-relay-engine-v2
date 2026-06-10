@@ -453,6 +453,12 @@ def test_unresolved_close_position_intent_is_rejected() -> None:
         )
 
 
+def test_order_event_payload_uses_submit_started_at_for_order_time() -> None:
+    payload = build_order_event_payload(_result())
+
+    assert payload["order_time"] == STARTED_AT
+
+
 def test_order_event_payload_maps_arrival_midprice_to_expected_price() -> None:
     result = capture_order_submission_result(
         intent=_intent(order_id="local_order_1"),
@@ -466,6 +472,7 @@ def test_order_event_payload_maps_arrival_midprice_to_expected_price() -> None:
     payload = build_order_event_payload(result)
 
     assert "arrival_midprice" not in payload
+    assert payload["order_time"] == STARTED_AT
     assert payload["expected_price"] == 189.25
     assert payload["submitted_price"] is None
     assert payload["order_id"] == "local_order_1"
