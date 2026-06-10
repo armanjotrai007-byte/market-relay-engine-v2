@@ -107,6 +107,21 @@ def main() -> int:
     assert failed_result.error_message == "qty is invalid"
     assert build_order_event_payload(failed_result)["status"] == OrderStatus.REJECTED.value
 
+    server_error_response = AlpacaPaperResponse(
+        success=False,
+        status_code=504,
+        broker_order_id=None,
+        raw_response={"message": "gateway timeout"},
+        error_message="gateway timeout",
+    )
+    server_error_result = capture_order_submission_result(
+        intent=intent,
+        response=server_error_response,
+        submit_started_at=started_at,
+        submit_completed_at=completed_at,
+    )
+    assert build_order_event_payload(server_error_result)["status"] == ORDER_STATUS_UNKNOWN
+
     timeout_response = AlpacaPaperResponse(
         success=False,
         status_code=None,
