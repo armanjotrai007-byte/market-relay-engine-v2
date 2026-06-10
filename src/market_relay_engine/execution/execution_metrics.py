@@ -202,9 +202,9 @@ def capture_order_submission_result(
     resolved_client_order_id = _first_present_string(
         client_order_id,
         _safe_raw_string(raw_response, "client_order_id"),
-        local_order_id,
         intent_order_id,
         source_signal_id,
+        local_order_id,
     )
     side = _side_for_intent(intent)
 
