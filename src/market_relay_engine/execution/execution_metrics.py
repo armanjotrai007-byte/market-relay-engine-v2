@@ -465,6 +465,10 @@ def _time_in_force_for_intent_and_response(
 
 
 def _payload_order_id(result: OrderSubmissionResult) -> str | None:
+    if _order_event_status(result) == ORDER_STATUS_UNKNOWN:
+        client_order_id = _first_present_string(result.client_order_id)
+        if client_order_id is not None:
+            return client_order_id
     return _first_present_string(
         result.local_order_id,
         result.client_order_id,
