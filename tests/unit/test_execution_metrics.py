@@ -563,6 +563,84 @@ def test_network_transport_failure_order_event_payload_uses_unknown_status() -> 
     assert payload["status"] != OrderStatus.REJECTED.value
 
 
+def test_unknown_order_event_payload_uses_client_order_id_for_order_id() -> None:
+    payload = build_order_event_payload(
+        _result(
+            success=False,
+            status_code=None,
+            broker_order_id=None,
+            local_order_id="local_order_1",
+            client_order_id="client_order_1",
+        )
+    )
+
+    assert payload["status"] == ORDER_STATUS_UNKNOWN
+    assert payload["order_id"] == "client_order_1"
+    assert payload["broker_order_id"] is None
+
+
+def test_unknown_order_event_payload_without_client_id_uses_local_order_id() -> None:
+    payload = build_order_event_payload(
+        _result(
+            success=False,
+            status_code=504,
+            broker_order_id=None,
+            local_order_id="local_order_1",
+            client_order_id=None,
+        )
+    )
+
+    assert payload["status"] == ORDER_STATUS_UNKNOWN
+    assert payload["order_id"] == "local_order_1"
+
+
+def test_submitted_order_event_payload_keeps_existing_order_id_behavior() -> None:
+    payload = build_order_event_payload(
+        _result(
+            success=True,
+            status_code=200,
+            broker_order_id="broker_order_1",
+            local_order_id="local_order_1",
+            client_order_id="client_order_1",
+        )
+    )
+
+    assert payload["status"] == OrderStatus.SUBMITTED.value
+    assert payload["order_id"] == "local_order_1"
+    assert payload["broker_order_id"] == "broker_order_1"
+
+
+def test_rejected_order_event_payload_keeps_existing_order_id_behavior() -> None:
+    payload = build_order_event_payload(
+        _result(
+            success=False,
+            status_code=422,
+            broker_order_id=None,
+            local_order_id="local_order_1",
+            client_order_id="client_order_1",
+        )
+    )
+
+    assert payload["status"] == OrderStatus.REJECTED.value
+    assert payload["order_id"] == "local_order_1"
+    assert payload["broker_order_id"] is None
+
+
+def test_unknown_order_event_payload_does_not_copy_client_id_to_broker_order_id() -> None:
+    payload = build_order_event_payload(
+        _result(
+            success=False,
+            status_code=500,
+            broker_order_id=None,
+            local_order_id="local_order_1",
+            client_order_id="client_order_1",
+        )
+    )
+
+    assert payload["order_id"] == "client_order_1"
+    assert payload["broker_order_id"] is None
+
+
 def test_order_event_payload_is_project_json_serializable() -> None:
     payload = build_order_event_payload(_result(arrival_midprice=189.25))
 
@@ -680,10 +758,12 @@ def _result(
     error_message: str | None = None,
     latency_ms: float = 100.0,
     arrival_midprice: float | None = None,
+    local_order_id: str | None = "local_order_1",
+    client_order_id: str | None = "client_order_1",
 ) -> OrderSubmissionResult:
     return OrderSubmissionResult(
-        local_order_id="local_order_1",
-        client_order_id="client_order_1",
+        local_order_id=local_order_id,
+        client_order_id=client_order_id,
         broker_order_id=broker_order_id,
         ticker="AAPL",
         side="BUY",
