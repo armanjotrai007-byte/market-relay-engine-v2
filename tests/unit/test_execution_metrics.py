@@ -535,13 +535,23 @@ def test_order_event_payload_contains_only_schema_writer_compatible_keys() -> No
     assert "submit_completed_at" not in payload
 
 
-@pytest.mark.parametrize("status_code", [422, 403])
-def test_failed_order_event_payload_uses_rejected_status_for_http_response(
+@pytest.mark.parametrize("status_code", [400, 403, 422])
+def test_failed_order_event_payload_uses_rejected_status_for_4xx_response(
     status_code: int,
 ) -> None:
     payload = build_order_event_payload(_result(success=False, status_code=status_code))
 
     assert payload["status"] == OrderStatus.REJECTED.value
+
+
+@pytest.mark.parametrize("status_code", [500, 502, 504])
+def test_server_or_gateway_failure_order_event_payload_uses_unknown_status(
+    status_code: int,
+) -> None:
+    payload = build_order_event_payload(_result(success=False, status_code=status_code))
+
+    assert payload["status"] == ORDER_STATUS_UNKNOWN
+    assert payload["status"] != OrderStatus.REJECTED.value
 
 
 def test_network_transport_failure_order_event_payload_uses_unknown_status() -> None:
