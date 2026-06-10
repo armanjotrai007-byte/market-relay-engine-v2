@@ -120,10 +120,11 @@ names and does not include `arrival_midprice`, `client_order_id`, `status_code`,
 Order event `status` is mapped from local submission outcome:
 
 - `SUBMITTED` means the broker accepted the submission path succeeded.
-- `REJECTED` means the broker returned an HTTP status/error response.
-- `UNKNOWN` means local transport or network failure left broker outcome
-  uncertain. The current `OrderStatus` contract has no unknown value, so PR21
-  emits the simple string `UNKNOWN`.
+- `REJECTED` means the broker returned a definitive broker/client rejection,
+  usually a 4xx HTTP status.
+- `UNKNOWN` means the broker outcome may be uncertain because of a transport
+  failure, missing HTTP status, or 5xx/gateway error. The current `OrderStatus`
+  contract has no unknown value, so PR21 emits the simple string `UNKNOWN`.
 
 Later reconciliation should query Alpaca by `client_order_id` for `UNKNOWN`
 submissions.
