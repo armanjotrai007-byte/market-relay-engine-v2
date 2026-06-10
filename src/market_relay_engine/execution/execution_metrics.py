@@ -10,6 +10,7 @@ from typing import Any
 from market_relay_engine.common.ids import new_record_id
 from market_relay_engine.common.time import ensure_timezone_aware_utc
 from market_relay_engine.contracts.base import DEFAULT_SCHEMA_VERSION
+from market_relay_engine.contracts.execution import OrderType
 from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse
 from market_relay_engine.execution.order_manager import OrderIntentSide
 from market_relay_engine.execution.position_state import ResolvedOrderIntent
@@ -69,7 +70,7 @@ class OrderSubmissionResult:
     ticker: str
     side: str
     quantity: float
-    order_type: str
+    order_type: str | OrderType
     time_in_force: str
     submit_started_at: datetime
     submit_completed_at: datetime
@@ -104,7 +105,7 @@ class OrderSubmissionResult:
         object.__setattr__(
             self,
             "order_type",
-            _required_string(self.order_type, "order_type"),
+            _normalize_order_type(self.order_type),
         )
         object.__setattr__(
             self,
@@ -403,11 +404,31 @@ def _order_type_for_intent_and_response(
     intent: object,
     raw_response: dict[str, object],
 ) -> str:
-    return _first_present_string(
-        getattr(intent, "order_type", None),
-        _safe_raw_string(raw_response, "order_type", "type"),
-        "market",
-    ) or "market"
+    candidate = _order_type_candidate(getattr(intent, "order_type", None))
+    if candidate is None:
+        candidate = _order_type_candidate(_safe_raw_string(raw_response, "order_type", "type"))
+    if candidate is None:
+        return OrderType.MARKET.value
+    return _normalize_order_type(candidate)
+
+
+def _order_type_candidate(value: object) -> object | None:
+    if isinstance(value, OrderType):
+        return value
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def _normalize_order_type(value: object) -> str:
+    if isinstance(value, OrderType):
+        return value.value
+    if not isinstance(value, str) or not value.strip():
+        raise ExecutionCaptureError("order_type must be a non-empty string")
+    text = value.strip()
+    if text.upper() == OrderType.MARKET.value:
+        return OrderType.MARKET.value
+    raise ExecutionCaptureError(f"unsupported order_type: {text}")
 
 
 def _time_in_force_for_intent_and_response(
