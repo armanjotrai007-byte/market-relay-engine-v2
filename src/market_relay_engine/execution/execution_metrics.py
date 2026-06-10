@@ -240,7 +240,7 @@ def capture_order_submission_result(
 def build_order_event_payload(result: OrderSubmissionResult) -> dict[str, object]:
     """Build a schema-compatible future ``order_events`` payload."""
     payload: dict[str, object] = {
-        "order_time": result.submit_completed_at,
+        "order_time": result.submit_started_at,
         "write_time": None,
         "order_id": _payload_order_id(result),
         "ticker": result.ticker,
