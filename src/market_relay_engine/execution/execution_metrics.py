@@ -10,13 +10,14 @@ from typing import Any
 from market_relay_engine.common.ids import new_record_id
 from market_relay_engine.common.time import ensure_timezone_aware_utc
 from market_relay_engine.contracts.base import DEFAULT_SCHEMA_VERSION
-from market_relay_engine.contracts.execution import OrderType
+from market_relay_engine.contracts.execution import OrderStatus, OrderType
 from market_relay_engine.execution.alpaca_paper import AlpacaPaperResponse
 from market_relay_engine.execution.order_manager import OrderIntentSide
 from market_relay_engine.execution.position_state import ResolvedOrderIntent
 
 
 ORDER_SUBMIT_LATENCY_METRIC_NAME = "alpaca_order_submit_latency_ms"
+ORDER_STATUS_UNKNOWN = "UNKNOWN"
 ORDER_EVENTS_PAYLOAD_KEYS = frozenset(
     {
         "order_time",
@@ -247,7 +248,7 @@ def build_order_event_payload(result: OrderSubmissionResult) -> dict[str, object
         "side": result.side,
         "order_type": result.order_type,
         "quantity": result.quantity,
-        "status": "SUBMITTED" if result.success else "REJECTED",
+        "status": _order_event_status(result),
         "expected_price": result.arrival_midprice,
         "submitted_price": None,
         "broker": "alpaca",
@@ -287,6 +288,14 @@ def build_latency_metric_payload(result: OrderSubmissionResult) -> dict[str, obj
     if unknown_keys:
         raise ExecutionCaptureError(f"latency metric payload has unknown keys: {sorted(unknown_keys)}")
     return payload
+
+
+def _order_event_status(result: OrderSubmissionResult) -> str:
+    if result.success:
+        return OrderStatus.SUBMITTED.value
+    if result.status_code is None:
+        return ORDER_STATUS_UNKNOWN
+    return OrderStatus.REJECTED.value
 
 
 def _utc_datetime(value: datetime, field_name: str) -> datetime:
