@@ -81,7 +81,11 @@ class FillEvent:
     fill_id: str = field(default_factory=lambda: new_record_id("fill"))
     expected_price: float | None = None
     slippage: float | None = None
+    slippage_bps: float | None = None
     broker_status: str | None = None
+    broker_fill_id: str | None = None
+    model_signal_id: str | None = None
+    risk_decision_id: str | None = None
     schema_version: str = DEFAULT_SCHEMA_VERSION
     trace_id: str | None = None
 
@@ -89,4 +93,7 @@ class FillEvent:
         object.__setattr__(self, "fill_time", utc_datetime(self.fill_time))
         require_non_empty_string(self.fill_id, "fill_id")
         require_non_empty_string(self.order_id, "order_id")
+        require_optional_non_empty_string(self.broker_fill_id, "broker_fill_id")
+        require_optional_non_empty_string(self.model_signal_id, "model_signal_id")
+        require_optional_non_empty_string(self.risk_decision_id, "risk_decision_id")
         require_optional_non_empty_string(self.trace_id, "trace_id")

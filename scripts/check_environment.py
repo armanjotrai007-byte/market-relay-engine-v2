@@ -79,6 +79,7 @@ REQUIRED_FILES = [
     "scripts/check_position_state.py",
     "scripts/check_alpaca_paper.py",
     "scripts/check_execution_metrics.py",
+    "scripts/check_fill_reconciliation.py",
     "scripts/check_questdb.py",
     "scripts/check_questdb_schema.py",
     "scripts/check_questdb_writer.py",
@@ -100,6 +101,7 @@ REQUIRED_FILES = [
     "docs/position_state.md",
     "docs/alpaca_paper.md",
     "docs/execution_metrics.md",
+    "docs/fill_reconciliation.md",
     "docs/questdb_health.md",
     "docs/questdb_schema.md",
     "docs/questdb_writer.md",
@@ -122,6 +124,7 @@ REQUIRED_FILES = [
     "src/market_relay_engine/execution/position_state.py",
     "src/market_relay_engine/execution/alpaca_paper.py",
     "src/market_relay_engine/execution/execution_metrics.py",
+    "src/market_relay_engine/execution/fill_reconciliation.py",
     "src/market_relay_engine/questdb/__init__.py",
     "src/market_relay_engine/questdb/health.py",
     "src/market_relay_engine/questdb/writer.py",
@@ -162,6 +165,7 @@ REQUIRED_FILES = [
     "tests/unit/test_position_state.py",
     "tests/unit/test_alpaca_paper.py",
     "tests/unit/test_execution_metrics.py",
+    "tests/unit/test_fill_reconciliation.py",
     "tests/unit/test_questdb_health.py",
     "tests/unit/test_questdb_analysis.py",
     "tests/fixtures/__init__.py",
@@ -207,6 +211,7 @@ REQUIRED_IMPORTS = [
     "market_relay_engine.execution.position_state",
     "market_relay_engine.execution.alpaca_paper",
     "market_relay_engine.execution.execution_metrics",
+    "market_relay_engine.execution.fill_reconciliation",
     "market_relay_engine.questdb",
     "market_relay_engine.questdb.health",
     "market_relay_engine.questdb.writer",
@@ -222,7 +227,6 @@ REQUIRED_IMPORTS = [
     "tests.fixtures.execution",
     "tests.fixtures.ledger",
     "tests.fixtures.system",
-    "tests.fixtures.scenarios",
 ]
 
 
