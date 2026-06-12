@@ -64,6 +64,7 @@ TABLE_COLUMNS = {
     )
 }
 ALLOWED_LEDGER_TABLES = tuple(TABLE_COLUMNS)
+_FIELD_NOT_PROVIDED = object()
 
 
 class QuestDBWriteError(RuntimeError):
@@ -487,7 +488,7 @@ def order_event_to_row(record: Any, *, run_id: str | None = None, session_id: st
     }
 
 
-def fill_event_to_row(record: Any, *, run_id: str | None = None, session_id: str | None = None, broker_fill_id: str | None = None, model_signal_id: str | None = None, risk_decision_id: str | None = None, slippage_bps: float | None = None, write_time: datetime | None = None) -> dict[str, Any]:
+def fill_event_to_row(record: Any, *, run_id: str | None = None, session_id: str | None = None, broker_fill_id: Any = _FIELD_NOT_PROVIDED, model_signal_id: Any = _FIELD_NOT_PROVIDED, risk_decision_id: Any = _FIELD_NOT_PROVIDED, slippage_bps: Any = _FIELD_NOT_PROVIDED, write_time: datetime | None = None) -> dict[str, Any]:
     return {
         'fill_time': record.fill_time,
         'write_time': _resolve_write_time(write_time),
@@ -499,11 +500,11 @@ def fill_event_to_row(record: Any, *, run_id: str | None = None, session_id: str
         'fill_price': record.fill_price,
         'expected_price': record.expected_price,
         'slippage': record.slippage,
-        'slippage_bps': slippage_bps,
+        'slippage_bps': getattr(record, 'slippage_bps', None) if slippage_bps is _FIELD_NOT_PROVIDED else slippage_bps,
         'broker_status': record.broker_status,
-        'broker_fill_id': broker_fill_id,
-        'model_signal_id': model_signal_id,
-        'risk_decision_id': risk_decision_id,
+        'broker_fill_id': getattr(record, 'broker_fill_id', None) if broker_fill_id is _FIELD_NOT_PROVIDED else broker_fill_id,
+        'model_signal_id': getattr(record, 'model_signal_id', None) if model_signal_id is _FIELD_NOT_PROVIDED else model_signal_id,
+        'risk_decision_id': getattr(record, 'risk_decision_id', None) if risk_decision_id is _FIELD_NOT_PROVIDED else risk_decision_id,
         'run_id': run_id,
         'session_id': session_id,
         'schema_version': record.schema_version,
