@@ -16,6 +16,15 @@ from market_relay_engine.execution.execution_metrics import (
     build_order_event_payload,
     capture_order_submission_result,
 )
+from market_relay_engine.execution.fake_paper_loop import (
+    FIXED_FILL_TIME,
+    FIXED_SUBMIT_COMPLETED_AT,
+    FIXED_SUBMIT_STARTED_AT,
+    FakePaperLoopConfig,
+    FakePaperLoopError,
+    FakePaperLoopResult,
+    run_fake_paper_cycle,
+)
 from market_relay_engine.execution.fill_reconciliation import (
     BrokerPositionSnapshot,
     FillProcessingResult,
@@ -61,6 +70,12 @@ __all__ = [
     "AlpacaPaperResponse",
     "BrokerPositionSnapshot",
     "ExecutionCaptureError",
+    "FIXED_FILL_TIME",
+    "FIXED_SUBMIT_COMPLETED_AT",
+    "FIXED_SUBMIT_STARTED_AT",
+    "FakePaperLoopConfig",
+    "FakePaperLoopError",
+    "FakePaperLoopResult",
     "FillProcessingResult",
     "FillReconciliationError",
     "ORDER_SUBMIT_LATENCY_METRIC_NAME",
@@ -94,6 +109,7 @@ __all__ = [
     "reset_daily_account_state",
     "reset_daily_loss",
     "resolve_close_position_intent",
+    "run_fake_paper_cycle",
     "reserve_order_intent",
     "sector_exposure",
 ]
