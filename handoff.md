@@ -8,27 +8,25 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 21 - Execution Metrics / Order Result Capture**
-- Branch: `pr21-execution-metrics-order-result-capture`
-- Purpose: capture local order-submission results from PR19 resolved intents,
-  PR20 Alpaca paper responses, caller-provided UTC timestamps, and optional
-  submit-time arrival midprice.
+- **PR 22 - Fill / Position Reconciliation**
+- Branch: `pr22-fill-position-reconciliation`
+- Purpose: convert execution-level fill payloads to `FillEvent`, apply fills to
+  `PortfolioState`, calculate slippage from submit-time expected price, reconcile
+  local vs broker quantity, and build reconciliation health events.
 - Safety exclusions: no Alpaca calls, no order submission, no QuestDB writes, no
-  fills, no reconciliation, no retries, no live trading, no model inference, no
-  AI calls, no external collectors, and no new heavy dependencies.
-- Next PR after merge: fill/reconciliation work can combine captured
-  `arrival_midprice` with future fill prices.
+  live trading, no retries, no async service, no model inference, no AI calls, no
+  external collectors, and no new heavy dependencies.
+- Next PR after merge: **PR 23 - Fake/Paper End-to-End Loop**
 
-Latest confirmed merged base before PR21:
+Latest confirmed merged base before PR22:
 
-- **PR 20 merge commit:** `0f99464c425a5180862ab09485fb49f6e7de8a49`
+- **PR 21 merge commit:** `18c11be8dd54a2aee42a7c340239d6a7e95eef6d`
 
 Local workspace and publishing note:
 
-- This local workspace is not a usable Git checkout: `.git` is absent, and
-  `git` / `gh` were not available on PATH during recent publishing work.
-- Branches may need to be created on GitHub with the GitHub connector when this
-  workspace remains connector-only.
+- This local workspace is not a usable Git checkout for publishing work.
+- Branches and PRs may need to be created on GitHub with the GitHub connector
+  when this workspace remains connector-only.
 
 ---
 
@@ -80,69 +78,74 @@ PR8 feature parity note: historical batch sorting vs live arrival order must
 remain documented because historical replay sorts by event_time while live
 processing preserves arrival order.
 
+PR19 owns local position accounting and duplicate fill protection through
+`PortfolioState.applied_fill_ids`.
+
+PR20 submits Alpaca paper orders only when explicitly enabled.
+
+PR21 captures order-submission results and optional submit-time
+`arrival_midprice`.
+
 ---
 
 ## Current PR
 
-### PR 21 - Execution Metrics / Order Result Capture
+### PR 22 - Fill / Position Reconciliation
 
 Branch:
 
 ```text
-pr21-execution-metrics-order-result-capture
+pr22-fill-position-reconciliation
 ```
 
 Purpose:
 
-Add a lightweight capture-only layer that takes a PR19 `ResolvedOrderIntent`, a
-PR20 `AlpacaPaperResponse`, caller-provided UTC timestamps, and optional
-submit-time `arrival_midprice`, then returns structured local execution records
-for future ledger writing.
+Add a pure local fill-processing and position-reconciliation layer. PR22 converts
+execution-level Alpaca-like fill payloads into `FillEvent`, applies them to
+`PortfolioState`, calculates slippage using submit-time expected price, compares
+local signed quantity against broker signed quantity, and builds local
+reconciliation health events for future logging or monitoring.
 
 Key behavior:
 
-- `OrderSubmissionResult` links local intent IDs, client order IDs, broker order
-  IDs, status, error text, timing, and optional arrival midprice.
-- Latency uses only local caller timestamps:
-  `(submit_completed_at - submit_started_at).total_seconds() * 1000.0`.
-- `latency_ms` must be finite and greater than or equal to `0.0`; zero latency
-  is valid for mocked or fail-fast local paths.
-- Broker timestamps are not used for latency because local and broker clocks can
-  drift. Future broker timestamps are audit metadata only.
-- PR21 receives timestamps from callers. Future timestamp-capturing wrappers
-  should use `market_relay_engine.common.time` UTC helpers.
-- `capture_order_submission_result(...)` expects an already-resolved BUY/SELL
-  intent. Unresolved `CLOSE_POSITION` is not supported by PR21 capture.
-- Client order ID fallback is explicit argument, safe raw response
-  `client_order_id`, `local_order_id`, `intent.order_id`, then
-  `source_signal_id`.
-- All raw response access is defensive and `raw_response` is never stored in
-  `OrderSubmissionResult`.
-- `order_type` and `time_in_force` prefer intent metadata, then safe raw response
-  metadata, then PR20 market/day defaults.
-- `arrival_midprice` is preserved on `OrderSubmissionResult` and maps to
-  future `order_events.expected_price`.
-- `build_order_event_payload(...)` emits only existing `order_events` schema
-  keys and does not include `arrival_midprice`, `client_order_id`, `status_code`,
-  `error_message`, `submit_started_at`, or `submit_completed_at`.
-- `build_latency_metric_payload(...)` uses
-  `alpaca_order_submit_latency_ms` as the central metric name.
-- Default check script mode is offline and makes no network calls.
+- `FillEvent` now includes optional `slippage_bps`, `broker_fill_id`,
+  `model_signal_id`, and `risk_decision_id` fields.
+- Fill conversion requires a unique execution-level fill id from `execution_id`,
+  `activity_id`, `id`, or `trade_id`.
+- Aggregate order payloads are not treated as fills because broker order IDs can
+  collapse multiple partial fills into one duplicate-protected `fill_id`.
+- Fill `order_id` uses `OrderSubmissionResult.local_order_id`, then
+  `client_order_id`, then `source_signal_id` for local/client order correlation.
+- `OrderSubmissionResult.source_signal_id` maps to `FillEvent.model_signal_id`.
+- `broker_order_id` is not added to `FillEvent` or `fill_events` rows.
+- Slippage uses explicit expected price, then `arrival_midprice`, then remains
+  unavailable.
+- Positive slippage means worse execution for both BUY and SELL.
+- Missing or invalid expected price leaves `expected_price`, `slippage`, and
+  `slippage_bps` as `None`.
+- Broker position snapshots use PR19 signed quantity convention.
+- Reconciliation reports match or mismatch and never auto-corrects positions.
+- A broker snapshot passed to `apply_fill_and_reconcile(...)` must be fresh
+  post-fill or periodic reconciliation state; stale snapshots can produce
+  expected temporary mismatches.
+- `build_position_reconciliation_health_event(...)` returns a `SystemHealthEvent`
+  object only and does not write to QuestDB.
+- `fill_event_to_row(...)` reads fill metadata from `FillEvent` attributes by
+  default and still allows explicit keyword overrides.
 
 Explicitly not added:
 
 - Alpaca calls
 - order submission
+- polling loops
 - QuestDB writes
-- fills
-- reconciliation
-- retries
 - live trading
+- retries
+- async/background services
 - model inference
 - model training
 - AI calls
 - external context collectors
-- async/background services
 - new heavy dependencies
 
 ---
@@ -172,6 +175,7 @@ Run from the repo root after checking out the PR branch:
 .\.venv\Scripts\python.exe scripts/check_position_state.py
 .\.venv\Scripts\python.exe scripts/check_alpaca_paper.py
 .\.venv\Scripts\python.exe scripts/check_execution_metrics.py
+.\.venv\Scripts\python.exe scripts/check_fill_reconciliation.py
 .\.venv\Scripts\python.exe -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
@@ -198,18 +202,6 @@ With QuestDB running on the server laptop, also run:
 
 ## Files To Know
 
-Risk:
-
-```text
-src/market_relay_engine/risk/
-docs/risk_filter.md
-docs/risk_logging.md
-scripts/check_risk_filter.py
-scripts/check_risk_logging.py
-tests/unit/test_risk_filter.py
-tests/unit/test_risk_logging.py
-```
-
 Execution:
 
 ```text
@@ -217,32 +209,28 @@ src/market_relay_engine/execution/order_manager.py
 src/market_relay_engine/execution/position_state.py
 src/market_relay_engine/execution/alpaca_paper.py
 src/market_relay_engine/execution/execution_metrics.py
+src/market_relay_engine/execution/fill_reconciliation.py
 docs/order_manager.md
 docs/position_state.md
 docs/alpaca_paper.md
 docs/execution_metrics.md
+docs/fill_reconciliation.md
 scripts/check_order_manager.py
 scripts/check_position_state.py
 scripts/check_alpaca_paper.py
 scripts/check_execution_metrics.py
+scripts/check_fill_reconciliation.py
 tests/unit/test_order_manager.py
 tests/unit/test_position_state.py
 tests/unit/test_alpaca_paper.py
 tests/unit/test_execution_metrics.py
+tests/unit/test_fill_reconciliation.py
 ```
 
 Core contracts:
 
 ```text
 src/market_relay_engine/contracts/
-```
-
-Feature/cost/label builders:
-
-```text
-src/market_relay_engine/market_data/feature_builder.py
-src/market_relay_engine/market_data/cost_model.py
-src/market_relay_engine/market_data/label_builder.py
 ```
 
 QuestDB:
@@ -272,6 +260,7 @@ scripts/check_order_manager.py
 scripts/check_position_state.py
 scripts/check_alpaca_paper.py
 scripts/check_execution_metrics.py
+scripts/check_fill_reconciliation.py
 scripts/check_questdb.py
 scripts/check_questdb_analysis.py
 scripts/run_tests.ps1
@@ -281,12 +270,10 @@ scripts/run_tests.ps1
 
 ## Next Steps
 
-1. Review PR 21 on GitHub after it is opened.
-2. Check out or pull branch `pr21-execution-metrics-order-result-capture` on the
-   server laptop.
+1. Review PR 22 on GitHub after it is opened.
+2. Check out or pull branch `pr22-fill-position-reconciliation` on the server
+   laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation
    section.
-4. Optionally run account-only Alpaca paper validation with local server-laptop
-   keys.
-5. Run required QuestDB checks with QuestDB running.
-6. Merge PR 21 if review and server-laptop validation are clean.
+4. Merge PR 22 if review and server-laptop validation are clean.
+5. Start PR 23 - Fake/Paper End-to-End Loop.
