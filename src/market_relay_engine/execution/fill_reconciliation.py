@@ -127,7 +127,9 @@ def fill_event_from_alpaca_fill_payload(
         ("execution_id", "activity_id", "id", "trade_id"),
         "fill_id",
     )
-    side = _normalize_order_side(_payload_required_string(payload, ("side",), "side"))
+    side = _normalize_order_side(
+        _payload_or_nested_order_required_string(payload, ("side",), "side")
+    )
     quantity = _positive_float(
         _payload_required_value(payload, ("qty", "quantity"), "quantity"),
         "quantity",
@@ -150,12 +152,16 @@ def fill_event_from_alpaca_fill_payload(
         fill_price=fill_price,
         expected_price=resolved_expected_price,
     )
+    ticker = _payload_or_nested_order_optional_string(
+        payload,
+        ("symbol", "ticker"),
+        "ticker",
+    ) or order_result.ticker
 
     return FillEvent(
         fill_time=fill_time,
         order_id=_order_correlation_id(order_result),
-        ticker=_payload_optional_string(payload, ("symbol", "ticker"), "ticker")
-        or order_result.ticker,
+        ticker=_normalize_ticker(ticker),
         side=side,
         quantity=quantity,
         fill_price=fill_price,
@@ -278,6 +284,40 @@ def _payload_optional_string(
     field_name: str,
 ) -> str | None:
     return _optional_string(_payload_optional_value(payload, keys), field_name)
+
+
+def _nested_order_payload(payload: dict[str, object]) -> dict[str, object]:
+    if "order" not in payload:
+        return {}
+    order = payload["order"]
+    if not isinstance(order, dict):
+        raise FillReconciliationError("order must be a dictionary when provided")
+    return order
+
+
+def _payload_or_nested_order_optional_string(
+    payload: dict[str, object],
+    keys: tuple[str, ...],
+    field_name: str,
+) -> str | None:
+    nested_order = _nested_order_payload(payload)
+    top_level = _payload_optional_string(payload, keys, field_name)
+    if top_level is not None:
+        return top_level
+    if not nested_order:
+        return None
+    return _payload_optional_string(nested_order, keys, field_name)
+
+
+def _payload_or_nested_order_required_string(
+    payload: dict[str, object],
+    keys: tuple[str, ...],
+    field_name: str,
+) -> str:
+    value = _payload_or_nested_order_optional_string(payload, keys, field_name)
+    if value is None:
+        raise FillReconciliationError(f"{field_name} is required")
+    return value
 
 
 def _order_correlation_id(order_result: OrderSubmissionResult) -> str:
