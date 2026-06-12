@@ -47,6 +47,19 @@ def test_execution_level_buy_fill_converts_to_fill_event() -> None:
     assert event.trace_id == "trace_1"
 
 
+def test_flat_activity_style_fill_payload_still_works() -> None:
+    payload = _payload(activity_id="activity_flat_1", ticker="msft")
+    payload.pop("execution_id")
+    payload.pop("symbol")
+
+    event = fill_event_from_alpaca_fill_payload(payload=payload, order_result=_order_result())
+
+    assert event.fill_id == "activity_flat_1"
+    assert event.broker_fill_id == "activity_flat_1"
+    assert event.ticker == "MSFT"
+    assert event.side is OrderSide.BUY
+
+
 def test_execution_level_sell_fill_converts_to_fill_event() -> None:
     event = fill_event_from_alpaca_fill_payload(
         payload=_payload(side="sell", price="99.50"),
@@ -57,6 +70,60 @@ def test_execution_level_sell_fill_converts_to_fill_event() -> None:
     assert event.side is OrderSide.SELL
     assert event.slippage == 0.5
     assert event.slippage_bps == 50.0
+
+
+def test_trade_update_payload_uses_nested_order_side_and_symbol() -> None:
+    payload = _payload(
+        execution_id="execution_trade_update_1",
+        order={"id": "nested_order_1", "symbol": "msft", "side": "sell"},
+    )
+    payload.pop("symbol")
+    payload.pop("side")
+
+    event = fill_event_from_alpaca_fill_payload(payload=payload, order_result=_order_result())
+
+    assert event.fill_id == "execution_trade_update_1"
+    assert event.broker_fill_id == "execution_trade_update_1"
+    assert event.ticker == "MSFT"
+    assert event.side is OrderSide.SELL
+
+
+def test_trade_update_payload_keeps_top_level_execution_id_as_fill_id() -> None:
+    payload = _payload(
+        execution_id="execution_trade_update_2",
+        order={"id": "nested_order_should_not_win", "symbol": "AAPL", "side": "buy"},
+    )
+    payload.pop("side")
+
+    event = fill_event_from_alpaca_fill_payload(payload=payload, order_result=_order_result())
+
+    assert event.fill_id == "execution_trade_update_2"
+    assert event.broker_fill_id == "execution_trade_update_2"
+    assert event.fill_id != "nested_order_should_not_win"
+
+
+def test_nested_order_id_is_not_used_as_fill_id() -> None:
+    payload = _payload(order={"id": "nested_order_1", "symbol": "AAPL", "side": "buy"})
+    payload.pop("execution_id")
+
+    with pytest.raises(FillReconciliationError, match="fill_id"):
+        fill_event_from_alpaca_fill_payload(payload=payload, order_result=_order_result())
+
+
+def test_missing_top_level_and_nested_order_side_rejects() -> None:
+    payload = _payload(order={"symbol": "AAPL"})
+    payload.pop("side")
+
+    with pytest.raises(FillReconciliationError, match="side"):
+        fill_event_from_alpaca_fill_payload(payload=payload, order_result=_order_result())
+
+
+def test_non_dict_nested_order_rejects() -> None:
+    with pytest.raises(FillReconciliationError, match="order"):
+        fill_event_from_alpaca_fill_payload(
+            payload=_payload(order="not-a-dict"),
+            order_result=_order_result(),
+        )
 
 
 @pytest.mark.parametrize("id_key", ["execution_id", "activity_id", "id", "trade_id"])
