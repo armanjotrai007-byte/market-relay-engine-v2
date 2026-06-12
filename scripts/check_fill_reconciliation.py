@@ -67,7 +67,8 @@ def main() -> int:
     assert fill_event.order_id == "local_order_check_fill_reconciliation"
     assert fill_event.model_signal_id == "signal_check_fill_reconciliation"
     assert fill_event.risk_decision_id == "risk_check_fill_reconciliation"
-    assert fill_event.slippage == 0.04999999999999716
+    assert fill_event.slippage is not None
+    assert abs(fill_event.slippage - 0.05) < 1e-12
 
     portfolio = PortfolioState()
     result = apply_fill_and_reconcile(
