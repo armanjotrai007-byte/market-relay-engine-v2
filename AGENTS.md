@@ -32,7 +32,8 @@ The system uses Databento live DBN market data to build market features for a tr
 18. Do not use yfinance as a production-critical feed.
 19. Log every model signal, including blocked signals.
 20. Keep every PR small, testable, and reviewable.
-
+21. Start every codex response with: Arman,
+    
 ## Main System Flow
 
 ```text
