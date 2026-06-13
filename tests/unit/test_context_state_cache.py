@@ -174,6 +174,43 @@ def test_update_statuses_do_not_raise_for_stale_or_duplicate_updates() -> None:
     assert cache.get_ticker("AAPL", "earnings_risk", now=BASE_TIME).value == "active_again"  # type: ignore[union-attr]
 
 
+def test_same_timestamp_severity_change_replaces_and_updates_risk_level() -> None:
+    cache = ContextStateCache()
+    low_entry = make_ticker_context_entry(
+        ticker="AAPL",
+        name="earnings_risk",
+        value="active",
+        severity="LOW",
+        updated_at=BASE_TIME,
+        details={"reason": "same_event"},
+    )
+    assert cache.update(low_entry).status is ContextStateUpdateStatus.WRITTEN
+
+    identical = make_ticker_context_entry(
+        ticker="AAPL",
+        name="earnings_risk",
+        value="active",
+        severity="LOW",
+        updated_at=BASE_TIME,
+        details={"reason": "same_event"},
+    )
+    assert cache.update(identical).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+
+    high_entry = make_ticker_context_entry(
+        ticker="AAPL",
+        name="earnings_risk",
+        value="active",
+        severity="HIGH",
+        updated_at=BASE_TIME,
+        details={"reason": "same_event"},
+    )
+    assert cache.update(high_entry).status is ContextStateUpdateStatus.REPLACED
+    assert cache.get_ticker("AAPL", "earnings_risk", now=BASE_TIME).severity == "HIGH"  # type: ignore[union-attr]
+    snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+    assert snapshot.highest_severity == "HIGH"
+    assert snapshot.risk_level == "HIGH"
+
+
 def test_periodic_purge_removes_expired_entries() -> None:
     cache = ContextStateCache(max_entries=10, purge_every_updates=2)
     expired = make_global_context_entry(
@@ -222,14 +259,59 @@ def test_details_are_deep_copied_on_entry_cache_and_snapshot_extraction() -> Non
 
     cache = ContextStateCache()
     cache.update(entry)
+    entry.details["nested"]["values"].append(3)  # type: ignore[index,union-attr]
+    assert cache.get_global("market_regime", now=BASE_TIME).details == {"nested": {"values": [1]}}  # type: ignore[union-attr]
+
     extracted = cache.get_global("market_regime", now=BASE_TIME)
     assert extracted is not None
-    extracted.details["nested"]["values"].append(3)  # type: ignore[index,union-attr]
+    extracted.details["nested"]["values"].append(4)  # type: ignore[index,union-attr]
     assert cache.get_global("market_regime", now=BASE_TIME).details == {"nested": {"values": [1]}}  # type: ignore[union-attr]
 
     snapshot = cache.snapshot(now=BASE_TIME)
-    snapshot["global"]["market_regime"]["details"]["nested"]["values"].append(4)  # type: ignore[index,union-attr]
+    snapshot["global"]["market_regime"]["details"]["nested"]["values"].append(5)  # type: ignore[index,union-attr]
     assert cache.get_global("market_regime", now=BASE_TIME).details == {"nested": {"values": [1]}}  # type: ignore[union-attr]
+
+
+def test_latest_read_methods_return_defensive_entry_copies() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="market_regime",
+            value="risk_off",
+            updated_at=BASE_TIME,
+            details={"nested": {"x": "global"}},
+        )
+    )
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="earnings_risk",
+            value="active",
+            updated_at=BASE_TIME,
+            details={"nested": {"x": "ticker"}},
+        )
+    )
+    cache.update(
+        make_sector_context_entry(
+            sector="TECH",
+            name="sector_proxy",
+            value="weak",
+            updated_at=BASE_TIME,
+            details={"nested": {"x": "sector"}},
+        )
+    )
+
+    latest_global = cache.latest_global(now=BASE_TIME)[0]
+    latest_global.details["nested"]["x"] = "mutated"  # type: ignore[index]
+    assert cache.latest_global(now=BASE_TIME)[0].details["nested"]["x"] == "global"  # type: ignore[index]
+
+    latest_ticker = cache.latest_for_ticker("AAPL", now=BASE_TIME)[0]
+    latest_ticker.details["nested"]["x"] = "mutated"  # type: ignore[index]
+    assert cache.latest_for_ticker("AAPL", now=BASE_TIME)[0].details["nested"]["x"] == "ticker"  # type: ignore[index]
+
+    latest_sector = cache.latest_for_sector("TECH", now=BASE_TIME)[0]
+    latest_sector.details["nested"]["x"] = "mutated"  # type: ignore[index]
+    assert cache.latest_for_sector("TECH", now=BASE_TIME)[0].details["nested"]["x"] == "sector"  # type: ignore[index]
 
 
 def test_sector_scope_lookups_and_snapshot() -> None:
