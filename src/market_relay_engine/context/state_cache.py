@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum
 import json
@@ -167,26 +167,30 @@ class ContextStateCache:
         if not isinstance(entry, ContextStateEntry):
             raise ContextStateCacheError("entry must be a ContextStateEntry")
 
+        stored_entry = _entry_copy(entry)
         with self._lock:
             self._update_attempt_count += 1
             purged_count = 0
             if self._update_attempt_count % self.purge_every_updates == 0:
-                purged_count = self._purge_expired_locked(entry.updated_at)
+                purged_count = self._purge_expired_locked(stored_entry.updated_at)
 
-            existing = self._entries.get(entry.key)
+            existing = self._entries.get(stored_entry.key)
             evicted_count = 0
             message: str | None = None
             if existing is None:
-                self._entries[entry.key] = entry
+                self._entries[stored_entry.key] = stored_entry
                 status = ContextStateUpdateStatus.WRITTEN
-            elif entry.updated_at < existing.updated_at:
+            elif stored_entry.updated_at < existing.updated_at:
                 status = ContextStateUpdateStatus.IGNORED_STALE
                 message = "ignored stale context state update"
-            elif entry.updated_at == existing.updated_at and _same_content(existing, entry):
+            elif stored_entry.updated_at == existing.updated_at and _same_content(
+                existing,
+                stored_entry,
+            ):
                 status = ContextStateUpdateStatus.IGNORED_DUPLICATE
                 message = "ignored duplicate context state update"
             else:
-                self._entries[entry.key] = entry
+                self._entries[stored_entry.key] = stored_entry
                 status = ContextStateUpdateStatus.REPLACED
 
             if status in {
@@ -197,7 +201,7 @@ class ContextStateCache:
 
             return ContextStateUpdateResult(
                 status=status,
-                key=entry.key,
+                key=stored_entry.key,
                 purged_expired_count=purged_count,
                 evicted_count=evicted_count,
                 message=message,
@@ -618,6 +622,7 @@ def _is_expired(entry: ContextStateEntry, now: datetime) -> bool:
 def _same_content(left: ContextStateEntry, right: ContextStateEntry) -> bool:
     return (
         left.value == right.value
+        and left.severity == right.severity
         and left.source == right.source
         and left.details == right.details
     )
@@ -632,18 +637,7 @@ def _entry_sort_key(entry: ContextStateEntry) -> tuple[str, str, str, str]:
 
 
 def _entry_copy(entry: ContextStateEntry) -> ContextStateEntry:
-    return ContextStateEntry(
-        key=entry.key,
-        value=entry.value,
-        updated_at=entry.updated_at,
-        severity=entry.severity,
-        source=entry.source,
-        source_event_time=entry.source_event_time,
-        valid_until=entry.valid_until,
-        confidence=entry.confidence,
-        details=entry.details,
-        trace_id=entry.trace_id,
-    )
+    return replace(entry, details=_json_safe_details_copy(entry.details))
 
 
 def _entry_to_dict(entry: ContextStateEntry, now: datetime) -> dict[str, object]:
