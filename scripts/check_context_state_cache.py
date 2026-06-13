@@ -153,6 +153,27 @@ def main() -> int:
     assert contract_snapshot.risk_level == "HIGH"
     to_json_string(contract_snapshot)
 
+    stale_cache = ContextStateCache(max_entries=5, purge_every_updates=10)
+    stale_cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="expired_only",
+            value="stale",
+            severity="HIGH",
+            source="manual",
+            updated_at=now - timedelta(hours=2),
+            valid_until=now - timedelta(hours=1),
+        )
+    )
+    stale_snapshot = stale_cache.to_context_state_snapshot(ticker="AAPL", now=now)
+    assert stale_snapshot.risk_level == "ELEVATED"
+    assert stale_snapshot.highest_severity == "EXPIRED"
+    assert stale_snapshot.context_summary["fresh_entry_count"] == 0
+    assert stale_snapshot.context_summary["expired_entry_count"] == 1
+    assert stale_snapshot.context_summary["expired_context_present"] is True
+    assert stale_snapshot.context_summary["stale_context_policy"] == "ELEVATED"
+    to_json_string(stale_snapshot)
+
     print("Context state cache check PASS")
     return 0
 
