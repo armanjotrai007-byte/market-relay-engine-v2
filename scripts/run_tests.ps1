@@ -146,6 +146,12 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "Running context state cache validation..."
+& $Python scripts/check_context_state_cache.py
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+}
+
 Write-Host "Running pytest..."
 & $Python -m pytest
 if ($LASTEXITCODE -ne 0) {
