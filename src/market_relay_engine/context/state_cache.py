@@ -357,31 +357,53 @@ class ContextStateCache:
         trace_id = _optional_string(trace_id, "trace_id")
         timestamp = _normalize_now(now)
         with self._lock:
-            entries: list[ContextStateEntry] = []
+            fresh_entries: list[ContextStateEntry] = []
+            expired_entries: list[ContextStateEntry] = []
             for entry in self._entries.values():
-                if _is_expired(entry, timestamp):
-                    continue
                 key = entry.key
-                if include_global and key.scope is ContextScope.GLOBAL:
-                    entries.append(entry)
-                elif include_ticker and key.scope is ContextScope.TICKER and key.ticker == ticker:
-                    entries.append(entry)
-                elif (
-                    include_sector
-                    and sector is not None
-                    and key.scope is ContextScope.SECTOR
-                    and key.sector == sector
-                ):
-                    entries.append(entry)
+                relevant = (
+                    (include_global and key.scope is ContextScope.GLOBAL)
+                    or (include_ticker and key.scope is ContextScope.TICKER and key.ticker == ticker)
+                    or (
+                        include_sector
+                        and sector is not None
+                        and key.scope is ContextScope.SECTOR
+                        and key.sector == sector
+                    )
+                )
+                if not relevant:
+                    continue
+                if _is_expired(entry, timestamp):
+                    expired_entries.append(entry)
+                else:
+                    fresh_entries.append(entry)
 
-            entries = sorted(entries, key=_entry_sort_key)
+            fresh_entries = sorted(fresh_entries, key=_entry_sort_key)
             context_summary = _empty_snapshot_dict()
-            for entry in entries:
+            for entry in fresh_entries:
                 _add_entry_dict(context_summary, _entry_to_dict(entry, timestamp))
-            context_summary["entry_count"] = len(entries)
-            highest_severity = _highest_severity(entries)
-            risk_level = _risk_level_for_severity(highest_severity)
-            valid_until = _earliest_valid_until(entries)
+            context_summary["entry_count"] = len(fresh_entries)
+
+            if fresh_entries:
+                highest_severity = _highest_severity(fresh_entries)
+                risk_level = _risk_level_for_severity(highest_severity)
+                valid_until = _earliest_valid_until(fresh_entries)
+            elif expired_entries:
+                expired_entries = sorted(expired_entries, key=_entry_sort_key)
+                context_summary["fresh_entry_count"] = 0
+                context_summary["expired_entry_count"] = len(expired_entries)
+                context_summary["expired_context_present"] = True
+                context_summary["stale_context_policy"] = "ELEVATED"
+                context_summary["expired_entries"] = [
+                    _entry_to_dict(entry, timestamp) for entry in expired_entries
+                ]
+                highest_severity = "EXPIRED"
+                risk_level = "ELEVATED"
+                valid_until = None
+            else:
+                highest_severity = None
+                risk_level = None
+                valid_until = None
 
             return ContextStateSnapshot(
                 snapshot_time=timestamp,
