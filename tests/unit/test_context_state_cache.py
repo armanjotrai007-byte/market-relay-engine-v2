@@ -372,6 +372,8 @@ def test_context_state_snapshot_risk_level_mapping() -> None:
     empty_snapshot = ContextStateCache().to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
     assert empty_snapshot.risk_level is None
     assert empty_snapshot.highest_severity is None
+    assert empty_snapshot.context_summary["entry_count"] == 0
+    assert "expired_context_present" not in empty_snapshot.context_summary
 
 
 def test_context_state_snapshot_aggregates_global_sector_and_ticker_entries() -> None:
@@ -435,7 +437,112 @@ def test_context_state_snapshot_aggregates_global_sector_and_ticker_entries() ->
     assert "TECH" in snapshot.context_summary["sectors"]
     assert "AAPL" in snapshot.context_summary["tickers"]
     assert "expired_risk" not in snapshot.context_summary["tickers"]["AAPL"]
+    assert "expired_context_present" not in snapshot.context_summary
     json.dumps(snapshot.context_summary, allow_nan=False, sort_keys=True)
+
+
+def test_context_state_snapshot_only_expired_ticker_context_is_elevated() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="earnings_risk",
+            value="expired",
+            severity="HIGH",
+            updated_at=BASE_TIME - timedelta(hours=2),
+            valid_until=BASE_TIME - timedelta(hours=1),
+        )
+    )
+
+    snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+
+    assert snapshot.risk_level == "ELEVATED"
+    assert snapshot.highest_severity == "EXPIRED"
+    assert snapshot.context_summary["entry_count"] == 0
+    assert snapshot.context_summary["fresh_entry_count"] == 0
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_context_present"] is True
+    assert snapshot.context_summary["stale_context_policy"] == "ELEVATED"
+    assert snapshot.context_summary["expired_entries"][0]["name"] == "earnings_risk"
+    assert snapshot.context_summary["expired_entries"][0]["expired"] is True
+
+
+def test_context_state_snapshot_fresh_entry_is_not_overridden_by_expired_entry() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="fresh_risk",
+            value="watch",
+            severity="LOW",
+            updated_at=BASE_TIME,
+        )
+    )
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="expired_risk",
+            value="old_high",
+            severity="CRITICAL",
+            updated_at=BASE_TIME - timedelta(hours=2),
+            valid_until=BASE_TIME - timedelta(hours=1),
+        )
+    )
+
+    snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+
+    assert snapshot.highest_severity == "LOW"
+    assert snapshot.risk_level == "LOW"
+    assert snapshot.context_summary["entry_count"] == 1
+    assert "expired_context_present" not in snapshot.context_summary
+    assert "expired_risk" not in snapshot.context_summary["tickers"]["AAPL"]
+
+
+def test_context_state_snapshot_expired_global_only_context_is_elevated() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="market_regime",
+            value="expired",
+            severity="HIGH",
+            updated_at=BASE_TIME - timedelta(hours=2),
+            valid_until=BASE_TIME - timedelta(hours=1),
+        )
+    )
+
+    snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+
+    assert snapshot.risk_level == "ELEVATED"
+    assert snapshot.highest_severity == "EXPIRED"
+    assert snapshot.context_summary["expired_context_present"] is True
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_entries"][0]["scope"] == "GLOBAL"
+
+
+def test_context_state_snapshot_expired_sector_context_is_elevated() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_sector_context_entry(
+            sector="TECH",
+            name="sector_proxy",
+            value="expired",
+            severity="MEDIUM",
+            updated_at=BASE_TIME - timedelta(hours=2),
+            valid_until=BASE_TIME - timedelta(hours=1),
+        )
+    )
+
+    snapshot = cache.to_context_state_snapshot(
+        ticker="AAPL",
+        sector="tech",
+        now=BASE_TIME,
+    )
+
+    assert snapshot.risk_level == "ELEVATED"
+    assert snapshot.highest_severity == "EXPIRED"
+    assert snapshot.context_summary["expired_context_present"] is True
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_entries"][0]["sector"] == "TECH"
 
 
 def test_clear_and_purge_expired() -> None:
