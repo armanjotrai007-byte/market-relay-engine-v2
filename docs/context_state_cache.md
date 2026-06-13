@@ -22,16 +22,16 @@ Future sector proxy collectors should write sector facts under `SECTOR` scope. T
 
 `source_event_time` is optional and represents the timestamp of the underlying source data or event when the source has one.
 
-`valid_until` is optional and represents when the cached context should stop being trusted. Expired entries are hidden by default from reads, snapshots, and `ContextStateSnapshot` aggregation.
+`valid_until` is optional and represents when the cached context should stop being trusted. Expired entries are hidden by default from normal reads and raw cache snapshots.
 
 ## Update Results
 
 `update(...)` returns `ContextStateUpdateResult` instead of raising for normal race outcomes:
 
 - `WRITTEN`: first active value for a key.
-- `REPLACED`: newer value, or same timestamp with changed value, source, or details.
+- `REPLACED`: newer value, or same timestamp with changed value, severity, source, or details.
 - `IGNORED_STALE`: older value for an existing key.
-- `IGNORED_DUPLICATE`: same timestamp with unchanged value, source, and details, including metadata-only changes.
+- `IGNORED_DUPLICATE`: same timestamp with unchanged value, severity, source, and details, including metadata-only changes.
 
 Invalid local inputs still raise `ContextStateCacheError`.
 
@@ -45,7 +45,7 @@ This is still a simple in-process memory cache. It does not start a background w
 
 ## JSON Isolation
 
-Entry `details` must be JSON-safe. Details are deep-copied during `ContextStateEntry` construction, and snapshots return deep-copied nested data. Mutating the original details object or a returned snapshot cannot mutate cache internals.
+Entry `details` must be JSON-safe. Details are deep-copied during `ContextStateEntry` construction, before entries are stored internally, and when read APIs return entries. Snapshots also return deep-copied nested data. Mutating the original details object, a returned entry, or a returned snapshot cannot mutate cache internals.
 
 `snapshot()` returns a plain JSON-safe dictionary with this structure:
 
@@ -70,9 +70,15 @@ For a requested ticker, aggregation can include:
 - ticker entries for that ticker
 - sector entries for the provided sector
 
-The method calculates `highest_severity`, maps severity to `risk_level`, sets `valid_until` to the earliest included non-null validity time, and stores JSON-safe grouped entries in `context_summary`.
+Fresh relevant entries aggregate normally. Expired relevant entries are excluded from the active summary when at least one fresh relevant entry exists.
 
-Risk level mapping:
+If no fresh relevant entries exist but expired relevant entries are present, `to_context_state_snapshot(...)` does not treat that as clean context. It returns `risk_level="ELEVATED"`, sets `highest_severity="EXPIRED"`, and records `fresh_entry_count`, `expired_entry_count`, `expired_context_present`, `stale_context_policy="ELEVATED"`, and JSON-safe expired entry metadata in `context_summary`. This safety default lets the risk path reduce size instead of confusing stale context with no-risk context in future trading decisions.
+
+If no relevant entries exist at all, `risk_level` remains `None`.
+
+The method calculates `highest_severity`, maps severity to `risk_level`, sets `valid_until` to the earliest included non-null validity time for fresh entries, and stores JSON-safe grouped entries in `context_summary`.
+
+Risk level mapping for fresh entries:
 
 - `CRITICAL` or `HIGH`: `HIGH`
 - `MEDIUM`: `ELEVATED`
