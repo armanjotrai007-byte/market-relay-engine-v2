@@ -39,7 +39,19 @@ def main() -> int:
     )
     written = cache.update(global_entry)
     assert written.status is ContextStateUpdateStatus.WRITTEN
-    duplicate = cache.update(global_entry)
+    global_entry.details["risk"]["active"] = False  # type: ignore[index]
+    assert cache.get_global("market_regime", now=now).details["risk"]["active"] is True  # type: ignore[union-attr,index]
+
+    duplicate = cache.update(
+        make_global_context_entry(
+            name="market_regime",
+            value="risk_off",
+            severity="HIGH",
+            source="manual",
+            updated_at=now,
+            details={"risk": {"active": True}},
+        )
+    )
     assert duplicate.status is ContextStateUpdateStatus.IGNORED_DUPLICATE
 
     stale_global = make_global_context_entry(
@@ -60,10 +72,15 @@ def main() -> int:
         severity="MEDIUM",
         source="manual",
         updated_at=now + timedelta(seconds=1),
+        details={"nested": {"x": "original"}},
     )
     ticker_result = cache.update(ticker_entry)
     assert ticker_result.status is ContextStateUpdateStatus.WRITTEN
-    assert cache.get_ticker("aapl", "earnings_risk", now=now).value == "active"  # type: ignore[union-attr]
+    cached_ticker = cache.get_ticker("aapl", "earnings_risk", now=now)
+    assert cached_ticker is not None
+    assert cached_ticker.value == "active"
+    cached_ticker.details["nested"]["x"] = "mutated"  # type: ignore[index]
+    assert cache.get_ticker("AAPL", "earnings_risk", now=now).details["nested"]["x"] == "original"  # type: ignore[union-attr,index]
 
     sector_entry = make_sector_context_entry(
         sector="TECH",
@@ -72,10 +89,36 @@ def main() -> int:
         severity="MEDIUM",
         source="manual",
         updated_at=now + timedelta(seconds=2),
+        details={"nested": {"x": "sector"}},
     )
     sector_result = cache.update(sector_entry)
     assert sector_result.status is ContextStateUpdateStatus.WRITTEN
-    assert cache.get_sector("tech", "sector_proxy", now=now).value == "weak"  # type: ignore[union-attr]
+    latest_sector = cache.latest_for_sector("tech", now=now)[0]
+    latest_sector.details["nested"]["x"] = "mutated"  # type: ignore[index]
+    assert cache.get_sector("TECH", "sector_proxy", now=now).details["nested"]["x"] == "sector"  # type: ignore[union-attr,index]
+
+    low_same_time = make_ticker_context_entry(
+        ticker="MSFT",
+        name="same_time_risk",
+        value="active",
+        severity="LOW",
+        source="manual",
+        updated_at=now + timedelta(seconds=3),
+        details={"reason": "same_event"},
+    )
+    assert cache.update(low_same_time).status is ContextStateUpdateStatus.WRITTEN
+    assert cache.update(low_same_time).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    high_same_time = make_ticker_context_entry(
+        ticker="MSFT",
+        name="same_time_risk",
+        value="active",
+        severity="HIGH",
+        source="manual",
+        updated_at=now + timedelta(seconds=3),
+        details={"reason": "same_event"},
+    )
+    assert cache.update(high_same_time).status is ContextStateUpdateStatus.REPLACED
+    assert cache.to_context_state_snapshot(ticker="MSFT", now=now).risk_level == "HIGH"
 
     expired_entry = make_ticker_context_entry(
         ticker="AAPL",
