@@ -180,14 +180,10 @@ def test_cache_config_validation() -> None:
         ContextStateCache(max_entries=0)
     with pytest.raises(ContextStateCacheError):
         ContextStateCache(max_entries=True)
-    with pytest.raises(ContextStateCacheError):
-        ContextStateCache(purge_every_updates=0)
-    with pytest.raises(ContextStateCacheError):
-        ContextStateCache(purge_every_updates=True)
 
 
 def test_update_statuses_do_not_raise_for_stale_or_duplicate_updates() -> None:
-    cache = ContextStateCache(max_entries=10, purge_every_updates=100)
+    cache = ContextStateCache(max_entries=10)
     first = make_ticker_context_entry(
         ticker="AAPL",
         name="earnings_risk",
@@ -225,17 +221,15 @@ def test_update_statuses_do_not_raise_for_stale_or_duplicate_updates() -> None:
     )
     assert cache.update(duplicate).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
 
-    metadata_only = make_ticker_context_entry(
+    trace_only = make_ticker_context_entry(
         ticker="AAPL",
         name="earnings_risk",
         value="cooling",
         updated_at=BASE_TIME + timedelta(seconds=1),
-        confidence=0.25,
-        valid_until=BASE_TIME + timedelta(minutes=5),
         details={"reason": "post_call"},
         trace_id="trace_changed",
     )
-    assert cache.update(metadata_only).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    assert cache.update(trace_only).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
 
     same_time_changed = make_ticker_context_entry(
         ticker="AAPL",
@@ -246,6 +240,122 @@ def test_update_statuses_do_not_raise_for_stale_or_duplicate_updates() -> None:
     )
     assert cache.update(same_time_changed).status is ContextStateUpdateStatus.REPLACED
     assert cache.get_ticker("AAPL", "earnings_risk", now=BASE_TIME).value == "active_again"  # type: ignore[union-attr]
+
+
+def test_same_timestamp_semantic_field_changes_replace_trace_id_does_not() -> None:
+    cache = ContextStateCache()
+    source_event_time = BASE_TIME - timedelta(minutes=5)
+    valid_until = BASE_TIME + timedelta(minutes=10)
+    base = make_ticker_context_entry(
+        ticker="AAPL",
+        name="validity_sensitive",
+        value="active",
+        severity="LOW",
+        source="manual",
+        source_event_time=source_event_time,
+        updated_at=BASE_TIME,
+        valid_until=valid_until,
+        confidence=0.50,
+        details={"reason": "same_event"},
+        trace_id="trace_1",
+    )
+    assert cache.update(base).status is ContextStateUpdateStatus.WRITTEN
+
+    identical = make_ticker_context_entry(
+        ticker="AAPL",
+        name="validity_sensitive",
+        value="active",
+        severity="LOW",
+        source="manual",
+        source_event_time=source_event_time,
+        updated_at=BASE_TIME,
+        valid_until=valid_until,
+        confidence=0.50,
+        details={"reason": "same_event"},
+        trace_id="trace_2",
+    )
+    assert cache.update(identical).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+
+    extended = make_ticker_context_entry(
+        ticker="AAPL",
+        name="validity_sensitive",
+        value="active",
+        severity="LOW",
+        source="manual",
+        source_event_time=source_event_time,
+        updated_at=BASE_TIME,
+        valid_until=BASE_TIME + timedelta(minutes=20),
+        confidence=0.50,
+        details={"reason": "same_event"},
+    )
+    assert cache.update(extended).status is ContextStateUpdateStatus.REPLACED
+    assert cache.get_ticker(
+        "AAPL",
+        "validity_sensitive",
+        now=valid_until + timedelta(microseconds=1),
+    ) is not None
+
+    shortened = make_ticker_context_entry(
+        ticker="AAPL",
+        name="validity_sensitive",
+        value="active",
+        severity="LOW",
+        source="manual",
+        source_event_time=source_event_time,
+        updated_at=BASE_TIME,
+        valid_until=BASE_TIME + timedelta(minutes=1),
+        confidence=0.50,
+        details={"reason": "same_event"},
+    )
+    assert cache.update(shortened).status is ContextStateUpdateStatus.REPLACED
+    assert cache.get_ticker(
+        "AAPL",
+        "validity_sensitive",
+        now=BASE_TIME + timedelta(minutes=1, microseconds=1),
+    ) is None
+
+    changed_source_time = make_ticker_context_entry(
+        ticker="AAPL",
+        name="validity_sensitive",
+        value="active",
+        severity="LOW",
+        source="manual",
+        source_event_time=source_event_time + timedelta(seconds=1),
+        updated_at=BASE_TIME,
+        valid_until=BASE_TIME + timedelta(minutes=1),
+        confidence=0.50,
+        details={"reason": "same_event"},
+    )
+    assert cache.update(changed_source_time).status is ContextStateUpdateStatus.REPLACED
+
+    changed_confidence = make_ticker_context_entry(
+        ticker="AAPL",
+        name="validity_sensitive",
+        value="active",
+        severity="LOW",
+        source="manual",
+        source_event_time=source_event_time + timedelta(seconds=1),
+        updated_at=BASE_TIME,
+        valid_until=BASE_TIME + timedelta(minutes=1),
+        confidence=0.75,
+        details={"reason": "same_event"},
+    )
+    assert cache.update(changed_confidence).status is ContextStateUpdateStatus.REPLACED
+
+    trace_only_after_replacement = make_ticker_context_entry(
+        ticker="AAPL",
+        name="validity_sensitive",
+        value="active",
+        severity="LOW",
+        source="manual",
+        source_event_time=source_event_time + timedelta(seconds=1),
+        updated_at=BASE_TIME,
+        valid_until=BASE_TIME + timedelta(minutes=1),
+        confidence=0.75,
+        details={"reason": "same_event"},
+        trace_id="trace_3",
+    )
+    assert cache.update(trace_only_after_replacement).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
 
 
 def test_same_timestamp_severity_change_replaces_and_updates_risk_level() -> None:
@@ -285,36 +395,61 @@ def test_same_timestamp_severity_change_replaces_and_updates_risk_level() -> Non
     assert snapshot.risk_level == "HIGH"
 
 
-def test_periodic_purge_removes_expired_entries() -> None:
-    cache = ContextStateCache(max_entries=10, purge_every_updates=2)
-    expired = make_global_context_entry(
-        name="macro_event_risk",
+def test_unrelated_updates_retain_expired_risk_context_until_explicit_purge() -> None:
+    cache = ContextStateCache(max_entries=20)
+    expired = make_ticker_context_entry(
+        ticker="AAPL",
+        name="stale_high_risk",
         value="expired",
+        severity="HIGH",
         updated_at=BASE_TIME - timedelta(hours=2),
         valid_until=BASE_TIME - timedelta(hours=1),
     )
     assert cache.update(expired).status is ContextStateUpdateStatus.WRITTEN
-    assert cache.get_global("macro_event_risk", now=BASE_TIME) is None
-    assert cache.get_global("macro_event_risk", now=BASE_TIME, include_expired=True) is not None
 
-    fresh = make_global_context_entry(
-        name="market_regime",
-        value="risk_off",
-        updated_at=BASE_TIME,
-    )
-    result = cache.update(fresh)
-    assert result.purged_expired_count == 1
-    assert cache.get_global("macro_event_risk", now=BASE_TIME, include_expired=True) is None
+    for index in range(12):
+        cache.update(
+            make_global_context_entry(
+                name=f"heartbeat_{index}",
+                value="ok",
+                severity="INFO",
+                updated_at=BASE_TIME + timedelta(seconds=index),
+            )
+        )
+
+    assert cache.get_ticker(
+        "AAPL",
+        "stale_high_risk",
+        now=BASE_TIME,
+        include_expired=True,
+    ) is not None
+    snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+    assert snapshot.risk_level == "ELEVATED"
+    assert snapshot.highest_severity == "EXPIRED"
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_context_present"] is True
+
+    assert cache.purge_expired(now=BASE_TIME) == 1
+    assert cache.get_ticker(
+        "AAPL",
+        "stale_high_risk",
+        now=BASE_TIME,
+        include_expired=True,
+    ) is None
+    after_purge = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+    assert after_purge.risk_level is None
+    assert "expired_context_present" not in after_purge.context_summary
 
 
 def test_max_entries_eviction_removes_oldest_with_key_tie_break() -> None:
-    cache = ContextStateCache(max_entries=2, purge_every_updates=100)
+    cache = ContextStateCache(max_entries=2)
     for name in ("beta", "alpha", "gamma"):
         result = cache.update(
             make_global_context_entry(name=name, value=name, updated_at=BASE_TIME)
         )
 
     assert result.evicted_count == 1
+    assert cache.snapshot(now=BASE_TIME, include_expired=True)["entry_count"] == 2
     assert cache.get_global("alpha", now=BASE_TIME, include_expired=True) is None
     assert cache.get_global("beta", now=BASE_TIME) is not None
     assert cache.get_global("gamma", now=BASE_TIME) is not None
@@ -752,12 +887,13 @@ def test_clear_and_purge_expired() -> None:
     )
     assert cache.purge_expired(now=BASE_TIME) == 1
     assert cache.snapshot(now=BASE_TIME)["entry_count"] == 1
+    assert cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME).risk_level is None
     cache.clear()
     assert cache.snapshot(now=BASE_TIME)["entry_count"] == 0
 
 
 def test_basic_concurrent_read_write_smoke() -> None:
-    cache = ContextStateCache(max_entries=20, purge_every_updates=5)
+    cache = ContextStateCache(max_entries=20)
 
     def write_entry(index: int) -> None:
         cache.update(
