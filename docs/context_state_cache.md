@@ -4,7 +4,7 @@
 
 PR24 adds a bounded in-memory `ContextStateCache` for the latest structured context facts. It is the fast live-decision memory that future risk logic can read without using QuestDB, external services, AI calls, or model inference during a trade decision.
 
-The cache stores the latest facts only. QuestDB remains the ledger and history store, not the hot-path source for live context reads.
+The cache stores latest facts only. QuestDB remains the ledger and history store, not the hot-path source for live context reads.
 
 ## Scope
 
@@ -26,7 +26,7 @@ Future sector proxy collectors should write sector facts under `SECTOR` scope. T
 
 The cache preserves collector-supplied `updated_at`, `source_event_time`, and `valid_until` after UTC normalization. It never rewrites `valid_until`, extends expired validity, or replaces it with `updated_at`.
 
-Expired entries are accepted so stale context can be surfaced conservatively through `to_context_state_snapshot(...)`. Expired entries are hidden by default from normal reads and raw cache snapshots unless `include_expired=True` is requested.
+Expired entries are accepted and intentionally retained so stale context can be surfaced conservatively through `to_context_state_snapshot(...)`. Expired entries are hidden by default from normal reads and raw cache snapshots unless `include_expired=True` is requested.
 
 An entry is expired only when `now > valid_until`. At `now == valid_until`, the entry is still visible.
 
@@ -35,17 +35,23 @@ An entry is expired only when `now > valid_until`. At `now == valid_until`, the 
 `update(...)` returns `ContextStateUpdateResult` instead of raising for normal race outcomes:
 
 - `WRITTEN`: first active value for a key.
-- `REPLACED`: newer value, or same timestamp with changed value, severity, source, or details.
+- `REPLACED`: newer value, or same timestamp with changed semantic content.
 - `IGNORED_STALE`: older value for an existing key.
-- `IGNORED_DUPLICATE`: same timestamp with unchanged value, severity, source, and details, including metadata-only changes.
+- `IGNORED_DUPLICATE`: same timestamp with unchanged semantic content, including trace ID-only changes.
+
+Same-timestamp semantic content includes `value`, `severity`, `source`, `source_event_time`, `valid_until`, `confidence`, and `details`. `trace_id` is correlation metadata and does not force replacement by itself.
 
 Invalid local inputs still raise `ContextStateCacheError`.
 
 ## Memory Bound
 
-The cache is bounded by `max_entries`, defaulting to `10000`. `purge_every_updates`, defaulting to `1000`, controls periodic expired-entry purging during accepted update attempts.
+The cache is bounded by `max_entries`, defaulting to `10000`.
 
-If the cache is still above `max_entries` after an insert or replacement, it evicts oldest entries by `updated_at`. Ties are deterministic using context key sort order.
+Expired entries are not automatically purged during `update(...)`; retaining them preserves stale-risk evidence for `to_context_state_snapshot(...)`. Memory remains bounded through `max_entries`, deterministic oldest-entry eviction, replacement of entries with the same key, and explicit calls to `purge_expired(...)`.
+
+If the cache is above `max_entries` after an insert or replacement, it evicts oldest entries by `updated_at`. Ties are deterministic using context key sort order. Capacity eviction may eventually remove old context, including stale entries, when the cache reaches `max_entries`.
+
+`purge_expired(...)` remains available as an explicit operation. It deliberately discards stale-risk evidence and should not be called automatically in the live decision path.
 
 This is still a simple in-process memory cache. It does not start a background worker.
 
