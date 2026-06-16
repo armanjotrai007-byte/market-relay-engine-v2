@@ -70,13 +70,15 @@ For a requested ticker, aggregation can include:
 - ticker entries for that ticker
 - sector entries for the provided sector
 
-Fresh relevant entries aggregate normally. Expired relevant entries are excluded from the active summary when at least one fresh relevant entry exists.
+Fresh relevant entries aggregate normally into the active summary. Expired relevant entries are reported separately whenever they are present; they are not treated as fresh and do not appear in the active grouped global, ticker, or sector entries.
 
-If no fresh relevant entries exist but expired relevant entries are present, `to_context_state_snapshot(...)` does not treat that as clean context. It returns `risk_level="ELEVATED"`, sets `highest_severity="EXPIRED"`, and records `fresh_entry_count`, `expired_entry_count`, `expired_context_present`, `stale_context_policy="ELEVATED"`, and JSON-safe expired entry metadata in `context_summary`. This safety default lets the risk path reduce size instead of confusing stale context with no-risk context in future trading decisions.
+When expired relevant entries are present, `context_summary` includes `fresh_entry_count`, `expired_entry_count`, `expired_context_present`, `stale_context_policy="ELEVATED"`, and JSON-safe expired entry metadata in `expired_entries`.
 
-If no relevant entries exist at all, `risk_level` remains `None`.
+Relevant expired context imposes a minimum effective risk of `ELEVATED` even if other fresh entries are only low-risk or informational. If fresh risk is absent or `LOW`, the snapshot returns `risk_level="ELEVATED"` and `highest_severity="EXPIRED"`. If fresh risk is already `ELEVATED`, the snapshot keeps `risk_level="ELEVATED"` and preserves the real fresh highest severity. Fresh `HIGH` risk remains `HIGH` and keeps the real fresh highest severity.
 
-The method calculates `highest_severity`, maps severity to `risk_level`, sets `valid_until` to the earliest included non-null validity time for fresh entries, and stores JSON-safe grouped entries in `context_summary`.
+If no relevant entries exist at all, `risk_level` remains `None` and expired context fields are absent.
+
+The method calculates fresh `highest_severity`, maps severity to `risk_level`, sets `valid_until` to the earliest included non-null validity time for fresh entries only, and stores JSON-safe grouped entries in `context_summary`.
 
 Risk level mapping for fresh entries:
 
