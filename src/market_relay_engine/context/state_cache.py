@@ -379,31 +379,27 @@ class ContextStateCache:
                     fresh_entries.append(entry)
 
             fresh_entries = sorted(fresh_entries, key=_entry_sort_key)
+            expired_entries = sorted(expired_entries, key=_entry_sort_key)
             context_summary = _empty_snapshot_dict()
             for entry in fresh_entries:
                 _add_entry_dict(context_summary, _entry_to_dict(entry, timestamp))
             context_summary["entry_count"] = len(fresh_entries)
 
-            if fresh_entries:
-                highest_severity = _highest_severity(fresh_entries)
-                risk_level = _risk_level_for_severity(highest_severity)
-                valid_until = _earliest_valid_until(fresh_entries)
-            elif expired_entries:
-                expired_entries = sorted(expired_entries, key=_entry_sort_key)
-                context_summary["fresh_entry_count"] = 0
+            highest_severity = _highest_severity(fresh_entries)
+            risk_level = _risk_level_for_severity(highest_severity)
+            valid_until = _earliest_valid_until(fresh_entries)
+
+            if expired_entries:
+                context_summary["fresh_entry_count"] = len(fresh_entries)
                 context_summary["expired_entry_count"] = len(expired_entries)
                 context_summary["expired_context_present"] = True
                 context_summary["stale_context_policy"] = "ELEVATED"
                 context_summary["expired_entries"] = [
                     _entry_to_dict(entry, timestamp) for entry in expired_entries
                 ]
-                highest_severity = "EXPIRED"
-                risk_level = "ELEVATED"
-                valid_until = None
-            else:
-                highest_severity = None
-                risk_level = None
-                valid_until = None
+                if risk_level in {None, "LOW"}:
+                    highest_severity = "EXPIRED"
+                    risk_level = "ELEVATED"
 
             return ContextStateSnapshot(
                 snapshot_time=timestamp,
