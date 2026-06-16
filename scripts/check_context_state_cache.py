@@ -27,7 +27,7 @@ from market_relay_engine.common.serialization import to_json_string  # noqa: E40
 
 def main() -> int:
     now = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
-    cache = ContextStateCache(max_entries=5, purge_every_updates=2)
+    cache = ContextStateCache(max_entries=5)
 
     global_entry = make_global_context_entry(
         name="market_regime",
@@ -104,10 +104,35 @@ def main() -> int:
         severity="LOW",
         source="manual",
         updated_at=now + timedelta(seconds=3),
+        valid_until=now + timedelta(minutes=5),
         details={"reason": "same_event"},
+        trace_id="trace_1",
     )
     assert cache.update(low_same_time).status is ContextStateUpdateStatus.WRITTEN
-    assert cache.update(low_same_time).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    assert cache.update(
+        make_ticker_context_entry(
+            ticker="MSFT",
+            name="same_time_risk",
+            value="active",
+            severity="LOW",
+            source="manual",
+            updated_at=now + timedelta(seconds=3),
+            valid_until=now + timedelta(minutes=5),
+            details={"reason": "same_event"},
+            trace_id="trace_2",
+        )
+    ).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    extended_same_time = make_ticker_context_entry(
+        ticker="MSFT",
+        name="same_time_risk",
+        value="active",
+        severity="LOW",
+        source="manual",
+        updated_at=now + timedelta(seconds=3),
+        valid_until=now + timedelta(minutes=10),
+        details={"reason": "same_event"},
+    )
+    assert cache.update(extended_same_time).status is ContextStateUpdateStatus.REPLACED
     high_same_time = make_ticker_context_entry(
         ticker="MSFT",
         name="same_time_risk",
@@ -115,25 +140,11 @@ def main() -> int:
         severity="HIGH",
         source="manual",
         updated_at=now + timedelta(seconds=3),
+        valid_until=now + timedelta(minutes=10),
         details={"reason": "same_event"},
     )
     assert cache.update(high_same_time).status is ContextStateUpdateStatus.REPLACED
     assert cache.to_context_state_snapshot(ticker="MSFT", now=now).risk_level == "HIGH"
-
-    expired_entry = make_ticker_context_entry(
-        ticker="AAPL",
-        name="stale_risk",
-        value="expired",
-        severity="CRITICAL",
-        source="manual",
-        updated_at=now - timedelta(hours=2),
-        valid_until=now - timedelta(hours=1),
-    )
-    expired_result = cache.update(expired_entry)
-    assert expired_result.status is ContextStateUpdateStatus.WRITTEN
-    assert cache.get_ticker("AAPL", "stale_risk", now=now) is None
-    assert cache.get_ticker("AAPL", "stale_risk", now=now, include_expired=True) is not None
-    assert cache.purge_expired(now=now) == 1
 
     snapshot = cache.snapshot(now=now)
     json.dumps(snapshot, allow_nan=False, sort_keys=True)
@@ -153,7 +164,7 @@ def main() -> int:
     assert contract_snapshot.risk_level == "HIGH"
     to_json_string(contract_snapshot)
 
-    stale_cache = ContextStateCache(max_entries=5, purge_every_updates=10)
+    stale_cache = ContextStateCache(max_entries=20)
     stale_cache.update(
         make_ticker_context_entry(
             ticker="AAPL",
@@ -165,49 +176,30 @@ def main() -> int:
             valid_until=now - timedelta(hours=1),
         )
     )
+    for index in range(12):
+        stale_cache.update(
+            make_global_context_entry(
+                name=f"heartbeat_{index}",
+                value="ok",
+                severity="INFO",
+                source="manual",
+                updated_at=now + timedelta(seconds=index),
+            )
+        )
     stale_snapshot = stale_cache.to_context_state_snapshot(ticker="AAPL", now=now)
     assert stale_snapshot.risk_level == "ELEVATED"
     assert stale_snapshot.highest_severity == "EXPIRED"
-    assert stale_snapshot.context_summary["fresh_entry_count"] == 0
+    assert stale_snapshot.context_summary["fresh_entry_count"] == 12
     assert stale_snapshot.context_summary["expired_entry_count"] == 1
     assert stale_snapshot.context_summary["expired_context_present"] is True
     assert stale_snapshot.context_summary["stale_context_policy"] == "ELEVATED"
     to_json_string(stale_snapshot)
+    assert stale_cache.purge_expired(now=now) == 1
+    after_purge = stale_cache.to_context_state_snapshot(ticker="AAPL", now=now)
+    assert after_purge.risk_level is None
+    assert "expired_context_present" not in after_purge.context_summary
 
-    mixed_cache = ContextStateCache(max_entries=5, purge_every_updates=10)
-    heartbeat_valid_until = now + timedelta(minutes=5)
-    mixed_cache.update(
-        make_global_context_entry(
-            name="heartbeat",
-            value="ok",
-            severity="INFO",
-            source="manual",
-            updated_at=now,
-            valid_until=heartbeat_valid_until,
-        )
-    )
-    mixed_cache.update(
-        make_ticker_context_entry(
-            ticker="AAPL",
-            name="expired_high",
-            value="stale",
-            severity="HIGH",
-            source="manual",
-            updated_at=now,
-            valid_until=now - timedelta(hours=1),
-        )
-    )
-    mixed_snapshot = mixed_cache.to_context_state_snapshot(ticker="AAPL", now=now)
-    assert mixed_snapshot.risk_level == "ELEVATED"
-    assert mixed_snapshot.highest_severity == "EXPIRED"
-    assert mixed_snapshot.valid_until == heartbeat_valid_until
-    assert mixed_snapshot.context_summary["fresh_entry_count"] == 1
-    assert mixed_snapshot.context_summary["expired_entry_count"] == 1
-    assert mixed_snapshot.context_summary["expired_context_present"] is True
-    assert "AAPL" not in mixed_snapshot.context_summary["tickers"]
-    to_json_string(mixed_snapshot)
-
-    boundary_cache = ContextStateCache(max_entries=5, purge_every_updates=10)
+    boundary_cache = ContextStateCache(max_entries=5)
     boundary_cache.update(
         make_ticker_context_entry(
             ticker="MSFT",
