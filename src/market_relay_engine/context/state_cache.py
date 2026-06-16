@@ -142,7 +142,6 @@ class ContextStateUpdateResult:
 
     status: ContextStateUpdateStatus
     key: ContextStateKey
-    purged_expired_count: int = 0
     evicted_count: int = 0
     message: str | None = None
 
@@ -150,14 +149,9 @@ class ContextStateUpdateResult:
 class ContextStateCache:
     """Mutable bounded cache of latest context state entries."""
 
-    def __init__(self, *, max_entries: int = 10000, purge_every_updates: int = 1000) -> None:
+    def __init__(self, *, max_entries: int = 10000) -> None:
         self.max_entries = _positive_int(max_entries, "max_entries")
-        self.purge_every_updates = _positive_int(
-            purge_every_updates,
-            "purge_every_updates",
-        )
         self._entries: dict[ContextStateKey, ContextStateEntry] = {}
-        self._update_attempt_count = 0
         self._lock = RLock()
 
     def update(self, entry: ContextStateEntry) -> ContextStateUpdateResult:
@@ -167,11 +161,6 @@ class ContextStateCache:
 
         stored_entry = _entry_copy(entry)
         with self._lock:
-            self._update_attempt_count += 1
-            purged_count = 0
-            if self._update_attempt_count % self.purge_every_updates == 0:
-                purged_count = self._purge_expired_locked(stored_entry.updated_at)
-
             existing = self._entries.get(stored_entry.key)
             evicted_count = 0
             message: str | None = None
@@ -200,7 +189,6 @@ class ContextStateCache:
             return ContextStateUpdateResult(
                 status=status,
                 key=stored_entry.key,
-                purged_expired_count=purged_count,
                 evicted_count=evicted_count,
                 message=message,
             )
@@ -640,6 +628,9 @@ def _same_content(left: ContextStateEntry, right: ContextStateEntry) -> bool:
         left.value == right.value
         and left.severity == right.severity
         and left.source == right.source
+        and left.source_event_time == right.source_event_time
+        and left.valid_until == right.valid_until
+        and left.confidence == right.confidence
         and left.details == right.details
     )
 
