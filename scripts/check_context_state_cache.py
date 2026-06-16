@@ -193,7 +193,7 @@ def main() -> int:
             value="stale",
             severity="HIGH",
             source="manual",
-            updated_at=now - timedelta(hours=2),
+            updated_at=now,
             valid_until=now - timedelta(hours=1),
         )
     )
@@ -206,6 +206,25 @@ def main() -> int:
     assert mixed_snapshot.context_summary["expired_context_present"] is True
     assert "AAPL" not in mixed_snapshot.context_summary["tickers"]
     to_json_string(mixed_snapshot)
+
+    boundary_cache = ContextStateCache(max_entries=5, purge_every_updates=10)
+    boundary_cache.update(
+        make_ticker_context_entry(
+            ticker="MSFT",
+            name="boundary",
+            value="active",
+            severity="LOW",
+            source="manual",
+            updated_at=now + timedelta(seconds=1),
+            valid_until=now,
+        )
+    )
+    assert boundary_cache.get_ticker("MSFT", "boundary", now=now) is not None
+    assert boundary_cache.get_ticker(
+        "MSFT",
+        "boundary",
+        now=now + timedelta(microseconds=1),
+    ) is None
 
     print("Context state cache check PASS")
     return 0
