@@ -22,7 +22,13 @@ Future sector proxy collectors should write sector facts under `SECTOR` scope. T
 
 `source_event_time` is optional and represents the timestamp of the underlying source data or event when the source has one.
 
-`valid_until` is optional and represents when the cached context should stop being trusted. Expired entries are hidden by default from normal reads and raw cache snapshots.
+`valid_until` is optional and represents an independent absolute deadline after which the cached context should stop being trusted. It is not ordered against `updated_at`; a delayed collector may write an entry whose `valid_until` is already in the past, equal to `updated_at`, or after `updated_at`.
+
+The cache preserves collector-supplied `updated_at`, `source_event_time`, and `valid_until` after UTC normalization. It never rewrites `valid_until`, extends expired validity, or replaces it with `updated_at`.
+
+Expired entries are accepted so stale context can be surfaced conservatively through `to_context_state_snapshot(...)`. Expired entries are hidden by default from normal reads and raw cache snapshots unless `include_expired=True` is requested.
+
+An entry is expired only when `now > valid_until`. At `now == valid_until`, the entry is still visible.
 
 ## Update Results
 
