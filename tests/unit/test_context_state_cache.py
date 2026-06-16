@@ -433,11 +433,15 @@ def test_context_state_snapshot_aggregates_global_sector_and_ticker_entries() ->
     assert snapshot.risk_level == "HIGH"
     assert snapshot.valid_until == ticker_valid_until
     assert snapshot.context_summary["entry_count"] == 3
+    assert snapshot.context_summary["fresh_entry_count"] == 3
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_context_present"] is True
+    assert snapshot.context_summary["stale_context_policy"] == "ELEVATED"
+    assert snapshot.context_summary["expired_entries"][0]["name"] == "expired_risk"
     assert "macro_event_risk" in snapshot.context_summary["global"]
     assert "TECH" in snapshot.context_summary["sectors"]
     assert "AAPL" in snapshot.context_summary["tickers"]
     assert "expired_risk" not in snapshot.context_summary["tickers"]["AAPL"]
-    assert "expired_context_present" not in snapshot.context_summary
     json.dumps(snapshot.context_summary, allow_nan=False, sort_keys=True)
 
 
@@ -467,14 +471,91 @@ def test_context_state_snapshot_only_expired_ticker_context_is_elevated() -> Non
     assert snapshot.context_summary["expired_entries"][0]["expired"] is True
 
 
-def test_context_state_snapshot_fresh_entry_is_not_overridden_by_expired_entry() -> None:
+def test_context_state_snapshot_expired_ticker_with_fresh_global_info_is_elevated() -> None:
+    cache = ContextStateCache()
+    heartbeat_valid_until = BASE_TIME + timedelta(minutes=10)
+    cache.update(
+        make_global_context_entry(
+            name="heartbeat",
+            value="ok",
+            severity="INFO",
+            updated_at=BASE_TIME,
+            valid_until=heartbeat_valid_until,
+        )
+    )
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="earnings_risk",
+            value="stale_high",
+            severity="HIGH",
+            updated_at=BASE_TIME - timedelta(hours=2),
+            valid_until=BASE_TIME - timedelta(hours=1),
+        )
+    )
+
+    snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+
+    assert snapshot.risk_level == "ELEVATED"
+    assert snapshot.highest_severity == "EXPIRED"
+    assert snapshot.valid_until == heartbeat_valid_until
+    assert snapshot.context_summary["entry_count"] == 1
+    assert snapshot.context_summary["fresh_entry_count"] == 1
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_context_present"] is True
+    assert snapshot.context_summary["global"]["heartbeat"]["expired"] is False
+    assert "AAPL" not in snapshot.context_summary["tickers"]
+    assert snapshot.context_summary["expired_entries"][0]["name"] == "earnings_risk"
+
+
+def test_context_state_snapshot_expired_sector_with_fresh_ticker_low_is_elevated() -> None:
+    cache = ContextStateCache()
+    fresh_valid_until = BASE_TIME + timedelta(minutes=8)
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="position_quality",
+            value="acceptable",
+            severity="LOW",
+            updated_at=BASE_TIME,
+            valid_until=fresh_valid_until,
+        )
+    )
+    cache.update(
+        make_sector_context_entry(
+            sector="TECH",
+            name="sector_proxy",
+            value="stale_high",
+            severity="HIGH",
+            updated_at=BASE_TIME - timedelta(hours=2),
+            valid_until=BASE_TIME - timedelta(hours=1),
+        )
+    )
+
+    snapshot = cache.to_context_state_snapshot(
+        ticker="AAPL",
+        sector="tech",
+        now=BASE_TIME,
+    )
+
+    assert snapshot.risk_level == "ELEVATED"
+    assert snapshot.highest_severity == "EXPIRED"
+    assert snapshot.valid_until == fresh_valid_until
+    assert snapshot.context_summary["entry_count"] == 1
+    assert snapshot.context_summary["fresh_entry_count"] == 1
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_entries"][0]["sector"] == "TECH"
+    assert "TECH" not in snapshot.context_summary["sectors"]
+
+
+def test_context_state_snapshot_expired_ticker_with_fresh_medium_keeps_real_severity() -> None:
     cache = ContextStateCache()
     cache.update(
         make_ticker_context_entry(
             ticker="AAPL",
             name="fresh_risk",
             value="watch",
-            severity="LOW",
+            severity="MEDIUM",
             updated_at=BASE_TIME,
         )
     )
@@ -483,7 +564,7 @@ def test_context_state_snapshot_fresh_entry_is_not_overridden_by_expired_entry()
             ticker="AAPL",
             name="expired_risk",
             value="old_high",
-            severity="CRITICAL",
+            severity="HIGH",
             updated_at=BASE_TIME - timedelta(hours=2),
             valid_until=BASE_TIME - timedelta(hours=1),
         )
@@ -491,11 +572,43 @@ def test_context_state_snapshot_fresh_entry_is_not_overridden_by_expired_entry()
 
     snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
 
-    assert snapshot.highest_severity == "LOW"
-    assert snapshot.risk_level == "LOW"
-    assert snapshot.context_summary["entry_count"] == 1
-    assert "expired_context_present" not in snapshot.context_summary
+    assert snapshot.highest_severity == "MEDIUM"
+    assert snapshot.risk_level == "ELEVATED"
+    assert snapshot.context_summary["fresh_entry_count"] == 1
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_context_present"] is True
     assert "expired_risk" not in snapshot.context_summary["tickers"]["AAPL"]
+
+
+def test_context_state_snapshot_expired_ticker_with_fresh_high_remains_high() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="fresh_risk",
+            value="active",
+            severity="HIGH",
+            updated_at=BASE_TIME,
+        )
+    )
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="expired_risk",
+            value="old_high",
+            severity="HIGH",
+            updated_at=BASE_TIME - timedelta(hours=2),
+            valid_until=BASE_TIME - timedelta(hours=1),
+        )
+    )
+
+    snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+
+    assert snapshot.highest_severity == "HIGH"
+    assert snapshot.risk_level == "HIGH"
+    assert snapshot.context_summary["fresh_entry_count"] == 1
+    assert snapshot.context_summary["expired_entry_count"] == 1
+    assert snapshot.context_summary["expired_entries"][0]["name"] == "expired_risk"
 
 
 def test_context_state_snapshot_expired_global_only_context_is_elevated() -> None:
