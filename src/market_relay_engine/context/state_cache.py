@@ -121,8 +121,6 @@ class ContextStateEntry:
             "source_event_time",
         )
         valid_until = _normalize_optional_datetime(self.valid_until, "valid_until")
-        if valid_until is not None and valid_until <= updated_at:
-            raise ContextStateCacheError("valid_until must be greater than updated_at")
         confidence = _normalize_confidence(self.confidence)
         trace_id = _optional_string(self.trace_id, "trace_id")
         details = _json_safe_details_copy(self.details)
