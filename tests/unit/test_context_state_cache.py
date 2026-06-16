@@ -82,7 +82,7 @@ def test_entry_validation_and_source_event_time_normalization() -> None:
         {"source": ""},
         {"updated_at": datetime(2026, 1, 2, 14, 30)},
         {"source_event_time": datetime(2026, 1, 2, 14, 30)},
-        {"valid_until": BASE_TIME},
+        {"valid_until": datetime(2026, 1, 2, 14, 30)},
         {"confidence": -0.1},
         {"confidence": 1.1},
         {"confidence": float("nan")},
@@ -99,6 +99,80 @@ def test_entry_validation_and_source_event_time_normalization() -> None:
         values.update(kwargs)
         with pytest.raises(ContextStateCacheError):
             ContextStateEntry(**values)
+
+
+def test_valid_until_is_independent_deadline_and_expiry_boundary() -> None:
+    before_deadline = BASE_TIME - timedelta(minutes=5)
+    equal_deadline = BASE_TIME
+    after_deadline = BASE_TIME + timedelta(minutes=5)
+
+    before_entry = make_global_context_entry(
+        name="deadline_before",
+        value="accepted",
+        updated_at=BASE_TIME,
+        valid_until=before_deadline,
+    )
+    equal_entry = make_global_context_entry(
+        name="deadline_equal",
+        value="accepted",
+        updated_at=BASE_TIME,
+        valid_until=equal_deadline,
+    )
+    after_entry = make_global_context_entry(
+        name="deadline_after",
+        value="accepted",
+        updated_at=BASE_TIME,
+        valid_until=after_deadline,
+    )
+
+    assert before_entry.updated_at == BASE_TIME
+    assert before_entry.valid_until == before_deadline
+    assert equal_entry.valid_until == equal_deadline
+    assert after_entry.valid_until == after_deadline
+
+    cache = ContextStateCache()
+    already_expired = make_ticker_context_entry(
+        ticker="AAPL",
+        name="delayed_expired_risk",
+        value="stale",
+        severity="HIGH",
+        updated_at=BASE_TIME,
+        valid_until=before_deadline,
+    )
+    assert cache.update(already_expired).status is ContextStateUpdateStatus.WRITTEN
+    assert cache.get_ticker("AAPL", "delayed_expired_risk", now=BASE_TIME) is None
+    included = cache.get_ticker(
+        "AAPL",
+        "delayed_expired_risk",
+        now=BASE_TIME,
+        include_expired=True,
+    )
+    assert included is not None
+    assert included.updated_at == BASE_TIME
+    assert included.valid_until == before_deadline
+
+    snapshot = cache.to_context_state_snapshot(ticker="AAPL", now=BASE_TIME)
+    assert snapshot.risk_level == "ELEVATED"
+    assert snapshot.highest_severity == "EXPIRED"
+    assert snapshot.context_summary["expired_entry_count"] == 1
+
+    boundary_cache = ContextStateCache()
+    boundary_cache.update(
+        make_ticker_context_entry(
+            ticker="MSFT",
+            name="boundary_risk",
+            value="active",
+            severity="LOW",
+            updated_at=BASE_TIME + timedelta(seconds=1),
+            valid_until=BASE_TIME,
+        )
+    )
+    assert boundary_cache.get_ticker("MSFT", "boundary_risk", now=BASE_TIME) is not None
+    assert boundary_cache.get_ticker(
+        "MSFT",
+        "boundary_risk",
+        now=BASE_TIME + timedelta(microseconds=1),
+    ) is None
 
 
 def test_cache_config_validation() -> None:
@@ -453,7 +527,7 @@ def test_context_state_snapshot_only_expired_ticker_context_is_elevated() -> Non
             name="earnings_risk",
             value="expired",
             severity="HIGH",
-            updated_at=BASE_TIME - timedelta(hours=2),
+            updated_at=BASE_TIME,
             valid_until=BASE_TIME - timedelta(hours=1),
         )
     )
@@ -489,7 +563,7 @@ def test_context_state_snapshot_expired_ticker_with_fresh_global_info_is_elevate
             name="earnings_risk",
             value="stale_high",
             severity="HIGH",
-            updated_at=BASE_TIME - timedelta(hours=2),
+            updated_at=BASE_TIME,
             valid_until=BASE_TIME - timedelta(hours=1),
         )
     )
