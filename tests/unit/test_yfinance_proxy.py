@@ -325,6 +325,38 @@ def test_status_taxonomy_failed_partial_and_no_fresh_data() -> None:
     assert "XOP" in mixed.stale_symbols
 
 
+def test_required_questdb_without_writer_raises_before_source_or_cache_work() -> None:
+    download_called = False
+    cache = ContextStateCache()
+
+    def download(**_: object) -> pd.DataFrame:
+        nonlocal download_called
+        download_called = True
+        return _frame([100.0 for _ in range(13)])
+
+    collector = YFinanceProxyCollector(
+        cache=cache,
+        config=_config("XLE"),
+        download=download,
+        clock=lambda: BASE_TIME,
+        ledger_writer=None,
+    )
+
+    with pytest.raises(YFinanceProxyError, match="required.*ledger writer|ledger writer.*required"):
+        collector.collect(write_questdb=True, questdb_required=True)
+
+    assert download_called is False
+    assert cache.snapshot(now=BASE_TIME, include_expired=True)["entry_count"] == 0
+
+
+def test_no_writer_without_questdb_write_still_collects_normally() -> None:
+    result = _collector(_frame([100.0 for _ in range(13)]), writer=None).collect(write_questdb=False)
+
+    assert result.status is YFinanceProxyCollectionStatus.SUCCESS
+    assert result.indicator_snapshots
+    assert result.ledger_write_results == ()
+
+
 def test_writer_protocol_optional_and_required_failures() -> None:
     class RecordingWriter:
         def __init__(self) -> None:
@@ -335,7 +367,7 @@ def test_writer_protocol_optional_and_required_failures() -> None:
             return {"id": snapshot.context_indicator_id, "kwargs": kwargs}
 
     writer = RecordingWriter()
-    result = _collector(_frame([100.0 for _ in range(13)]), writer=writer).collect(write_questdb=True, run_id="run_test")
+    result = _collector(_frame([100.0 for _ in range(13)]), writer=writer).collect(write_questdb=True, questdb_required=True, run_id="run_test")
     assert result.status is YFinanceProxyCollectionStatus.SUCCESS
     assert len(writer.snapshots) == len(result.indicator_snapshots)
     assert result.ledger_write_results
@@ -426,6 +458,16 @@ def test_live_write_questdb_exits_nonzero_when_required_write_raises(monkeypatch
     def fake_run_live(*, write_questdb: bool) -> YFinanceProxyCollectionResult:
         assert write_questdb is True
         raise YFinanceProxyError("write failed")
+
+    monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
+
+    assert check_yfinance_proxy.main(["--live", "--write-questdb"]) == 1
+
+
+def test_live_write_questdb_exits_nonzero_when_writer_setup_fails(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run_live(*, write_questdb: bool) -> YFinanceProxyCollectionResult:
+        assert write_questdb is True
+        raise check_yfinance_proxy.QuestDBWriteError("bad writer config")
 
     monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
 
