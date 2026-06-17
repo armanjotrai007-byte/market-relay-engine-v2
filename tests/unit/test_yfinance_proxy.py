@@ -44,6 +44,18 @@ def _frame(closes: list[float | int | None], *, start: datetime = START_TIME) ->
     )
 
 
+def _frame_without_close(periods: int = 13, *, start: datetime = START_TIME) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "Open": [100.0 + index for index in range(periods)],
+            "High": [101.0 + index for index in range(periods)],
+            "Low": [99.0 + index for index in range(periods)],
+            "Volume": [1000 + index for index in range(periods)],
+        },
+        index=pd.date_range(start=start, periods=periods, freq="5min", tz="UTC"),
+    )
+
+
 def _multi_frame(symbol_closes: dict[str, list[float | int | None]], *, start: datetime = START_TIME) -> pd.DataFrame:
     lengths = {len(values) for values in symbol_closes.values()}
     assert len(lengths) == 1
@@ -53,6 +65,26 @@ def _multi_frame(symbol_closes: dict[str, list[float | int | None]], *, start: d
         for symbol, values in symbol_closes.items()
     }
     return pd.DataFrame(data, index=index)
+
+
+def _multi_frame_missing_close(symbols: tuple[str, ...], *, periods: int = 13, start: datetime = START_TIME) -> pd.DataFrame:
+    index = pd.date_range(start=start, periods=periods, freq="5min", tz="UTC")
+    data = {
+        ("Open", symbol): [100.0 + offset for offset in range(periods)]
+        for symbol in symbols
+    }
+    return pd.DataFrame(data, index=index)
+
+
+def _mixed_multi_frame_with_missing_close(*, periods: int = 13, start: datetime = START_TIME) -> pd.DataFrame:
+    index = pd.date_range(start=start, periods=periods, freq="5min", tz="UTC")
+    return pd.DataFrame(
+        {
+            ("Close", "XLE"): [100.0 for _ in range(periods)],
+            ("Open", "XOP"): [101.0 for _ in range(periods)],
+        },
+        index=index,
+    )
 
 
 def _config(*symbols: str, enabled: bool = True, **overrides: object) -> YFinanceProxyConfig:
@@ -114,6 +146,19 @@ def _cli_result(
         cache_update_results=(),
         ledger_write_results=tuple({"ok": index} for index in range(ledger_count)),
     )
+
+
+class _RecordingWriter:
+    def __init__(self) -> None:
+        self.snapshots: list[ContextIndicatorSnapshot] = []
+
+    def write_context_indicator_snapshot(self, snapshot: ContextIndicatorSnapshot, **kwargs: object) -> object:
+        self.snapshots.append(snapshot)
+        return {"id": snapshot.context_indicator_id, "kwargs": kwargs}
+
+
+def _missing_close_issues(result: YFinanceProxyCollectionResult) -> list[YFinanceProxyIssue]:
+    return [issue for issue in result.issues if issue.issue_type == "MISSING_CLOSE_COLUMN"]
 
 
 def test_grace_staleness_validation_and_no_boundary_blackout() -> None:
@@ -325,6 +370,105 @@ def test_status_taxonomy_failed_partial_and_no_fresh_data() -> None:
     assert "XOP" in mixed.stale_symbols
 
 
+def test_missing_close_one_level_single_symbol_fails_without_side_effects() -> None:
+    cache = ContextStateCache()
+    writer = _RecordingWriter()
+    collector = YFinanceProxyCollector(
+        cache=cache,
+        config=_config("XLE"),
+        download=lambda **_: _frame_without_close(),
+        clock=lambda: BASE_TIME,
+        ledger_writer=writer,
+    )
+
+    result = collector.collect(write_questdb=True)
+
+    assert result.status is YFinanceProxyCollectionStatus.FAILED
+    assert result.failed_symbols == ("XLE",)
+    assert result.indicator_snapshots == ()
+    assert result.cache_update_results == ()
+    assert result.ledger_write_results == ()
+    assert writer.snapshots == []
+    assert cache.snapshot(now=BASE_TIME, include_expired=True)["entry_count"] == 0
+    issues = _missing_close_issues(result)
+    assert [(issue.symbol, issue.message) for issue in issues] == [
+        ("XLE", "Source response for XLE does not contain a Close column")
+    ]
+
+
+def test_missing_close_partial_collection_keeps_valid_symbol_and_ledger_writes() -> None:
+    cache = ContextStateCache()
+    writer = _RecordingWriter()
+    collector = YFinanceProxyCollector(
+        cache=cache,
+        config=_config("XLE", "XOP"),
+        download=lambda **_: _mixed_multi_frame_with_missing_close(),
+        clock=lambda: BASE_TIME,
+        ledger_writer=writer,
+    )
+
+    result = collector.collect(write_questdb=True)
+
+    assert result.status is YFinanceProxyCollectionStatus.PARTIAL
+    assert result.successful_symbols == ("XLE",)
+    assert result.failed_symbols == ("XOP",)
+    assert [issue.symbol for issue in _missing_close_issues(result)] == ["XOP"]
+    assert {snapshot.ticker_or_sector for snapshot in result.indicator_snapshots} == {"XLE"}
+    assert len(writer.snapshots) == len(result.indicator_snapshots)
+    assert cache.get_sector("OIL", cache_indicator_name("XLE", "return_5m", "5m"), now=BASE_TIME) is not None
+    assert cache.get_sector("OIL", cache_indicator_name("XOP", "latest_close", "5m"), now=BASE_TIME) is None
+
+
+def test_all_missing_close_multiindex_symbols_fail_without_raw_exception() -> None:
+    result = _collector(
+        _multi_frame_missing_close(("XLE", "XOP")),
+        config=_config("XLE", "XOP"),
+    ).collect()
+
+    assert result.status is YFinanceProxyCollectionStatus.FAILED
+    assert result.failed_symbols == ("XLE", "XOP")
+    assert result.indicator_snapshots == ()
+    assert result.cache_update_results == ()
+    assert [issue.symbol for issue in _missing_close_issues(result)] == ["XLE", "XOP"]
+
+
+def test_missing_close_individual_fallback_is_not_retried_again() -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def download(**kwargs: object) -> pd.DataFrame:
+        tickers = kwargs["tickers"]
+        assert isinstance(tickers, tuple)
+        calls.append(tickers)
+        if len(calls) == 1:
+            return pd.DataFrame()
+        return _frame_without_close()
+
+    result = YFinanceProxyCollector(
+        cache=ContextStateCache(),
+        config=_config("XLE"),
+        download=download,
+        clock=lambda: BASE_TIME,
+    ).collect()
+
+    assert calls == [("XLE",), ("XLE",)]
+    assert result.status is YFinanceProxyCollectionStatus.FAILED
+    assert result.failed_symbols == ("XLE",)
+    assert [issue.symbol for issue in _missing_close_issues(result)] == ["XLE"]
+    assert result.indicator_snapshots == ()
+
+
+def test_missing_close_multiindex_extraction_uses_shared_structured_issue() -> None:
+    result = _collector(
+        _multi_frame_missing_close(("XLE",)),
+        config=_config("XLE"),
+    ).collect()
+
+    assert result.status is YFinanceProxyCollectionStatus.FAILED
+    assert result.failed_symbols == ("XLE",)
+    assert [issue.issue_type for issue in result.issues] == ["MISSING_CLOSE_COLUMN"]
+    assert result.indicator_snapshots == ()
+
+
 def test_required_questdb_without_writer_raises_before_source_or_cache_work() -> None:
     download_called = False
     cache = ContextStateCache()
@@ -358,15 +502,7 @@ def test_no_writer_without_questdb_write_still_collects_normally() -> None:
 
 
 def test_writer_protocol_optional_and_required_failures() -> None:
-    class RecordingWriter:
-        def __init__(self) -> None:
-            self.snapshots: list[ContextIndicatorSnapshot] = []
-
-        def write_context_indicator_snapshot(self, snapshot: ContextIndicatorSnapshot, **kwargs: object) -> object:
-            self.snapshots.append(snapshot)
-            return {"id": snapshot.context_indicator_id, "kwargs": kwargs}
-
-    writer = RecordingWriter()
+    writer = _RecordingWriter()
     result = _collector(_frame([100.0 for _ in range(13)]), writer=writer).collect(write_questdb=True, questdb_required=True, run_id="run_test")
     assert result.status is YFinanceProxyCollectionStatus.SUCCESS
     assert len(writer.snapshots) == len(result.indicator_snapshots)
