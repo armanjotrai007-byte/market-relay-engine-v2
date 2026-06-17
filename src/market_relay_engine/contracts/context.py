@@ -25,6 +25,9 @@ class ContextIndicatorSnapshot:
     ticker_or_sector: str
     indicator_name: str
     value: Any
+    context_indicator_id: str = field(
+        default_factory=lambda: new_record_id("context_indicator")
+    )
     window: str | None = None
     units: str | None = None
     freshness_seconds: float | None = None
@@ -39,6 +42,7 @@ class ContextIndicatorSnapshot:
             "source_event_time",
             optional_utc_datetime(self.source_event_time),
         )
+        require_non_empty_string(self.context_indicator_id, "context_indicator_id")
         require_optional_non_empty_string(self.trace_id, "trace_id")
 
 
