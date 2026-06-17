@@ -108,10 +108,12 @@ Key behavior:
 - Calculates only `latest_close`, `return_5m`, `return_15m`, and `return_60m`.
 - Requires exact timestamp lookbacks and finite positive denominator closes for returns.
 - Stores sector proxy ETF entries under existing `SECTOR` scope with names that include the proxy symbol.
+- Stores XLE, XOP, and OIH under `SECTOR/OIL`, matching the configured `oil` tradable-sector label after cache normalization.
 - Uses `severity=INFO` for all raw measurements.
 - Adds read-only numeric retrieval helpers without QuestDB reads or risk thresholds.
 - Adds deterministic `context_indicator_id` values for PR25-generated context indicator snapshots.
 - Writes QuestDB rows only after cache updates return `WRITTEN` or `REPLACED`.
+- Makes `--live --write-questdb` require successful QuestDB writes for produced indicators and fail on ledger write issues or zero successful rows when valid indicators exist.
 - Adds `NO_FRESH_DATA` to distinguish reachable source/no fresh completed bars from source or schema failures.
 
 Explicitly not added:
