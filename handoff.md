@@ -6,22 +6,24 @@ Repository: `armanjotrai007-byte/market-relay-engine-v2`
 
 Canonical source of truth: GitHub `main`.
 
-Current active PR:
+Latest confirmed merged base:
 
 - **PR 24 - In-Memory ContextState Cache**
-- Branch: `pr24-context-state-cache`
-- Purpose: add a bounded, thread-safe in-memory latest context cache for global, ticker, and sector structured context facts with expiry, update statuses, JSON-safe snapshots, and `ContextStateSnapshot` aggregation.
-- Safety exclusions: no external API calls, no collectors, no AI calls, no model inference, no QuestDB reads, no QuestDB writes, no order submission, no Alpaca calls, no live trading, no background services, no scheduler, no retries, and no new heavy dependencies.
-- Next PR after merge: simple structured context collector/proxy feeding `ContextStateCache`.
+- Merge commit: `942b5a99c485240f8716e0bec4785290dbdf221a`
+- Result: merged into `main` with `GLOBAL`, `TICKER`, and `SECTOR` cache scopes and normal update outcomes for written, replaced, stale, and duplicate updates.
 
-Latest confirmed merged base before PR24:
+Current active PR:
 
-- **PR 23 merge commit:** `ba420bba022c2df2a24065bcac9b0951c7ad80ca`
+- **PR 25 - YFinance Development Proxy Collector**
+- Branch: `pr25-yfinance-dev-sector-proxy`
+- Purpose: add a disabled-by-default, development-only, one-shot yfinance proxy collector that feeds PR24 `ContextStateCache` entries and can optionally write context indicator ledger rows.
+- Safety exclusions: no trading signals, no risk approval changes, no order submission, no Alpaca calls, no Databento calls, no QuestDB reads, no scheduler, no background service, no AI/model calls, and no production market-data claims.
+- Next likely PR after merge: deterministic numeric context-rule integration that consumes PR25 proxy readings for sector confirmation or other explicit rules.
 
 Local workspace and publishing note:
 
-- This local workspace is not a usable Git checkout for publishing work.
-- PR24 was prepared with the GitHub connector only.
+- This local workspace may not be a usable Git checkout for publishing work.
+- PR25 was prepared with the GitHub connector.
 - Run validation on the server laptop before merging.
 
 ---
@@ -78,58 +80,52 @@ PR22 converts execution-level fill payloads into `FillEvent`, applies them to `P
 
 PR23 proves the local fake paper execution wiring without broker calls, QuestDB writes, model inference, AI calls, or external collectors.
 
+PR24 owns the in-memory context state cache. Expired entries are hidden from default reads, removed only by explicit `purge_expired(...)`, or removed indirectly by bounded capacity eviction when writes exceed `max_entries`.
+
 ---
 
 ## Current PR
 
-### PR 24 - In-Memory ContextState Cache
+### PR 25 - YFinance Development Proxy Collector
 
 Branch:
 
 ```text
-pr24-context-state-cache
+pr25-yfinance-dev-sector-proxy
 ```
 
 Purpose:
 
-Add a simple in-process cache that stores the newest structured context facts in RAM for future hot-path risk reads. It prepares future risk logic to block, reduce, or warn on trades when recent context says conditions are bad, stale, expired, or high risk.
+Add a simple development-only proxy collector that can populate broad-market and sector context entries from yfinance for local integration testing. It remains disabled by default and does not become a production data source.
 
 Key behavior:
 
-- Supports `GLOBAL`, `TICKER`, and `SECTOR` context keys.
-- Stores latest `ContextStateEntry` values with severity, source, `updated_at`, optional `source_event_time`, optional `valid_until`, confidence, JSON-safe details, and optional trace ID.
-- Uses bounded memory with `max_entries` and deterministic oldest-entry eviction.
-- Periodically purges expired entries during update attempts.
-- Returns update statuses for written, replaced, stale, and duplicate updates instead of crashing on normal stale or duplicate arrival.
-- Hides expired entries by default while allowing explicit `include_expired=True` reads.
-- Produces JSON-safe snapshots with deep-copy isolation.
-- Aggregates relevant global, sector, and ticker entries into the existing `ContextStateSnapshot` contract.
-- Protects public cache methods with an internal `RLock` for basic in-process concurrent reads and writes.
-
-Profit-protection focus:
-
-- latest context facts can be read without external calls during future live decisions
-- stale or expired context is hidden from default live snapshots
-- high and critical context maps to high risk in `ContextStateSnapshot`
-- medium context maps to elevated risk
-- sector and ticker context can coexist with broad market context
-- normal stale or duplicate collector writes do not crash the cache
+- Pins `yfinance==1.4.1` and `pandas>=2.2,<3`.
+- Uses one batch yfinance request with one individual fallback pass only for affected symbols.
+- Supports only five-minute bars.
+- Drops incomplete bars using a configurable bar-completion grace.
+- Enforces `max_staleness_seconds >= 300 + bar_completion_grace_seconds`.
+- Calculates only `latest_close`, `return_5m`, `return_15m`, and `return_60m`.
+- Requires exact timestamp lookbacks and finite positive denominator closes for returns.
+- Stores sector proxy ETF entries under existing `SECTOR` scope with names that include the proxy symbol.
+- Uses `severity=INFO` for all raw measurements.
+- Adds read-only numeric retrieval helpers without QuestDB reads or risk thresholds.
+- Adds deterministic `context_indicator_id` values for PR25-generated context indicator snapshots.
+- Writes QuestDB rows only after cache updates return `WRITTEN` or `REPLACED`.
+- Adds `NO_FRESH_DATA` to distinguish reachable source/no fresh completed bars from source or schema failures.
 
 Explicitly not added:
 
-- collectors
-- external API calls
-- AI calls
-- model inference
+- trading rules
+- risk approval changes
+- external scheduler
+- background service
 - QuestDB reads
-- QuestDB writes
-- order submission
+- new QuestDB tables
+- AI or model calls
 - Alpaca calls
-- live trading
-- background services
-- schedulers
-- retries
-- new heavy dependencies
+- Databento calls
+- generic collector framework
 
 ---
 
@@ -161,8 +157,17 @@ python scripts/check_execution_metrics.py
 python scripts/check_fill_reconciliation.py
 python scripts/check_fake_paper_loop.py
 python scripts/check_context_state_cache.py
+python scripts/check_yfinance_proxy.py
 python -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
+```
+
+Optional live yfinance validation:
+
+```powershell
+python scripts/check_yfinance_proxy.py --live
+python scripts/check_yfinance_proxy.py --live --require-fresh
+python scripts/check_yfinance_proxy.py --live --write-questdb
 ```
 
 Optional real Alpaca paper account validation on the server laptop:
@@ -185,6 +190,15 @@ python scripts/check_questdb_analysis.py --required
 ---
 
 ## Files To Know
+
+YFinance proxy:
+
+```text
+src/market_relay_engine/context/yfinance_proxy.py
+docs/yfinance_proxy.md
+scripts/check_yfinance_proxy.py
+tests/unit/test_yfinance_proxy.py
+```
 
 Context state cache:
 
@@ -220,41 +234,13 @@ src/market_relay_engine/questdb/writer.py
 src/market_relay_engine/questdb/analysis.py
 ```
 
-Validation scripts:
-
-```text
-scripts/check_environment.py
-scripts/check_config.py
-scripts/check_contracts.py
-scripts/check_fixtures.py
-scripts/check_historical_parquet.py
-scripts/check_dbn_inspector.py
-scripts/check_feature_builder.py
-scripts/check_feature_parity.py
-scripts/check_cost_model.py
-scripts/check_label_builder.py
-scripts/check_risk_filter.py
-scripts/check_risk_logging.py
-scripts/check_order_manager.py
-scripts/check_position_state.py
-scripts/check_alpaca_paper.py
-scripts/check_execution_metrics.py
-scripts/check_fill_reconciliation.py
-scripts/check_fake_paper_loop.py
-scripts/check_context_state_cache.py
-scripts/check_questdb.py
-scripts/check_questdb_schema.py
-scripts/check_questdb_writer.py
-scripts/check_questdb_analysis.py
-scripts/run_tests.ps1
-```
-
 ---
 
 ## Next Steps
 
-1. Review PR 24 on GitHub after it is opened.
-2. Check out or pull branch `pr24-context-state-cache` on the server laptop.
+1. Review PR25 on GitHub after it is opened.
+2. Check out or pull branch `pr25-yfinance-dev-sector-proxy` on the server laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation section.
-4. Merge PR 24 if review and server-laptop validation are clean.
-5. Start the simple structured context collector/proxy PR that feeds `ContextStateCache`.
+4. Optionally run the live yfinance smoke command during market hours.
+5. Merge PR25 only if review and server-laptop validation are clean.
+6. Start the deterministic numeric context-rule PR that consumes the PR25 retrieval helpers.
