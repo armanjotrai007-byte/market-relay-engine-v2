@@ -17,6 +17,7 @@ if str(SRC_DIR) not in sys.path:
 
 from market_relay_engine.context.state_cache import (  # noqa: E402
     ContextStateCache,
+    ContextStateCacheError,
     ContextStateUpdateStatus,
     make_global_context_entry,
     make_sector_context_entry,
@@ -28,6 +29,45 @@ from market_relay_engine.common.serialization import to_json_string  # noqa: E40
 def main() -> int:
     now = datetime(2026, 1, 2, 14, 30, tzinfo=UTC)
     cache = ContextStateCache(max_entries=5)
+
+    assert make_global_context_entry(
+        name="none_details",
+        value="ok",
+        updated_at=now,
+        details=None,
+    ).details == {}
+    assert make_ticker_context_entry(
+        ticker="AAPL",
+        name="empty_details",
+        value="ok",
+        updated_at=now,
+        details={},
+    ).details == {}
+    assert make_sector_context_entry(
+        sector="TECH",
+        name="valid_details",
+        value="ok",
+        updated_at=now,
+        details={"x": 1},
+    ).details == {"x": 1}
+    helper_cases = (
+        (make_global_context_entry, {"name": "bad_global_details"}),
+        (make_ticker_context_entry, {"ticker": "AAPL", "name": "bad_ticker_details"}),
+        (make_sector_context_entry, {"sector": "TECH", "name": "bad_sector_details"}),
+    )
+    for bad_details in ([], "", False, 0):
+        for factory, scope_kwargs in helper_cases:
+            try:
+                factory(
+                    **scope_kwargs,
+                    value="ok",
+                    updated_at=now,
+                    details=bad_details,
+                )
+            except ContextStateCacheError:
+                pass
+            else:
+                raise AssertionError("invalid details were accepted")
 
     global_entry = make_global_context_entry(
         name="market_regime",
