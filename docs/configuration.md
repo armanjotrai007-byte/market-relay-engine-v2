@@ -6,7 +6,7 @@ Each file is safe to validate locally without internet access, API keys, broker 
 
 ## Files
 
-- `symbols.yaml` defines example tradable symbols and separate context symbols. Example tradable symbols are not approved for live trading.
+- `symbols.yaml` defines example tradable symbols and separate context symbols. Example tradable symbols are not approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
 - `context_sources.yaml` defines structured and unstructured context source settings. All sources are disabled by default, and `yfinance_dev_only` is explicitly development-only.
 - `risk_limits.yaml` defines placeholder paper-trading risk limits. These are not optimized live settings.
 - `questdb.yaml` defines QuestDB connection and health-check defaults and confirms QuestDB is for the bot ledger only, not a historical market-data warehouse.
@@ -22,6 +22,7 @@ Run these commands from Windows PowerShell after pulling the repo:
 python scripts/check_environment.py
 python scripts/check_config.py
 python scripts/check_questdb.py
+python scripts/check_yfinance_proxy.py
 python -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
@@ -36,6 +37,59 @@ The same commands should be run on the separate trading laptop after it pulls fr
 - Live trading is disabled by default.
 - QuestDB is a bot ledger only.
 - No V1 raw market-data table names belong in V2 config files.
+
+## YFinance Development Proxy
+
+`structured_sources.yfinance_dev_only` is a PR25 development-only collector source. It is disabled by default, not production critical, and not used in the per-tick loop.
+
+Required settings:
+
+```yaml
+enabled: false
+development_only: true
+production_critical: false
+feeds_memory_cache: true
+writes_questdb_ledger: true
+used_in_per_tick_loop: false
+required: false
+period: "5d"
+interval: "5m"
+timeout_seconds: 10.0
+bar_completion_grace_seconds: 30
+max_staleness_seconds: 360
+auto_adjust: false
+actions: false
+repair: false
+keepna: true
+prepost: false
+threads: true
+```
+
+Validation enforces five-minute-only bars and:
+
+```text
+max_staleness_seconds >= 300 + bar_completion_grace_seconds
+```
+
+The collector stores `valid_until = source_event_time + max_staleness_seconds`. That keeps the previous completed bar usable while the newest five-minute bar is still inside the completion grace period.
+
+Offline smoke, no internet or QuestDB:
+
+```powershell
+python scripts/check_yfinance_proxy.py
+```
+
+Optional live smoke:
+
+```powershell
+python scripts/check_yfinance_proxy.py --live
+python scripts/check_yfinance_proxy.py --live --require-fresh
+python scripts/check_yfinance_proxy.py --live --write-questdb
+```
+
+`NO_FRESH_DATA` exits successfully by default in live mode because the source may be reachable while the market is closed or no fresh completed bars are available. `--require-fresh` makes that status fail.
+
+Full behavior is documented in `docs/yfinance_proxy.md`.
 
 ## QuestDB Health Defaults
 
