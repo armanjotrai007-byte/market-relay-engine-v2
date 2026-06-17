@@ -78,7 +78,8 @@ def test_symbol_config_separates_tradable_and_context_symbols() -> None:
     }
 
     assert {"XOM", "CVX", "LMT", "RTX", "NOC", "GD"}.issubset(tradable_tickers)
-    assert {"SPY", "QQQ", "IWM", "XLE", "PPA", "VIX_PROXY"}.issubset(context_tickers)
+    assert {"SPY", "QQQ", "IWM", "XLE", "PPA", "^VIX"}.issubset(context_tickers)
+    assert "VIX_PROXY" not in context_tickers
     assert tradable_tickers.isdisjoint(context_tickers)
 
     for sector in symbols["tradable_universe"].values():
