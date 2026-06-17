@@ -26,6 +26,7 @@ from market_relay_engine.context.yfinance_proxy import (  # noqa: E402
 )
 from market_relay_engine.questdb.writer import (  # noqa: E402
     QuestDBLedgerWriter,
+    QuestDBWriteError,
     load_questdb_write_config,
 )
 
@@ -154,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         result = _run_live(write_questdb=args.write_questdb) if args.live else _run_offline()
-    except YFinanceProxyError as exc:
+    except (YFinanceProxyError, QuestDBWriteError) as exc:
         if args.write_questdb:
             _print_write_smoke_failure(
                 attempted=1,
