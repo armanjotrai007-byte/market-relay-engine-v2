@@ -21,9 +21,13 @@ from market_relay_engine.context.yfinance_proxy import (  # noqa: E402
     YFinanceProxyCollectionStatus,
     YFinanceProxyCollector,
     YFinanceProxyConfig,
+    YFinanceProxyError,
     cache_indicator_name,
 )
-from market_relay_engine.questdb.writer import QuestDBLedgerWriter  # noqa: E402
+from market_relay_engine.questdb.writer import (  # noqa: E402
+    QuestDBLedgerWriter,
+    load_questdb_write_config,
+)
 
 OFFLINE_COLLECTION_TIME = datetime(2026, 1, 2, 15, 10, 20, tzinfo=UTC)
 
@@ -57,7 +61,7 @@ def _run_offline() -> YFinanceProxyCollectionResult:
     actual_returns = {snapshot.indicator_name for snapshot in result.indicator_snapshots}
     if not expected_returns.issubset(actual_returns):
         raise RuntimeError(f"offline exact returns missing: {sorted(expected_returns - actual_returns)}")
-    cached = cache.get_sector("ENERGY", cache_indicator_name("XLE", "return_5m", "5m"), now=OFFLINE_COLLECTION_TIME)
+    cached = cache.get_sector("OIL", cache_indicator_name("XLE", "return_5m", "5m"), now=OFFLINE_COLLECTION_TIME)
     if cached is None:
         raise RuntimeError("offline collector did not publish the sector cache entry")
     return result
@@ -70,13 +74,15 @@ def _run_live(*, write_questdb: bool) -> YFinanceProxyCollectionResult:
         configs["symbols"],
         enabled=True,
     )
-    writer = QuestDBLedgerWriter() if write_questdb else None
+    writer = None
+    if write_questdb:
+        writer = QuestDBLedgerWriter(load_questdb_write_config(required=True))
     collector = YFinanceProxyCollector(
         cache=ContextStateCache(),
         config=config,
         ledger_writer=writer,
     )
-    return collector.collect(write_questdb=write_questdb)
+    return collector.collect(write_questdb=write_questdb, questdb_required=write_questdb)
 
 
 def _print_result(result: YFinanceProxyCollectionResult) -> None:
@@ -96,6 +102,46 @@ def _print_result(result: YFinanceProxyCollectionResult) -> None:
             print(f"- {issue.issue_type}{symbol}{window}: {issue.message}")
 
 
+def _print_write_smoke_failure(*, attempted: int, successful: int, failed: int, first_failure: str) -> None:
+    print("ERROR: QuestDB write smoke failed.")
+    print(f"attempted_writes: {attempted}")
+    print(f"successful_writes: {successful}")
+    print(f"failed_writes: {failed}")
+    print(f"first_failure: {first_failure}")
+
+
+def _validate_write_smoke_result(result: YFinanceProxyCollectionResult) -> int:
+    attempted = len(result.indicator_snapshots)
+    successful = len(result.ledger_write_results)
+    ledger_issues = [issue for issue in result.issues if issue.issue_type == "LEDGER_WRITE_FAILED"]
+    failed = len(ledger_issues)
+    if ledger_issues:
+        _print_write_smoke_failure(
+            attempted=attempted,
+            successful=successful,
+            failed=failed,
+            first_failure=ledger_issues[0].message,
+        )
+        return 1
+    if attempted > 0 and successful == 0:
+        _print_write_smoke_failure(
+            attempted=attempted,
+            successful=successful,
+            failed=attempted,
+            first_failure="valid indicators were produced but no QuestDB rows were written",
+        )
+        return 1
+    if successful < attempted:
+        _print_write_smoke_failure(
+            attempted=attempted,
+            successful=successful,
+            failed=attempted - successful,
+            first_failure="not every produced indicator had a successful QuestDB write",
+        )
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check the PR25 yfinance development proxy collector")
     parser.add_argument("--live", action="store_true", help="perform one real yfinance download")
@@ -106,7 +152,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.write_questdb and not args.live:
         parser.error("--write-questdb requires --live")
 
-    result = _run_live(write_questdb=args.write_questdb) if args.live else _run_offline()
+    try:
+        result = _run_live(write_questdb=args.write_questdb) if args.live else _run_offline()
+    except YFinanceProxyError as exc:
+        if args.write_questdb:
+            _print_write_smoke_failure(
+                attempted=1,
+                successful=0,
+                failed=1,
+                first_failure=str(exc),
+            )
+            return 1
+        raise
     _print_result(result)
 
     if result.status is YFinanceProxyCollectionStatus.NO_FRESH_DATA:
@@ -116,6 +173,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if result.status is YFinanceProxyCollectionStatus.DISABLED:
         return 1
+    if args.write_questdb:
+        return _validate_write_smoke_result(result)
     return 0
 
 
