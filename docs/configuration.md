@@ -73,6 +73,8 @@ max_staleness_seconds >= 300 + bar_completion_grace_seconds
 
 The collector stores `valid_until = source_event_time + max_staleness_seconds`. That keeps the previous completed bar usable while the newest five-minute bar is still inside the completion grace period.
 
+Oil proxy ETFs XLE, XOP, and OIH are stored under `SECTOR/OIL`, matching the configured `oil` sector used by the initial tradable oil names after cache key normalization.
+
 Offline smoke, no internet or QuestDB:
 
 ```powershell
@@ -87,7 +89,7 @@ python scripts/check_yfinance_proxy.py --live --require-fresh
 python scripts/check_yfinance_proxy.py --live --write-questdb
 ```
 
-`NO_FRESH_DATA` exits successfully by default in live mode because the source may be reachable while the market is closed or no fresh completed bars are available. `--require-fresh` makes that status fail.
+`NO_FRESH_DATA` exits successfully by default in live mode because the source may be reachable while the market is closed or no fresh completed bars are available. `--require-fresh` makes that status fail. `--live --write-questdb` requires successful QuestDB writes for produced indicators and exits nonzero on ledger write failures or zero successful writes when valid indicators were produced.
 
 Full behavior is documented in `docs/yfinance_proxy.md`.
 
