@@ -8,20 +8,21 @@ Canonical source of truth: GitHub `main`.
 
 Current active PR:
 
-- **PR 23 - Fake/Paper End-to-End Loop**
-- Branch: `pr23-fake-paper-end-to-end-loop`
-- Purpose: prove the local execution pipeline can go from a fake approved trade to order submission result, fill conversion, portfolio update, and reconciliation without real APIs.
-- Safety exclusions: no Alpaca calls, no order submission, no QuestDB writes, no live trading, no retries, no async service, no scheduler, no model inference, no AI calls, no external collectors, and no new heavy dependencies.
-- Next PR after merge: guarded real Alpaca paper smoke test.
+- **PR 24 - In-Memory ContextState Cache**
+- Branch: `pr24-context-state-cache`
+- Purpose: add a bounded, thread-safe in-memory latest context cache for global, ticker, and sector structured context facts with expiry, update statuses, JSON-safe snapshots, and `ContextStateSnapshot` aggregation.
+- Safety exclusions: no external API calls, no collectors, no AI calls, no model inference, no QuestDB reads, no QuestDB writes, no order submission, no Alpaca calls, no live trading, no background services, no scheduler, no retries, and no new heavy dependencies.
+- Next PR after merge: simple structured context collector/proxy feeding `ContextStateCache`.
 
-Latest confirmed merged base before PR23:
+Latest confirmed merged base before PR24:
 
-- **PR 22 merge commit:** `48836b2a33c5404c48d3a06ee01c1dba54f26670`
+- **PR 23 merge commit:** `ba420bba022c2df2a24065bcac9b0951c7ad80ca`
 
 Local workspace and publishing note:
 
 - This local workspace is not a usable Git checkout for publishing work.
-- Branches and PRs may need to be created on GitHub with the GitHub connector when this workspace remains connector-only.
+- PR24 was prepared with the GitHub connector only.
+- Run validation on the server laptop before merging.
 
 ---
 
@@ -42,7 +43,7 @@ Databento market data
 -> QuestDB bot ledger
 ```
 
-QuestDB is only the bot ledger. It must not be used as a historical market-data warehouse.
+QuestDB is only the bot ledger. It must not be used as a historical market-data warehouse or as the hot-path source for live context reads.
 
 Historical market truth comes from official Databento historical DBN/Parquet files, not QuestDB.
 
@@ -75,66 +76,60 @@ PR21 captures order-submission results and optional submit-time `arrival_midpric
 
 PR22 converts execution-level fill payloads into `FillEvent`, applies them to `PortfolioState`, calculates slippage, and compares local signed quantity against broker signed quantity.
 
+PR23 proves the local fake paper execution wiring without broker calls, QuestDB writes, model inference, AI calls, or external collectors.
+
 ---
 
 ## Current PR
 
-### PR 23 - Fake/Paper End-to-End Loop
+### PR 24 - In-Memory ContextState Cache
 
 Branch:
 
 ```text
-pr23-fake-paper-end-to-end-loop
+pr24-context-state-cache
 ```
 
 Purpose:
 
-Add a deterministic local fake paper loop that connects the existing order manager, resolved intent path, mocked Alpaca paper response, execution metrics capture, fill reconciliation, and position state helpers.
+Add a simple in-process cache that stores the newest structured context facts in RAM for future hot-path risk reads. It prepares future risk logic to block, reduce, or warn on trades when recent context says conditions are bad, stale, expired, or high risk.
 
 Key behavior:
 
-- Builds a fake `ModelSignal` and approved `RiskDecision`.
-- Uses `build_order_intent(...)` to create an entry order intent.
-- Customizes the frozen `OrderIntent` with `dataclasses.replace(...)`.
-- Reserves the intent through `reserve_order_intent(...)` before mocked submission.
-- Resolves BUY/SELL entries through `resolve_close_position_intent(...)`.
-- Captures a mocked `AlpacaPaperResponse` with `capture_order_submission_result(...)`.
-- Converts a manually built execution-level fill payload with `fill_event_from_alpaca_fill_payload(...)`.
-- Uses fixed timezone-aware UTC timestamps for deterministic validation.
-- Computes the expected broker quantity independently from starting quantity plus signed fill delta.
-- Applies and reconciles through `apply_fill_and_reconcile(...)`.
-- Releases the order-manager reservation and returns final `OrderManagerState` evidence.
-- Does not add round-trip helper logic.
+- Supports `GLOBAL`, `TICKER`, and `SECTOR` context keys.
+- Stores latest `ContextStateEntry` values with severity, source, `updated_at`, optional `source_event_time`, optional `valid_until`, confidence, JSON-safe details, and optional trace ID.
+- Uses bounded memory with `max_entries` and deterministic oldest-entry eviction.
+- Periodically purges expired entries during update attempts.
+- Returns update statuses for written, replaced, stale, and duplicate updates instead of crashing on normal stale or duplicate arrival.
+- Hides expired entries by default while allowing explicit `include_expired=True` reads.
+- Produces JSON-safe snapshots with deep-copy isolation.
+- Aggregates relevant global, sector, and ticker entries into the existing `ContextStateSnapshot` contract.
+- Protects public cache methods with an internal `RLock` for basic in-process concurrent reads and writes.
 
 Profit-protection focus:
 
-- clean ID propagation
-- clean fill correlation
-- duplicate-fill protection
-- correct slippage direction
-- correct local position state
-- clear reconciliation mismatch detection
-- no active open-order reservation left behind
+- latest context facts can be read without external calls during future live decisions
+- stale or expired context is hidden from default live snapshots
+- high and critical context maps to high risk in `ContextStateSnapshot`
+- medium context maps to elevated risk
+- sector and ticker context can coexist with broad market context
+- normal stale or duplicate collector writes do not crash the cache
 
 Explicitly not added:
 
-- Alpaca calls
-- order submission
-- polling loops
-- retries
-- schedulers
-- async/background services
-- QuestDB writes
-- live trading
-- Databento live feed
-- model inference
-- model training
+- collectors
+- external API calls
 - AI calls
-- external context collectors
+- model inference
+- QuestDB reads
+- QuestDB writes
+- order submission
+- Alpaca calls
+- live trading
+- background services
+- schedulers
+- retries
 - new heavy dependencies
-- strategy optimization
-- backtesting engine
-- profit claims
 
 ---
 
@@ -143,36 +138,37 @@ Explicitly not added:
 Run from the repo root after checking out the PR branch:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/check_environment.py
-.\.venv\Scripts\python.exe scripts/check_config.py
-.\.venv\Scripts\python.exe scripts/check_questdb.py
-.\.venv\Scripts\python.exe scripts/check_questdb_schema.py
-.\.venv\Scripts\python.exe scripts/check_questdb_writer.py
-.\.venv\Scripts\python.exe scripts/check_questdb_analysis.py
-.\.venv\Scripts\python.exe scripts/check_contracts.py
-.\.venv\Scripts\python.exe scripts/check_fixtures.py
-.\.venv\Scripts\python.exe scripts/check_historical_parquet.py
-.\.venv\Scripts\python.exe scripts/check_dbn_inspector.py
-.\.venv\Scripts\python.exe scripts/check_feature_builder.py
-.\.venv\Scripts\python.exe scripts/check_feature_parity.py
-.\.venv\Scripts\python.exe scripts/check_cost_model.py
-.\.venv\Scripts\python.exe scripts/check_label_builder.py
-.\.venv\Scripts\python.exe scripts/check_risk_filter.py
-.\.venv\Scripts\python.exe scripts/check_risk_logging.py
-.\.venv\Scripts\python.exe scripts/check_order_manager.py
-.\.venv\Scripts\python.exe scripts/check_position_state.py
-.\.venv\Scripts\python.exe scripts/check_alpaca_paper.py
-.\.venv\Scripts\python.exe scripts/check_execution_metrics.py
-.\.venv\Scripts\python.exe scripts/check_fill_reconciliation.py
-.\.venv\Scripts\python.exe scripts/check_fake_paper_loop.py
-.\.venv\Scripts\python.exe -m pytest
+python scripts/check_environment.py
+python scripts/check_config.py
+python scripts/check_questdb.py
+python scripts/check_questdb_schema.py
+python scripts/check_questdb_writer.py
+python scripts/check_questdb_analysis.py
+python scripts/check_contracts.py
+python scripts/check_fixtures.py
+python scripts/check_historical_parquet.py
+python scripts/check_dbn_inspector.py
+python scripts/check_feature_builder.py
+python scripts/check_feature_parity.py
+python scripts/check_cost_model.py
+python scripts/check_label_builder.py
+python scripts/check_risk_filter.py
+python scripts/check_risk_logging.py
+python scripts/check_order_manager.py
+python scripts/check_position_state.py
+python scripts/check_alpaca_paper.py
+python scripts/check_execution_metrics.py
+python scripts/check_fill_reconciliation.py
+python scripts/check_fake_paper_loop.py
+python scripts/check_context_state_cache.py
+python -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
 
 Optional real Alpaca paper account validation on the server laptop:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/check_alpaca_paper.py --required
+python scripts/check_alpaca_paper.py --required
 ```
 
 The required Alpaca check must only call `GET /v2/account`. It must not submit a paper order.
@@ -180,15 +176,24 @@ The required Alpaca check must only call `GET /v2/account`. It must not submit a
 With QuestDB running on the server laptop, also run:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts/check_questdb.py --required
-.\.venv\Scripts\python.exe scripts/check_questdb_schema.py --apply --required
-.\.venv\Scripts\python.exe scripts/check_questdb_writer.py --required
-.\.venv\Scripts\python.exe scripts/check_questdb_analysis.py --required
+python scripts/check_questdb.py --required
+python scripts/check_questdb_schema.py --apply --required
+python scripts/check_questdb_writer.py --required
+python scripts/check_questdb_analysis.py --required
 ```
 
 ---
 
 ## Files To Know
+
+Context state cache:
+
+```text
+src/market_relay_engine/context/state_cache.py
+docs/context_state_cache.md
+scripts/check_context_state_cache.py
+tests/unit/test_context_state_cache.py
+```
 
 Execution:
 
@@ -199,24 +204,6 @@ src/market_relay_engine/execution/alpaca_paper.py
 src/market_relay_engine/execution/execution_metrics.py
 src/market_relay_engine/execution/fill_reconciliation.py
 src/market_relay_engine/execution/fake_paper_loop.py
-docs/order_manager.md
-docs/position_state.md
-docs/alpaca_paper.md
-docs/execution_metrics.md
-docs/fill_reconciliation.md
-docs/fake_paper_loop.md
-scripts/check_order_manager.py
-scripts/check_position_state.py
-scripts/check_alpaca_paper.py
-scripts/check_execution_metrics.py
-scripts/check_fill_reconciliation.py
-scripts/check_fake_paper_loop.py
-tests/unit/test_order_manager.py
-tests/unit/test_position_state.py
-tests/unit/test_alpaca_paper.py
-tests/unit/test_execution_metrics.py
-tests/unit/test_fill_reconciliation.py
-tests/unit/test_fake_paper_loop.py
 ```
 
 Core contracts:
@@ -254,7 +241,10 @@ scripts/check_alpaca_paper.py
 scripts/check_execution_metrics.py
 scripts/check_fill_reconciliation.py
 scripts/check_fake_paper_loop.py
+scripts/check_context_state_cache.py
 scripts/check_questdb.py
+scripts/check_questdb_schema.py
+scripts/check_questdb_writer.py
 scripts/check_questdb_analysis.py
 scripts/run_tests.ps1
 ```
@@ -263,8 +253,8 @@ scripts/run_tests.ps1
 
 ## Next Steps
 
-1. Review PR 23 on GitHub after it is opened.
-2. Check out or pull branch `pr23-fake-paper-end-to-end-loop` on the server laptop.
+1. Review PR 24 on GitHub after it is opened.
+2. Check out or pull branch `pr24-context-state-cache` on the server laptop.
 3. Run the full validation commands from the Standard Server-Laptop Validation section.
-4. Merge PR 23 if review and server-laptop validation are clean.
-5. Start the guarded real Alpaca paper smoke test PR.
+4. Merge PR 24 if review and server-laptop validation are clean.
+5. Start the simple structured context collector/proxy PR that feeds `ContextStateCache`.
