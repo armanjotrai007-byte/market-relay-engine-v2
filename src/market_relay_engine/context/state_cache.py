@@ -461,7 +461,7 @@ def make_global_context_entry(
         source_event_time=source_event_time,
         valid_until=valid_until,
         confidence=confidence,
-        details=details or {},
+        details={} if details is None else details,
         trace_id=trace_id,
     )
 
@@ -490,7 +490,7 @@ def make_ticker_context_entry(
         source_event_time=source_event_time,
         valid_until=valid_until,
         confidence=confidence,
-        details=details or {},
+        details={} if details is None else details,
         trace_id=trace_id,
     )
 
@@ -519,7 +519,7 @@ def make_sector_context_entry(
         source_event_time=source_event_time,
         valid_until=valid_until,
         confidence=confidence,
-        details=details or {},
+        details={} if details is None else details,
         trace_id=trace_id,
     )
 
