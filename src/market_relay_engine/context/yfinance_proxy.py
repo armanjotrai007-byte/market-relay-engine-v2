@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from enum import Enum
 import hashlib
@@ -29,7 +29,6 @@ SUPPORTED_INTERVAL = "5m"
 INTERVAL_SECONDS = 300
 DIGEST_PREFIX_HEX_LENGTH = 32
 _PRICE_COLUMNS = frozenset({"Open", "High", "Low", "Close", "Adj Close", "Volume"})
-_INDICATOR_WINDOWS = {"latest_close": 5, "return_5m": 5, "return_15m": 15, "return_60m": 60}
 _DEFAULT_COLLECTION_SYMBOLS = ("SPY", "QQQ", "IWM", "GLD", "^VIX", "XLE", "XOP", "OIH", "XLI", "PPA", "ITA")
 _DEFAULT_REGISTRY = {
     "SPY": (ContextScope.GLOBAL, None),
@@ -117,6 +116,9 @@ class YFinanceProxyConfig:
     enabled: bool = False
     development_only: bool = True
     production_critical: bool = False
+    feeds_memory_cache: bool = True
+    writes_questdb_ledger: bool = True
+    used_in_per_tick_loop: bool = False
     required: bool = False
     period: str = "5d"
     interval: str = SUPPORTED_INTERVAL
@@ -129,6 +131,7 @@ class YFinanceProxyConfig:
     keepna: bool = True
     prepost: bool = False
     threads: bool = True
+    purpose: str | None = None
     requested_symbols: tuple[str, ...] = _DEFAULT_COLLECTION_SYMBOLS
     registry: tuple[ProxySymbolRegistration, ...] = field(default_factory=lambda: _default_registry_tuple())
 
@@ -139,6 +142,10 @@ class YFinanceProxyConfig:
             raise YFinanceProxyError("yfinance_dev_only must be development_only")
         if self.production_critical is not False:
             raise YFinanceProxyError("yfinance_dev_only must not be production critical")
+        if self.feeds_memory_cache is not True:
+            raise YFinanceProxyError("yfinance_dev_only must feed the memory cache")
+        if self.used_in_per_tick_loop is not False:
+            raise YFinanceProxyError("yfinance_dev_only must not run in the per-tick loop")
         if self.interval != SUPPORTED_INTERVAL:
             raise YFinanceProxyError("PR25 supports only interval='5m'")
         timeout = _positive_float(self.timeout_seconds, "timeout_seconds")
@@ -170,8 +177,9 @@ class YFinanceProxyConfig:
         source = context_sources.get("structured_sources", {}).get("yfinance_dev_only", {})
         if not isinstance(source, Mapping):
             raise YFinanceProxyError("structured_sources.yfinance_dev_only must be a mapping")
+        allowed = {item.name for item in fields(cls)}
+        values = {key: value for key, value in source.items() if key in allowed}
         registry = build_proxy_registry(symbols)
-        values = dict(source)
         values["registry"] = tuple(registry.values())
         values["requested_symbols"] = _DEFAULT_COLLECTION_SYMBOLS
         values.update(overrides)
@@ -276,6 +284,7 @@ class YFinanceProxyCollector:
             frame = normalized.get(symbol)
             if frame is None:
                 failed_symbols.add(symbol)
+                no_fresh_only = False
                 continue
             prepared = _prepare_symbol_frame(symbol, frame, issues)
             if prepared is None:
@@ -300,7 +309,13 @@ class YFinanceProxyCollector:
             cache_results.append(result)
             snapshots.append(snapshot)
             successful_symbols.add(snapshot.ticker_or_sector)
-            if write_questdb and self.ledger_writer is not None and result.status in {ContextStateUpdateStatus.WRITTEN, ContextStateUpdateStatus.REPLACED}:
+            should_write_ledger = (
+                write_questdb
+                and self.config.writes_questdb_ledger
+                and self.ledger_writer is not None
+                and result.status in {ContextStateUpdateStatus.WRITTEN, ContextStateUpdateStatus.REPLACED}
+            )
+            if should_write_ledger:
                 try:
                     write_result = self.ledger_writer.write_context_indicator_snapshot(snapshot, run_id=run_id, session_id=session_id)
                     if write_result is not None:
@@ -372,8 +387,7 @@ class YFinanceProxyCollector:
         if len(price_levels) != 1:
             issues.append(YFinanceProxyIssue(issue_type="AMBIGUOUS_MULTIINDEX_COLUMNS", message="could not identify exactly one price level"))
             return {}, requested
-        price_level = price_levels[0]
-        symbol_level = 1 - price_level
+        symbol_level = 1 - price_levels[0]
         available_symbols = set(map(str, data.columns.get_level_values(symbol_level)))
         normalized: dict[str, pd.DataFrame] = {}
         missing: list[str] = []
@@ -383,8 +397,6 @@ class YFinanceProxyCollector:
                 continue
             try:
                 selected = data.xs(symbol, axis=1, level=symbol_level, drop_level=True)
-                if price_level == 1:
-                    selected = selected.copy()
                 selected.columns = [str(column) for column in selected.columns]
                 if "Close" not in selected.columns:
                     missing.append(symbol)
@@ -416,7 +428,7 @@ class YFinanceProxyCollector:
         if freshness_seconds > self.config.max_staleness_seconds:
             issues.append(_issue("STALE_SOURCE_DATA", symbol, "latest completed bar is stale", details={"freshness_seconds": freshness_seconds}))
             return [], True, False
-        builds = [self._indicator_build(symbol, "latest_close", "5m", latest_close, latest_start, latest_end, freshness_seconds, None, None)]
+        builds = [self._indicator_build(symbol, "latest_close", "5m", latest_close, latest_start, latest_end, freshness_seconds, None, None, collected_at=collected_at)]
         for indicator_name, minutes in (("return_5m", 5), ("return_15m", 15), ("return_60m", 60)):
             target_start = latest_start - pd.Timedelta(minutes=minutes)
             window = f"{minutes}m"
@@ -431,14 +443,14 @@ class YFinanceProxyCollector:
                 issues.append(_issue("INVALID_LATEST_CLOSE", symbol, "latest close is invalid", window))
                 continue
             value = latest_close / float(target_close) - 1.0
-            builds.append(self._indicator_build(symbol, indicator_name, window, value, latest_start, latest_end, freshness_seconds, target_start.to_pydatetime(), float(target_close), latest_close=latest_close))
+            builds.append(self._indicator_build(symbol, indicator_name, window, value, latest_start, latest_end, freshness_seconds, target_start.to_pydatetime(), float(target_close), latest_close=latest_close, collected_at=collected_at))
         return builds, False, False
 
-    def _indicator_build(self, symbol: str, indicator_name: str, window: str, value: float, latest_start: pd.Timestamp, latest_end: datetime, freshness_seconds: float, target_start: datetime | None, target_close: float | None, *, latest_close: float | None = None) -> _IndicatorBuild:
+    def _indicator_build(self, symbol: str, indicator_name: str, window: str, value: float, latest_start: pd.Timestamp, latest_end: datetime, freshness_seconds: float, target_start: datetime | None, target_close: float | None, *, latest_close: float | None = None, collected_at: datetime) -> _IndicatorBuild:
         source_event_time = ensure_timezone_aware_utc(latest_end)
         indicator_id = deterministic_context_indicator_id(SOURCE_NAME, symbol, indicator_name, window, source_event_time)
         snapshot = ContextIndicatorSnapshot(
-            snapshot_time=ensure_timezone_aware_utc(self.clock()),
+            snapshot_time=collected_at,
             source=SOURCE_NAME,
             ticker_or_sector=symbol,
             indicator_name=indicator_name,
@@ -519,8 +531,7 @@ def get_proxy_indicator(cache: ContextStateCache, registry: Mapping[str, ProxySy
     entry = cache.get_global(name, now=now, include_expired=include_expired) if registration.scope is ContextScope.GLOBAL else cache.get_sector(registration.sector or "", name, now=now, include_expired=include_expired)
     if entry is None or entry.source_event_time is None or not _finite_number(entry.value):
         return None
-    details = entry.details
-    context_indicator_id = details.get("context_indicator_id")
+    context_indicator_id = entry.details.get("context_indicator_id")
     if not isinstance(context_indicator_id, str) or not context_indicator_id:
         return None
     return ProxyIndicatorReading(symbol=registration.symbol, sector=registration.sector, indicator_name=indicator_name, window=window, value=float(entry.value), source_event_time=entry.source_event_time, valid_until=entry.valid_until, context_indicator_id=context_indicator_id)
@@ -625,6 +636,7 @@ __all__ = [
     "ContextIndicatorWriter",
     "DIGEST_PREFIX_HEX_LENGTH",
     "ProxyIndicatorReading",
+    "ProxySymbolRegistration",
     "YFinanceProxyCollectionResult",
     "YFinanceProxyCollectionStatus",
     "YFinanceProxyCollector",
