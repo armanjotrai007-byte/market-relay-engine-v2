@@ -1,0 +1,332 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+import math
+
+import pandas as pd
+import pytest
+
+from market_relay_engine.context.state_cache import (
+    ContextScope,
+    ContextStateCache,
+    ContextStateCacheError,
+    ContextStateUpdateStatus,
+    make_global_context_entry,
+    make_sector_context_entry,
+)
+from market_relay_engine.context.yfinance_proxy import (
+    DIGEST_PREFIX_HEX_LENGTH,
+    SOURCE_NAME,
+    ProxySymbolRegistration,
+    YFinanceProxyCollectionStatus,
+    YFinanceProxyCollector,
+    YFinanceProxyConfig,
+    YFinanceProxyError,
+    build_proxy_registry,
+    cache_indicator_name,
+    deterministic_context_indicator_id,
+    get_proxy_indicator,
+    get_sector_proxy_indicators,
+)
+from market_relay_engine.contracts.context import ContextIndicatorSnapshot
+from market_relay_engine.questdb.writer import QuestDBLedgerWriter, context_indicator_snapshot_to_row
+
+BASE_TIME = datetime(2026, 1, 2, 15, 10, 20, tzinfo=UTC)
+START_TIME = datetime(2026, 1, 2, 14, 0, tzinfo=UTC)
+
+
+def _frame(closes: list[float | int | None], *, start: datetime = START_TIME) -> pd.DataFrame:
+    return pd.DataFrame(
+        {"Close": closes},
+        index=pd.date_range(start=start, periods=len(closes), freq="5min", tz="UTC"),
+    )
+
+
+def _multi_frame(symbol_closes: dict[str, list[float | int | None]], *, start: datetime = START_TIME) -> pd.DataFrame:
+    lengths = {len(values) for values in symbol_closes.values()}
+    assert len(lengths) == 1
+    index = pd.date_range(start=start, periods=lengths.pop(), freq="5min", tz="UTC")
+    data = {
+        ("Close", symbol): values
+        for symbol, values in symbol_closes.items()
+    }
+    return pd.DataFrame(data, index=index)
+
+
+def _config(*symbols: str, enabled: bool = True, **overrides: object) -> YFinanceProxyConfig:
+    registry = build_proxy_registry(None)
+    requested = tuple(symbol.upper() for symbol in symbols) or ("XLE",)
+    return YFinanceProxyConfig(
+        enabled=enabled,
+        requested_symbols=requested,
+        registry=tuple(registry[symbol] for symbol in requested),
+        **overrides,
+    )
+
+
+def _collector(frame: pd.DataFrame, *, config: YFinanceProxyConfig | None = None, now: datetime = BASE_TIME, writer: object | None = None) -> YFinanceProxyCollector:
+    def download(**_: object) -> pd.DataFrame:
+        return frame
+
+    return YFinanceProxyCollector(
+        cache=ContextStateCache(),
+        config=config or _config("XLE"),
+        download=download,
+        clock=lambda: now,
+        ledger_writer=writer,  # type: ignore[arg-type]
+    )
+
+
+def test_grace_staleness_validation_and_no_boundary_blackout() -> None:
+    assert YFinanceProxyConfig(bar_completion_grace_seconds=30, max_staleness_seconds=330)
+    assert YFinanceProxyConfig(bar_completion_grace_seconds=30, max_staleness_seconds=360)
+    with pytest.raises(YFinanceProxyError):
+        YFinanceProxyConfig(bar_completion_grace_seconds=30, max_staleness_seconds=329)
+
+    frame = _frame([100.0 + index for index in range(14)])
+    collector = _collector(
+        frame,
+        config=_config("XLE", max_staleness_seconds=330),
+        now=datetime(2026, 1, 2, 15, 10, 20, tzinfo=UTC),
+    )
+
+    result = collector.collect()
+
+    assert result.status is YFinanceProxyCollectionStatus.SUCCESS
+    latest = next(snapshot for snapshot in result.indicator_snapshots if snapshot.indicator_name == "latest_close")
+    assert latest.source_event_time == datetime(2026, 1, 2, 15, 5, tzinfo=UTC)
+    assert latest.value == 112.0
+
+
+def test_scalar_cache_values_are_json_safe_without_truthiness_rejection() -> None:
+    accepted = [0, 0.0, False, 0.015, -0.02, " risk_off "]
+    for value in accepted:
+        entry = make_global_context_entry(name=f"value_{len(str(value))}", value=value, updated_at=BASE_TIME)
+        if isinstance(value, str):
+            assert entry.value == value.strip()
+        else:
+            assert entry.value == value
+
+    rejected = ["", "   ", None, float("nan"), float("inf"), [1], {"x": 1}]
+    for value in rejected:
+        with pytest.raises(ContextStateCacheError):
+            make_global_context_entry(name="bad", value=value, updated_at=BASE_TIME)  # type: ignore[arg-type]
+
+
+def test_numeric_retrieval_preserves_sector_proxy_identity_and_expiry() -> None:
+    registry = build_proxy_registry(None)
+    cache = ContextStateCache()
+    source_event_time = BASE_TIME - timedelta(minutes=1)
+    future = BASE_TIME + timedelta(minutes=5)
+    for symbol, value in (("XLE", 0.01), ("XOP", -0.02), ("OIH", 0.0)):
+        cache.update(
+            make_sector_context_entry(
+                sector="ENERGY",
+                name=cache_indicator_name(symbol, "return_5m", "5m"),
+                value=value,
+                updated_at=BASE_TIME,
+                source=SOURCE_NAME,
+                source_event_time=source_event_time,
+                valid_until=future,
+                details={"context_indicator_id": f"context_indicator_{symbol.lower()}"},
+            )
+        )
+
+    xle = get_proxy_indicator(cache, registry, symbol="XLE", indicator_name="return_5m", window="5m", now=BASE_TIME)
+    assert xle is not None
+    assert xle.symbol == "XLE"
+    assert xle.sector == "ENERGY"
+    assert xle.value == 0.01
+
+    energy = get_sector_proxy_indicators(cache, registry, sector="ENERGY", indicator_name="return_5m", window="5m", now=BASE_TIME)
+    assert set(energy) == {"XLE", "XOP", "OIH"}
+
+    cache.update(
+        make_sector_context_entry(
+            sector="ENERGY",
+            name=cache_indicator_name("XLE", "latest_close", "5m"),
+            value="not numeric",
+            updated_at=BASE_TIME,
+            source_event_time=source_event_time,
+            valid_until=future,
+            details={"context_indicator_id": "context_indicator_bad"},
+        )
+    )
+    assert get_proxy_indicator(cache, registry, symbol="XLE", indicator_name="latest_close", window="5m", now=BASE_TIME) is None
+
+    cache.update(
+        make_sector_context_entry(
+            sector="ENERGY",
+            name=cache_indicator_name("XLE", "return_15m", "15m"),
+            value=0.1,
+            updated_at=BASE_TIME,
+            source_event_time=source_event_time,
+            valid_until=BASE_TIME - timedelta(seconds=1),
+            details={"context_indicator_id": "context_indicator_expired"},
+        )
+    )
+    assert get_proxy_indicator(cache, registry, symbol="XLE", indicator_name="return_15m", window="15m", now=BASE_TIME) is None
+    assert get_proxy_indicator(cache, registry, symbol="XLE", indicator_name="return_15m", window="15m", now=BASE_TIME, include_expired=True) is not None
+
+
+def test_return_guard_omits_only_invalid_target_close() -> None:
+    closes = [100.0 for _ in range(13)]
+    closes[-2] = 0.0
+    closes[-1] = 101.0
+    result = _collector(_frame(closes)).collect()
+
+    names = {snapshot.indicator_name for snapshot in result.indicator_snapshots}
+    issue_windows = {(issue.issue_type, issue.window) for issue in result.issues}
+    assert "latest_close" in names
+    assert "return_15m" in names
+    assert "return_60m" in names
+    assert "return_5m" not in names
+    assert ("INVALID_TARGET_CLOSE", "5m") in issue_windows
+    assert result.status is YFinanceProxyCollectionStatus.PARTIAL
+
+
+@pytest.mark.parametrize("target_close", [0.0, -1.0, float("nan"), float("inf")])
+def test_invalid_target_close_values_do_not_crash_collection(target_close: float) -> None:
+    closes = [100.0 for _ in range(13)]
+    closes[-2] = target_close
+    closes[-1] = 101.0
+    result = _collector(_frame(closes)).collect()
+
+    assert result.status is YFinanceProxyCollectionStatus.PARTIAL
+    assert any(issue.issue_type == "INVALID_TARGET_CLOSE" for issue in result.issues)
+    assert any(snapshot.indicator_name == "latest_close" for snapshot in result.indicator_snapshots)
+
+
+def test_valid_zero_return_is_cached_successfully() -> None:
+    collector = _collector(_frame([100.0 for _ in range(13)]))
+    result = collector.collect()
+
+    return_snapshot = next(snapshot for snapshot in result.indicator_snapshots if snapshot.indicator_name == "return_5m")
+    assert return_snapshot.value == 0.0
+    cache_entry = collector.cache.get_sector("ENERGY", cache_indicator_name("XLE", "return_5m", "5m"), now=BASE_TIME)
+    assert cache_entry is not None
+    assert cache_entry.value == 0.0
+
+
+def test_invalid_latest_completed_close_uses_previous_valid_bar_without_crashing() -> None:
+    closes = [100.0 for _ in range(13)]
+    closes[-1] = float("nan")
+    result = _collector(_frame(closes)).collect()
+
+    assert result.status in {YFinanceProxyCollectionStatus.SUCCESS, YFinanceProxyCollectionStatus.PARTIAL}
+    latest = next(snapshot for snapshot in result.indicator_snapshots if snapshot.indicator_name == "latest_close")
+    assert latest.source_event_time == datetime(2026, 1, 2, 15, 0, tzinfo=UTC)
+
+
+def test_status_taxonomy_failed_partial_and_no_fresh_data() -> None:
+    stale_result = _collector(_frame([100.0 for _ in range(13)]), now=BASE_TIME + timedelta(hours=3)).collect()
+    assert stale_result.status is YFinanceProxyCollectionStatus.NO_FRESH_DATA
+    assert stale_result.stale_symbols == ("XLE",)
+
+    def failing_download(**_: object) -> pd.DataFrame:
+        raise RuntimeError("source unavailable")
+
+    failed = YFinanceProxyCollector(
+        cache=ContextStateCache(),
+        config=_config("XLE"),
+        download=failing_download,
+        clock=lambda: BASE_TIME,
+    ).collect()
+    assert failed.status is YFinanceProxyCollectionStatus.FAILED
+
+    mixed = _collector(
+        _multi_frame(
+            {
+                "XLE": [100.0 for _ in range(13)],
+                "XOP": [100.0] + [math.nan for _ in range(12)],
+            }
+        ),
+        config=_config("XLE", "XOP"),
+    ).collect()
+    assert mixed.status is YFinanceProxyCollectionStatus.PARTIAL
+    assert "XLE" in mixed.successful_symbols
+    assert "XOP" in mixed.stale_symbols
+
+
+def test_writer_protocol_optional_and_required_failures() -> None:
+    class RecordingWriter:
+        def __init__(self) -> None:
+            self.snapshots: list[ContextIndicatorSnapshot] = []
+
+        def write_context_indicator_snapshot(self, snapshot: ContextIndicatorSnapshot, **kwargs: object) -> object:
+            self.snapshots.append(snapshot)
+            return {"id": snapshot.context_indicator_id, "kwargs": kwargs}
+
+    writer = RecordingWriter()
+    result = _collector(_frame([100.0 for _ in range(13)]), writer=writer).collect(write_questdb=True, run_id="run_test")
+    assert result.status is YFinanceProxyCollectionStatus.SUCCESS
+    assert len(writer.snapshots) == len(result.indicator_snapshots)
+    assert result.ledger_write_results
+    assert hasattr(QuestDBLedgerWriter, "write_context_indicator_snapshot")
+
+    class FailingWriter:
+        def write_context_indicator_snapshot(self, snapshot: ContextIndicatorSnapshot, **kwargs: object) -> object:
+            raise RuntimeError("write failed")
+
+    optional = _collector(_frame([100.0 for _ in range(13)]), writer=FailingWriter()).collect(write_questdb=True)
+    assert optional.status is YFinanceProxyCollectionStatus.PARTIAL
+    assert any(issue.issue_type == "LEDGER_WRITE_FAILED" for issue in optional.issues)
+
+    with pytest.raises(YFinanceProxyError):
+        _collector(_frame([100.0 for _ in range(13)]), writer=FailingWriter()).collect(write_questdb=True, questdb_required=True)
+
+
+def test_deterministic_identity_and_snapshot_compatibility() -> None:
+    source_event_time = datetime(2026, 1, 2, 15, 5, tzinfo=UTC)
+    first = deterministic_context_indicator_id(SOURCE_NAME, "XLE", "return_5m", "5m", source_event_time)
+    second = deterministic_context_indicator_id(SOURCE_NAME, "xle", "return_5m", "5m", source_event_time)
+    different_bar = deterministic_context_indicator_id(SOURCE_NAME, "XLE", "return_5m", "5m", source_event_time + timedelta(minutes=5))
+
+    assert first == second
+    assert first != different_bar
+    assert first.startswith("context_indicator_")
+    assert len(first.removeprefix("context_indicator_")) == DIGEST_PREFIX_HEX_LENGTH
+
+    legacy_snapshot = ContextIndicatorSnapshot(
+        snapshot_time=BASE_TIME,
+        source="fixture",
+        ticker_or_sector="SPY",
+        indicator_name="latest_close",
+        value=100.0,
+    )
+    assert legacy_snapshot.context_indicator_id.startswith("context_indicator_")
+
+    fixed_snapshot = ContextIndicatorSnapshot(
+        snapshot_time=BASE_TIME,
+        source="fixture",
+        ticker_or_sector="SPY",
+        indicator_name="latest_close",
+        value=100.0,
+        context_indicator_id="context_indicator_fixed",
+    )
+    row = context_indicator_snapshot_to_row(fixed_snapshot, write_time=BASE_TIME)
+    assert row["context_indicator_id"] == "context_indicator_fixed"
+
+
+def test_disabled_collector_makes_no_source_calls() -> None:
+    calls = 0
+
+    def download(**_: object) -> pd.DataFrame:
+        nonlocal calls
+        calls += 1
+        return _frame([100.0])
+
+    result = YFinanceProxyCollector(
+        cache=ContextStateCache(),
+        config=_config("XLE", enabled=False),
+        download=download,
+        clock=lambda: BASE_TIME,
+    ).collect(write_questdb=True)
+
+    assert result.status is YFinanceProxyCollectionStatus.DISABLED
+    assert calls == 0
+
+
+def test_registry_rejects_ticker_scope_sector_combo() -> None:
+    with pytest.raises(YFinanceProxyError):
+        ProxySymbolRegistration(symbol="XLE", scope=ContextScope.TICKER, sector="ENERGY")
