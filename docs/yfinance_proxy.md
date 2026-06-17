@@ -59,10 +59,12 @@ Scope mapping:
 
 ```text
 SPY, QQQ, IWM, GLD, ^VIX -> GLOBAL
-XLE, XOP, OIH -> SECTOR / ENERGY
+XLE, XOP, OIH -> SECTOR / OIL
 XLI -> SECTOR / INDUSTRIALS
 PPA, ITA -> SECTOR / DEFENSE
 ```
+
+`OIL` matches the configured tradable sector value used for the initial oil names such as XOM and CVX after PR24 sector normalization. Calling `get_sector_proxy_indicators(..., sector="oil", ...)` and `get_sector_proxy_indicators(..., sector="OIL", ...)` resolves the same XLE/XOP/OIH readings.
 
 Sector proxies use the existing PR24 `SECTOR` scope. They do not create ticker keys and do not create keys that contain both ticker and sector. Cache entry names include the source proxy symbol, for example:
 
@@ -183,6 +185,8 @@ write_context_indicator_snapshot(snapshot, **kwargs) -> object | None
 
 Optional writer failures become structured issues and do not roll back cache updates. Required writer failures raise a clear `YFinanceProxyError`.
 
+When the live smoke is run with `--write-questdb`, the script treats QuestDB writes as required. It exits nonzero if any ledger write fails, if a `LEDGER_WRITE_FAILED` issue is present, or if valid indicators are produced but zero QuestDB rows are successfully written. A `PARTIAL` result caused only by unrelated symbol-data issues can still pass when at least one valid indicator is successfully written and no ledger write fails.
+
 ## Result Statuses
 
 - `DISABLED`: disabled and made no source or database calls.
@@ -213,7 +217,7 @@ If live yfinance is reachable but no fresh completed bars are available, `NO_FRE
 python scripts/check_yfinance_proxy.py --live --require-fresh
 ```
 
-To write live successful indicators through the configured QuestDB writer:
+To write live successful indicators through the configured QuestDB writer and require those writes to succeed:
 
 ```powershell
 python scripts/check_yfinance_proxy.py --live --write-questdb
