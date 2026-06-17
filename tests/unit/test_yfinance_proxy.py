@@ -6,11 +6,11 @@ import math
 import pandas as pd
 import pytest
 
+import scripts.check_yfinance_proxy as check_yfinance_proxy
 from market_relay_engine.context.state_cache import (
     ContextScope,
     ContextStateCache,
     ContextStateCacheError,
-    ContextStateUpdateStatus,
     make_global_context_entry,
     make_sector_context_entry,
 )
@@ -18,10 +18,12 @@ from market_relay_engine.context.yfinance_proxy import (
     DIGEST_PREFIX_HEX_LENGTH,
     SOURCE_NAME,
     ProxySymbolRegistration,
+    YFinanceProxyCollectionResult,
     YFinanceProxyCollectionStatus,
     YFinanceProxyCollector,
     YFinanceProxyConfig,
     YFinanceProxyError,
+    YFinanceProxyIssue,
     build_proxy_registry,
     cache_indicator_name,
     deterministic_context_indicator_id,
@@ -77,6 +79,43 @@ def _collector(frame: pd.DataFrame, *, config: YFinanceProxyConfig | None = None
     )
 
 
+def _snapshot(index: int = 0) -> ContextIndicatorSnapshot:
+    return ContextIndicatorSnapshot(
+        snapshot_time=BASE_TIME,
+        source=SOURCE_NAME,
+        ticker_or_sector="XLE",
+        indicator_name=f"return_{index}",
+        value=0.01,
+        context_indicator_id=f"context_indicator_cli_{index}",
+        window="5m",
+        units="return",
+        source_event_time=BASE_TIME - timedelta(minutes=5),
+    )
+
+
+def _cli_result(
+    *,
+    status: YFinanceProxyCollectionStatus = YFinanceProxyCollectionStatus.SUCCESS,
+    indicator_count: int = 1,
+    ledger_count: int = 1,
+    issues: tuple[YFinanceProxyIssue, ...] = (),
+) -> YFinanceProxyCollectionResult:
+    snapshots = tuple(_snapshot(index) for index in range(indicator_count))
+    return YFinanceProxyCollectionResult(
+        status=status,
+        started_at=BASE_TIME,
+        completed_at=BASE_TIME,
+        requested_symbols=("XLE",),
+        successful_symbols=("XLE",) if indicator_count else (),
+        failed_symbols=(),
+        stale_symbols=(),
+        issues=issues,
+        indicator_snapshots=snapshots,
+        cache_update_results=(),
+        ledger_write_results=tuple({"ok": index} for index in range(ledger_count)),
+    )
+
+
 def test_grace_staleness_validation_and_no_boundary_blackout() -> None:
     assert YFinanceProxyConfig(bar_completion_grace_seconds=30, max_staleness_seconds=330)
     assert YFinanceProxyConfig(bar_completion_grace_seconds=30, max_staleness_seconds=360)
@@ -121,7 +160,7 @@ def test_numeric_retrieval_preserves_sector_proxy_identity_and_expiry() -> None:
     for symbol, value in (("XLE", 0.01), ("XOP", -0.02), ("OIH", 0.0)):
         cache.update(
             make_sector_context_entry(
-                sector="ENERGY",
+                sector="OIL",
                 name=cache_indicator_name(symbol, "return_5m", "5m"),
                 value=value,
                 updated_at=BASE_TIME,
@@ -135,15 +174,17 @@ def test_numeric_retrieval_preserves_sector_proxy_identity_and_expiry() -> None:
     xle = get_proxy_indicator(cache, registry, symbol="XLE", indicator_name="return_5m", window="5m", now=BASE_TIME)
     assert xle is not None
     assert xle.symbol == "XLE"
-    assert xle.sector == "ENERGY"
+    assert xle.sector == "OIL"
     assert xle.value == 0.01
 
-    energy = get_sector_proxy_indicators(cache, registry, sector="ENERGY", indicator_name="return_5m", window="5m", now=BASE_TIME)
-    assert set(energy) == {"XLE", "XOP", "OIH"}
+    oil = get_sector_proxy_indicators(cache, registry, sector="oil", indicator_name="return_5m", window="5m", now=BASE_TIME)
+    assert set(oil) == {"XLE", "XOP", "OIH"}
+    assert get_sector_proxy_indicators(cache, registry, sector="OIL", indicator_name="return_5m", window="5m", now=BASE_TIME).keys() == oil.keys()
+    assert get_sector_proxy_indicators(cache, registry, sector="ENERGY", indicator_name="return_5m", window="5m", now=BASE_TIME) == {}
 
     cache.update(
         make_sector_context_entry(
-            sector="ENERGY",
+            sector="OIL",
             name=cache_indicator_name("XLE", "latest_close", "5m"),
             value="not numeric",
             updated_at=BASE_TIME,
@@ -156,7 +197,7 @@ def test_numeric_retrieval_preserves_sector_proxy_identity_and_expiry() -> None:
 
     cache.update(
         make_sector_context_entry(
-            sector="ENERGY",
+            sector="OIL",
             name=cache_indicator_name("XLE", "return_15m", "15m"),
             value=0.1,
             updated_at=BASE_TIME,
@@ -167,6 +208,42 @@ def test_numeric_retrieval_preserves_sector_proxy_identity_and_expiry() -> None:
     )
     assert get_proxy_indicator(cache, registry, symbol="XLE", indicator_name="return_15m", window="15m", now=BASE_TIME) is None
     assert get_proxy_indicator(cache, registry, symbol="XLE", indicator_name="return_15m", window="15m", now=BASE_TIME, include_expired=True) is not None
+
+
+def test_oil_proxy_registry_matches_configured_tradable_sector() -> None:
+    registry = build_proxy_registry(None)
+    assert {registry[symbol].sector for symbol in ("XLE", "XOP", "OIH")} == {"OIL"}
+    assert registry["XLI"].sector == "INDUSTRIALS"
+    assert {registry[symbol].sector for symbol in ("PPA", "ITA")} == {"DEFENSE"}
+
+    collector = _collector(
+        _multi_frame(
+            {
+                "XLE": [100.0 for _ in range(13)],
+                "XOP": [101.0 for _ in range(13)],
+                "OIH": [102.0 for _ in range(13)],
+            }
+        ),
+        config=_config("XLE", "XOP", "OIH"),
+    )
+    result = collector.collect()
+    assert result.status is YFinanceProxyCollectionStatus.SUCCESS
+
+    for symbol in ("XLE", "XOP", "OIH"):
+        name = cache_indicator_name(symbol, "return_5m", "5m")
+        assert collector.cache.get_sector("OIL", name, now=BASE_TIME) is not None
+        assert collector.cache.get_sector("ENERGY", name, now=BASE_TIME) is None
+
+    configured_sector_from_tradable_symbol = "oil"
+    readings = get_sector_proxy_indicators(
+        collector.cache,
+        registry,
+        sector=configured_sector_from_tradable_symbol,
+        indicator_name="return_5m",
+        window="5m",
+        now=BASE_TIME,
+    )
+    assert set(readings) == {"XLE", "XOP", "OIH"}
 
 
 def test_return_guard_omits_only_invalid_target_close() -> None:
@@ -203,7 +280,7 @@ def test_valid_zero_return_is_cached_successfully() -> None:
 
     return_snapshot = next(snapshot for snapshot in result.indicator_snapshots if snapshot.indicator_name == "return_5m")
     assert return_snapshot.value == 0.0
-    cache_entry = collector.cache.get_sector("ENERGY", cache_indicator_name("XLE", "return_5m", "5m"), now=BASE_TIME)
+    cache_entry = collector.cache.get_sector("OIL", cache_indicator_name("XLE", "return_5m", "5m"), now=BASE_TIME)
     assert cache_entry is not None
     assert cache_entry.value == 0.0
 
@@ -329,4 +406,59 @@ def test_disabled_collector_makes_no_source_calls() -> None:
 
 def test_registry_rejects_ticker_scope_sector_combo() -> None:
     with pytest.raises(YFinanceProxyError):
-        ProxySymbolRegistration(symbol="XLE", scope=ContextScope.TICKER, sector="ENERGY")
+        ProxySymbolRegistration(symbol="XLE", scope=ContextScope.TICKER, sector="OIL")
+
+
+def test_live_without_write_questdb_does_not_require_questdb(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[bool] = []
+
+    def fake_run_live(*, write_questdb: bool) -> YFinanceProxyCollectionResult:
+        calls.append(write_questdb)
+        return _cli_result(indicator_count=1, ledger_count=0)
+
+    monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
+
+    assert check_yfinance_proxy.main(["--live"]) == 0
+    assert calls == [False]
+
+
+def test_live_write_questdb_exits_nonzero_when_required_write_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run_live(*, write_questdb: bool) -> YFinanceProxyCollectionResult:
+        assert write_questdb is True
+        raise YFinanceProxyError("write failed")
+
+    monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
+
+    assert check_yfinance_proxy.main(["--live", "--write-questdb"]) == 1
+
+
+def test_live_write_questdb_exits_nonzero_on_ledger_issue(monkeypatch: pytest.MonkeyPatch) -> None:
+    issue = YFinanceProxyIssue(issue_type="LEDGER_WRITE_FAILED", message="insert failed", symbol="XLE", window="5m")
+
+    def fake_run_live(*, write_questdb: bool) -> YFinanceProxyCollectionResult:
+        assert write_questdb is True
+        return _cli_result(status=YFinanceProxyCollectionStatus.PARTIAL, indicator_count=1, ledger_count=0, issues=(issue,))
+
+    monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
+
+    assert check_yfinance_proxy.main(["--live", "--write-questdb"]) == 1
+
+
+def test_live_write_questdb_exits_nonzero_when_no_rows_written(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run_live(*, write_questdb: bool) -> YFinanceProxyCollectionResult:
+        assert write_questdb is True
+        return _cli_result(indicator_count=1, ledger_count=0)
+
+    monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
+
+    assert check_yfinance_proxy.main(["--live", "--write-questdb"]) == 1
+
+
+def test_live_write_questdb_exits_zero_when_writes_succeed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_run_live(*, write_questdb: bool) -> YFinanceProxyCollectionResult:
+        assert write_questdb is True
+        return _cli_result(indicator_count=2, ledger_count=2)
+
+    monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
+
+    assert check_yfinance_proxy.main(["--live", "--write-questdb"]) == 0
