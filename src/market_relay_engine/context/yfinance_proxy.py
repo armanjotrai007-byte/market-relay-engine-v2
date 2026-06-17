@@ -400,9 +400,6 @@ class YFinanceProxyCollector:
             try:
                 selected = data.xs(symbol, axis=1, level=symbol_level, drop_level=True)
                 selected.columns = [str(column) for column in selected.columns]
-                if "Close" not in selected.columns:
-                    missing.append(symbol)
-                    continue
                 normalized[symbol] = selected.copy()
             except (KeyError, ValueError) as exc:
                 issues.append(_issue("SYMBOL_NORMALIZATION_FAILED", symbol, str(exc)))
@@ -560,6 +557,9 @@ def _prepare_symbol_frame(symbol: str, frame: pd.DataFrame, issues: list[YFinanc
     data = frame.copy()
     data.index = data.index.tz_convert("UTC")
     data = data.sort_index()
+    if "Close" not in data.columns:
+        issues.append(_issue("MISSING_CLOSE_COLUMN", symbol, f"Source response for {symbol} does not contain a Close column"))
+        return None
     close = pd.to_numeric(data["Close"], errors="coerce")
     data["Close"] = close
     data["_usable_close"] = close.map(_valid_close)
