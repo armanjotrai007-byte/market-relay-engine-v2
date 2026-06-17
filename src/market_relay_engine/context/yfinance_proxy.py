@@ -240,6 +240,8 @@ class YFinanceProxyCollector:
         run_id: str | None = None,
         session_id: str | None = None,
     ) -> YFinanceProxyCollectionResult:
+        if write_questdb and questdb_required and self.ledger_writer is None:
+            raise YFinanceProxyError("QuestDB writes are required but no ledger writer was provided")
         started_at = ensure_timezone_aware_utc(self.clock())
         if not self.config.enabled:
             return YFinanceProxyCollectionResult(
