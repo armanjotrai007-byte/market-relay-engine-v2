@@ -36,9 +36,9 @@ _DEFAULT_REGISTRY = {
     "IWM": (ContextScope.GLOBAL, None),
     "GLD": (ContextScope.GLOBAL, None),
     "^VIX": (ContextScope.GLOBAL, None),
-    "XLE": (ContextScope.SECTOR, "ENERGY"),
-    "XOP": (ContextScope.SECTOR, "ENERGY"),
-    "OIH": (ContextScope.SECTOR, "ENERGY"),
+    "XLE": (ContextScope.SECTOR, "OIL"),
+    "XOP": (ContextScope.SECTOR, "OIL"),
+    "OIH": (ContextScope.SECTOR, "OIL"),
     "XLI": (ContextScope.SECTOR, "INDUSTRIALS"),
     "PPA": (ContextScope.SECTOR, "DEFENSE"),
     "ITA": (ContextScope.SECTOR, "DEFENSE"),
@@ -492,7 +492,7 @@ class YFinanceProxyCollector:
         if self.config.required:
             raise YFinanceProxyError(issues[0].message if issues else "yfinance proxy collection failed")
         completed_at = ensure_timezone_aware_utc(self.clock())
-        return YFinanceProxyCollectionResult(status=YFinanceProxyCollectionStatus.FAILED, started_at=started_at, completed_at=completed_at, requested_symbols=tuple(self.config.requested_symbols), successful_symbols=(), failed_symbols=tuple(sorted(self.config.requested_symbols)), stale_symbols=(), issues=issues, indicator_snapshots=(), cache_update_results=(), ledger_write_results=())
+        return YFinanceProxyCollectionResult(status=YFinanceProxyCollectionStatus.FAILED, started_at=started_at, completed_at=completed_at, requested_symbols=tuple(sorted(self.config.requested_symbols)), successful_symbols=(), failed_symbols=tuple(sorted(self.config.requested_symbols)), stale_symbols=(), issues=issues, indicator_snapshots=(), cache_update_results=(), ledger_write_results=())
 
 
 def deterministic_context_indicator_id(source: str, symbol: str, indicator_name: str, window: str, source_event_time: datetime) -> str:
