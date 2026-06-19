@@ -55,18 +55,24 @@ context_symbols:
     - SPY
     - QQQ
     - IWM
+
   oil_sector:
     - XLE
     - XOP
     - OIH
-  defense_sector:
+
+  industrial_sector:
     - XLI
+
+  defense_sector:
     - PPA
     - ITA
+
   volatility:
-    - VIX_PROXY
+    - ^VIX
+
   commodities:
+    - GLD
     - WTI
     - BRENT
     - NATURAL_GAS
-    - GLD

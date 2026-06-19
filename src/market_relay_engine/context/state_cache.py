@@ -18,6 +18,8 @@ from market_relay_engine.common.time import (
 )
 from market_relay_engine.contracts.context import ContextStateSnapshot
 
+ContextStateValue = str | int | float | bool
+
 
 class ContextStateCacheError(ValueError):
     """Raised for invalid local context cache inputs."""
@@ -94,7 +96,7 @@ class ContextStateEntry:
     """Latest structured context state value for one key."""
 
     key: ContextStateKey
-    value: str
+    value: ContextStateValue
     updated_at: datetime
     severity: str = "INFO"
     source: str = "manual"
@@ -108,7 +110,7 @@ class ContextStateEntry:
         if not isinstance(self.key, ContextStateKey):
             raise ContextStateCacheError("key must be a ContextStateKey")
 
-        value = _required_string(self.value, "value")
+        value = _normalize_value(self.value)
         severity = _required_string(self.severity, "severity").upper()
         if severity not in _SEVERITIES:
             raise ContextStateCacheError(
@@ -441,7 +443,7 @@ class ContextStateCache:
 def make_global_context_entry(
     *,
     name: str,
-    value: str,
+    value: ContextStateValue,
     updated_at: datetime,
     severity: str = "INFO",
     source: str = "manual",
@@ -470,7 +472,7 @@ def make_ticker_context_entry(
     *,
     ticker: str,
     name: str,
-    value: str,
+    value: ContextStateValue,
     updated_at: datetime,
     severity: str = "INFO",
     source: str = "manual",
@@ -499,7 +501,7 @@ def make_sector_context_entry(
     *,
     sector: str,
     name: str,
-    value: str,
+    value: ContextStateValue,
     updated_at: datetime,
     severity: str = "INFO",
     source: str = "manual",
@@ -522,6 +524,20 @@ def make_sector_context_entry(
         details={} if details is None else details,
         trace_id=trace_id,
     )
+
+
+def _normalize_value(value: object) -> ContextStateValue:
+    if isinstance(value, str):
+        return _required_string(value, "value")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ContextStateCacheError("value must be finite")
+        return value
+    raise ContextStateCacheError("value must be a JSON-safe scalar: str, int, float, or bool")
 
 
 def _coerce_scope(value: object) -> ContextScope:
@@ -719,6 +735,7 @@ __all__ = [
     "ContextStateKey",
     "ContextStateUpdateResult",
     "ContextStateUpdateStatus",
+    "ContextStateValue",
     "make_global_context_entry",
     "make_sector_context_entry",
     "make_ticker_context_entry",

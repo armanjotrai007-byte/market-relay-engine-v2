@@ -264,6 +264,9 @@ class QuestDBLedgerWriter:
     def write_cost_estimate(self, estimate: Any, **kwargs: Any) -> QuestDBWriteResult:
         return self.write_row('cost_estimates', cost_estimate_to_row(estimate, **kwargs))
 
+    def write_context_indicator_snapshot(self, snapshot: Any, **kwargs: Any) -> QuestDBWriteResult:
+        return self.write_row('context_indicator_snapshots', context_indicator_snapshot_to_row(snapshot, **kwargs))
+
     def write_risk_decision(self, decision: Any, **kwargs: Any) -> QuestDBWriteResult:
         return self.write_row('risk_decisions', risk_decision_to_row(decision, **kwargs))
 
@@ -380,7 +383,7 @@ def context_indicator_snapshot_to_row(record: Any, *, run_id: str | None = None,
     return {
         'snapshot_time': record.snapshot_time,
         'write_time': _resolve_write_time(write_time),
-        'context_indicator_id': getattr(record, 'context_indicator_id', None) or new_record_id('context_indicator'),
+        'context_indicator_id': record.context_indicator_id,
         'source': record.source,
         'ticker_or_sector': record.ticker_or_sector,
         'indicator_name': record.indicator_name,

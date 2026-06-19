@@ -21,6 +21,7 @@ from market_relay_engine.common.config import (  # noqa: E402
     validate_required_config_files,
     validate_required_top_level_sections,
 )
+from market_relay_engine.context.yfinance_proxy import YFinanceProxyConfig, build_proxy_registry  # noqa: E402
 
 FORBIDDEN_V1_TERMS = (
     "use_for_v1_writes",
@@ -115,6 +116,21 @@ def _check_context_sources(configs: dict[str, dict[str, Any]]) -> list[str]:
         issues.append("yfinance_dev_only must be marked development_only")
     if yfinance.get("production_critical") is not False:
         issues.append("yfinance_dev_only must not be production critical")
+    if yfinance.get("feeds_memory_cache") is not True:
+        issues.append("yfinance_dev_only must feed the memory cache")
+    if yfinance.get("writes_questdb_ledger") is not True:
+        issues.append("yfinance_dev_only must declare optional QuestDB ledger writes")
+    try:
+        YFinanceProxyConfig.from_repository_configs(context_sources, configs["symbols"])
+    except Exception as exc:  # noqa: BLE001 - validation script reports all config failures clearly.
+        issues.append(f"yfinance_dev_only PR25 config invalid: {exc}")
+    else:
+        grace = yfinance.get("bar_completion_grace_seconds")
+        staleness = yfinance.get("max_staleness_seconds")
+        if yfinance.get("interval") != "5m":
+            issues.append("yfinance_dev_only interval must be 5m")
+        if not isinstance(grace, int) or not isinstance(staleness, int) or staleness < 300 + grace:
+            issues.append("yfinance_dev_only max_staleness_seconds must be at least 300 + bar_completion_grace_seconds")
 
     for source_name, source in context_sources["unstructured_sources"].items():
         if source.get("enabled") is not False:
@@ -198,6 +214,15 @@ def _check_symbol_organization(configs: dict[str, dict[str, Any]]) -> list[str]:
                 issues.append(f"{ticker} in {sector_name} must not be approved for live trading")
             if ticker in context_symbol_set:
                 issues.append(f"{ticker} appears in both tradable and context symbols")
+
+    try:
+        registry = build_proxy_registry(symbols)
+    except Exception as exc:  # noqa: BLE001 - validation script reports all config failures clearly.
+        issues.append(f"PR25 proxy symbol registry invalid: {exc}")
+    else:
+        expected = {"SPY", "QQQ", "IWM", "GLD", "^VIX", "XLE", "XOP", "OIH", "XLI", "PPA", "ITA"}
+        if set(registry) != expected:
+            issues.append(f"PR25 proxy registry symbols changed unexpectedly: {sorted(registry)}")
 
     return issues
 

@@ -34,11 +34,22 @@ structured_sources:
     enabled: false
     development_only: true
     production_critical: false
-    purpose: "Development-only sector/index/oil proxy context."
+    required: false
+    purpose: "Development-only sector/index proxy context."
     feeds_memory_cache: true
     writes_questdb_ledger: true
     used_in_per_tick_loop: false
-    max_staleness_seconds: 300
+    period: "5d"
+    interval: "5m"
+    timeout_seconds: 10.0
+    bar_completion_grace_seconds: 30
+    max_staleness_seconds: 360
+    auto_adjust: false
+    actions: false
+    repair: false
+    keepna: true
+    prepost: false
+    threads: true
 
 unstructured_sources:
   sec_edgar:
