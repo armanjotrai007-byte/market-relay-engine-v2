@@ -643,4 +643,3 @@ def test_live_write_questdb_exits_zero_when_writes_succeed(monkeypatch: pytest.M
     monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
 
     assert check_yfinance_proxy.main(["--live", "--write-questdb"]) == 0
-
