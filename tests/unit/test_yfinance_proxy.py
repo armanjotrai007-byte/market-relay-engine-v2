@@ -333,7 +333,10 @@ def test_valid_zero_return_is_cached_successfully() -> None:
 def test_invalid_latest_completed_close_uses_previous_valid_bar_without_crashing() -> None:
     closes = [100.0 for _ in range(13)]
     closes[-1] = float("nan")
-    result = _collector(_frame(closes)).collect()
+    result = _collector(
+        _frame(closes),
+        now=datetime(2026, 1, 2, 15, 5, 40, tzinfo=UTC),
+    ).collect()
 
     assert result.status in {YFinanceProxyCollectionStatus.SUCCESS, YFinanceProxyCollectionStatus.PARTIAL}
     latest = next(snapshot for snapshot in result.indicator_snapshots if snapshot.indicator_name == "latest_close")
@@ -640,3 +643,4 @@ def test_live_write_questdb_exits_zero_when_writes_succeed(monkeypatch: pytest.M
     monkeypatch.setattr(check_yfinance_proxy, "_run_live", fake_run_live)
 
     assert check_yfinance_proxy.main(["--live", "--write-questdb"]) == 0
+
