@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from market_relay_engine.common.config import load_yaml_config
-from market_relay_engine.common.time import ensure_timezone_aware_utc
+from market_relay_engine.common.time import ensure_timezone_aware_utc, parse_utc_iso
 from market_relay_engine.contracts.context import ContextFlag, ContextStateSnapshot
 from market_relay_engine.contracts.model import ModelSignal, SignalSide
 from market_relay_engine.contracts.risk import RiskDecision, RiskDecisionType
@@ -455,6 +455,9 @@ def context_risk_input_from_contracts(
         elif risk_level in ELEVATED_RISK_LEVELS:
             elevated_risk_context_active = True
             reasons.append("context_snapshot_risk_level_elevated")
+        if _context_snapshot_event_window_active(context_snapshot, resolved_evaluation_time):
+            event_window_active = True
+            reasons.append("context_snapshot_event_window_active")
 
     for flag in context_flags:
         if flag.valid_until is not None and flag.valid_until < resolved_evaluation_time:
@@ -480,6 +483,68 @@ def context_risk_input_from_contracts(
         context_snapshot_id=context_snapshot_id,
         reasons=_dedupe(reasons),
     )
+
+
+def _context_snapshot_event_window_active(
+    snapshot: ContextStateSnapshot,
+    evaluation_time: datetime,
+) -> bool:
+    active_flag_ids = {
+        flag_id.strip()
+        for flag_id in snapshot.active_context_flag_ids
+        if isinstance(flag_id, str) and flag_id.strip()
+    }
+    if not active_flag_ids:
+        return False
+    for entry in _context_snapshot_entries(snapshot):
+        if entry.get("value") is not True or not _context_snapshot_entry_is_fresh(entry, evaluation_time):
+            continue
+        details = entry.get("details")
+        if not isinstance(details, Mapping):
+            continue
+        flag_id = details.get("context_flag_id")
+        flag_type = details.get("flag_type")
+        if (
+            isinstance(flag_id, str)
+            and flag_id.strip() in active_flag_ids
+            and isinstance(flag_type, str)
+            and "event_window" in flag_type.lower()
+        ):
+            return True
+    return False
+
+
+def _context_snapshot_entries(snapshot: ContextStateSnapshot) -> list[Mapping[str, Any]]:
+    summary = snapshot.context_summary
+    entries: list[Mapping[str, Any]] = []
+    global_entries = summary.get("global")
+    if isinstance(global_entries, Mapping):
+        entries.extend(entry for entry in global_entries.values() if isinstance(entry, Mapping))
+    ticker_groups = summary.get("tickers")
+    if isinstance(ticker_groups, Mapping):
+        ticker_entries = ticker_groups.get(snapshot.ticker)
+        if isinstance(ticker_entries, Mapping):
+            entries.extend(entry for entry in ticker_entries.values() if isinstance(entry, Mapping))
+    sector_groups = summary.get("sectors")
+    if isinstance(sector_groups, Mapping) and snapshot.sector is not None:
+        sector_entries = sector_groups.get(snapshot.sector)
+        if isinstance(sector_entries, Mapping):
+            entries.extend(entry for entry in sector_entries.values() if isinstance(entry, Mapping))
+    return entries
+
+
+def _context_snapshot_entry_is_fresh(entry: Mapping[str, Any], evaluation_time: datetime) -> bool:
+    if entry.get("expired") is True:
+        return False
+    valid_until = entry.get("valid_until")
+    if valid_until is None:
+        return True
+    if not isinstance(valid_until, str):
+        return False
+    try:
+        return parse_utc_iso(valid_until) >= evaluation_time
+    except (TypeError, ValueError):
+        return False
 
 
 def _block(

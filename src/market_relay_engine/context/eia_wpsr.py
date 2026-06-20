@@ -478,6 +478,8 @@ class EIAWPSRCollector:
                         "window_starts_at": to_utc_iso(release.window_start),
                         "window_ends_at": to_utc_iso(release.window_end),
                         "context_flag_id": flag.context_flag_id,
+                        "flag_type": flag.flag_type,
+                        "severity": flag.severity,
                         "sector": SECTOR,
                     }
                     update = self.cache.update(make_ticker_context_entry(ticker=ticker, name=f"{SOURCE_NAME}:event_window_active:{release.release_id}", value=True, updated_at=now, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=release.window_end, details=details))

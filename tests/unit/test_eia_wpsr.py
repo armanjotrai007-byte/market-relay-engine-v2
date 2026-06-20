@@ -25,8 +25,15 @@ from market_relay_engine.context.eia_wpsr import (
 )
 from market_relay_engine.context.state_cache import ContextStateCache
 from market_relay_engine.contracts.context import ContextIndicatorSnapshot
-from market_relay_engine.risk import context_risk_input_from_contracts
+from market_relay_engine.market_data.cost_model import estimate_cost_from_expected_move
+from market_relay_engine.risk import (
+    MarketRiskInput,
+    RiskFilterConfig,
+    context_risk_input_from_contracts,
+    evaluate_risk,
+)
 from scripts.refresh_eia_wpsr_schedule import parse_schedule_candidates
+from tests.fixtures.model_signals import make_model_signal
 
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "eia_wpsr"
@@ -328,6 +335,89 @@ def test_release_flag_maps_to_existing_event_window_risk_input() -> None:
         evaluation_time=RELEASE_AT - timedelta(seconds=300),
     )
     assert risk_input.event_window_active is True
+
+
+def test_cached_release_window_reaches_snapshot_only_risk() -> None:
+    evaluation_time = RELEASE_AT + timedelta(seconds=30)
+    cache = ContextStateCache()
+    result = EIAWPSRCollector(cache=cache, config=_config(), client=FakeClient()).collect(
+        evaluation_time=evaluation_time,
+    )
+    snapshot = cache.to_context_state_snapshot(
+        ticker="XOM",
+        sector="OIL",
+        now=evaluation_time,
+    )
+    flag = next(item for item in result.context_flags if item.ticker == "XOM")
+    cached_flag = snapshot.context_summary["tickers"]["XOM"][f"eia_wpsr_v1:event_window_active:{_release().release_id}"]
+
+    assert snapshot.active_context_flag_ids == [flag.context_flag_id]
+    assert cached_flag["details"]["context_flag_id"] == flag.context_flag_id
+    assert cached_flag["details"]["flag_type"] == flag.flag_type
+    assert cached_flag["details"]["severity"] == flag.severity
+    assert all(item.context_indicator_id not in snapshot.active_context_flag_ids for item in result.indicator_snapshots)
+
+    context = context_risk_input_from_contracts(
+        context_snapshot=snapshot,
+        context_flags=(),
+        evaluation_time=evaluation_time,
+    )
+    signal = make_model_signal(ticker="XOM")
+    decision = evaluate_risk(
+        signal=signal,
+        market=MarketRiskInput(
+            ticker="XOM",
+            spread_dollars=0.01,
+            spread_bps=1.0,
+            latency_ms=10.0,
+            market_data_time=evaluation_time,
+        ),
+        cost_estimate=estimate_cost_from_expected_move(
+            ticker="XOM",
+            side=signal.signal,
+            expected_gross_move_bps=20.0,
+            horizon="1m",
+            midprice=100.0,
+            spread_bps=1.0,
+        ),
+        context=context,
+        evaluation_time=evaluation_time,
+        config=RiskFilterConfig.from_yaml(),
+    )
+
+    assert context.event_window_active is True
+    assert "context_snapshot_event_window_active" in context.reasons
+    assert decision.approved is False
+    assert decision.reasons[0] == "event_window_active"
+
+
+def test_cached_release_window_expiry_is_inclusive_then_stops_blocking() -> None:
+    cache = ContextStateCache()
+    result = EIAWPSRCollector(cache=cache, config=_config(), client=FakeClient()).collect(
+        evaluation_time=RELEASE_AT - timedelta(seconds=300),
+    )
+    flag = next(item for item in result.context_flags if item.ticker == "XOM")
+    at_boundary = cache.to_context_state_snapshot(ticker="XOM", sector="OIL", now=_release().window_end)
+    after_boundary = cache.to_context_state_snapshot(
+        ticker="XOM",
+        sector="OIL",
+        now=_release().window_end + timedelta(microseconds=1),
+    )
+
+    assert at_boundary.active_context_flag_ids == [flag.context_flag_id]
+    assert context_risk_input_from_contracts(
+        context_snapshot=at_boundary,
+        context_flags=(),
+        evaluation_time=_release().window_end,
+    ).event_window_active is True
+    assert flag.context_flag_id not in after_boundary.active_context_flag_ids
+    expired_context = context_risk_input_from_contracts(
+        context_snapshot=after_boundary,
+        context_flags=(),
+        evaluation_time=_release().window_end + timedelta(microseconds=1),
+    )
+    assert expired_context.event_window_active is False
+    assert "context_snapshot_event_window_active" not in expired_context.reasons
 
 
 def test_full_collection_publishes_exactly_ten_sector_records() -> None:
