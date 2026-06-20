@@ -357,7 +357,12 @@ def plan_eia_wpsr_action(
             data_status=EIAWPSRDataStatus.NOT_DUE,
         )
 
-    target_index = _target_release_index(ordered, now, last_attempt)
+    target_index = _target_release_index(
+        ordered,
+        now,
+        last_attempt,
+        last_successful_report_period,
+    )
     release = ordered[target_index]
     next_release = ordered[target_index + 1] if target_index + 1 < len(ordered) else None
     attempt_for_target = last_attempt if _attempt_belongs_to_release(ordered, target_index, last_attempt) else None
@@ -647,18 +652,25 @@ def _plan(release: EIARelease, action: EIAWPSRActionKind, due: datetime | None, 
     return EIAWPSRActionPlan(release_id=release.release_id, action_kind=action, due_at=due, next_action_at=next_action, expected_report_period=release.report_period, data_status=status)
 
 
-def _target_release_index(releases: Sequence[EIARelease], now: datetime, last_attempt: datetime | None) -> int:
-    if last_attempt is not None:
-        for index in range(len(releases) - 1, -1, -1):
-            next_start = releases[index + 1].window_start if index + 1 < len(releases) else None
-            if last_attempt >= releases[index].initial_fetch_at and (next_start is None or last_attempt < next_start):
-                return index
+def _target_release_index(
+    releases: Sequence[EIARelease],
+    now: datetime,
+    last_attempt: datetime | None,
+    last_successful_report_period: date | None,
+) -> int:
     selected = 0
     for index, release in enumerate(releases):
         if release.window_start <= now:
             selected = index
         else:
             break
+    if last_attempt is not None:
+        for index in range(len(releases) - 1, -1, -1):
+            next_start = releases[index + 1].window_start if index + 1 < len(releases) else None
+            if last_attempt >= releases[index].initial_fetch_at and (next_start is None or last_attempt < next_start):
+                if last_successful_report_period == releases[index].report_period and selected > index:
+                    return selected
+                return index
     return selected
 
 
