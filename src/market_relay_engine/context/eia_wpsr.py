@@ -466,7 +466,7 @@ class EIAWPSRCollector:
                         "severity": flag.severity,
                         "sector": SECTOR,
                     }
-                    update = self.cache.update(make_ticker_context_entry(ticker=ticker, name=f"{SOURCE_NAME}:event_window_active:{release.release_id}", value=True, updated_at=now, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=release.window_end, details=details))
+                    update = self.cache.update(make_ticker_context_entry(ticker=ticker, name=f"{SOURCE_NAME}:event_window_active:{release.release_id}", value=True, updated_at=flag.event_time, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=release.window_end, details=details))
                     cache_results.append(update)
                     self._write_if_changed(flag, update, ledger_results, issues, write_questdb, questdb_required, run_id, session_id)
 

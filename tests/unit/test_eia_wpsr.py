@@ -23,7 +23,7 @@ from market_relay_engine.context.eia_wpsr import (
     UTILIZATION_ROUTE,
     plan_eia_wpsr_action,
 )
-from market_relay_engine.context.state_cache import ContextStateCache
+from market_relay_engine.context.state_cache import ContextStateCache, ContextStateUpdateStatus
 from market_relay_engine.contracts.context import ContextIndicatorSnapshot
 from market_relay_engine.market_data.cost_model import estimate_cost_from_expected_move
 from market_relay_engine.risk import (
@@ -595,6 +595,44 @@ def test_optional_writer_failure_is_partial_and_duplicate_writes_are_suppressed(
     first_counts = (len(writer.flags), len(writer.indicators))
     collector.collect(evaluation_time=RELEASE_AT + timedelta(seconds=30), write_questdb=True)
     assert (len(writer.flags), len(writer.indicators)) == first_counts
+
+
+def test_release_window_flag_writes_are_idempotent_per_release() -> None:
+    releases = _releases()
+    config = EIAWPSRConfig(
+        event_windows_enabled=True,
+        numeric_source_enabled=True,
+        releases=releases,
+        oil_tickers=("XOM",),
+    )
+    cache = ContextStateCache()
+    writer = FakeWriter()
+    collector = EIAWPSRCollector(cache=cache, config=config, client=FakeClient(), ledger_writer=writer)
+
+    first = collector.collect(evaluation_time=releases[0].window_start, write_questdb=True)
+    second = collector.collect(evaluation_time=releases[0].initial_fetch_at, write_questdb=True)
+    cache_name = f"eia_wpsr_v1:event_window_active:{releases[0].release_id}"
+    second_flag_update = next(update for update in second.cache_update_results if update.key.name == cache_name)
+    cached = cache.get_ticker("XOM", cache_name, now=releases[0].initial_fetch_at)
+
+    assert len(first.context_flags) == len(second.context_flags) == 1
+    assert first.context_flags[0].context_flag_id == second.context_flags[0].context_flag_id
+    assert len(writer.flags) == 1
+    assert second_flag_update.status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    assert cached is not None
+    assert cached.updated_at == first.context_flags[0].event_time == releases[0].window_start
+    assert cached.source_event_time == releases[0].release_at
+    assert cached.valid_until == releases[0].window_end
+
+    next_release = collector.collect(evaluation_time=releases[1].window_start, write_questdb=True)
+    assert len(next_release.context_flags) == 1
+    assert next_release.context_flags[0].context_flag_id != first.context_flags[0].context_flag_id
+    assert len(writer.flags) == 2
+    assert any(
+        update.key.name == f"eia_wpsr_v1:event_window_active:{releases[1].release_id}"
+        and update.status is ContextStateUpdateStatus.WRITTEN
+        for update in next_release.cache_update_results
+    )
 
 
 def test_missing_api_key_fails_safely_without_request(monkeypatch: pytest.MonkeyPatch) -> None:
