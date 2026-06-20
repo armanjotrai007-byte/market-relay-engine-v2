@@ -44,7 +44,7 @@ model_signals: signal_time write_time signal_id ticker signal confidence raw_sco
 cost_estimates: estimate_time write_time cost_estimate_id ticker signal_id feature_snapshot_id side horizon order_style quantity midprice spread_bps expected_gross_move_bps spread_cost_bps estimated_slippage_bps size_penalty_bps base_cost_bps missed_fill_probability pre_missed_fill_net_edge_bps missed_fill_penalty_bps total_cost_bps min_edge_bps net_expected_edge_bps exceeds_min_edge_threshold profitable_after_costs assumptions_version reason run_id session_id schema_version trace_id
 context_state_snapshots: snapshot_time write_time context_snapshot_id ticker sector active_indicator_ids_json active_context_event_ids_json active_context_flag_ids_json context_summary_json highest_severity risk_level valid_until run_id session_id schema_version trace_id
 risk_decisions: decision_time write_time risk_decision_id ticker model_signal_id cost_estimate_id context_snapshot_id decision approved risk_version reduce_size_factor reasons_json thresholds_used_json run_id session_id schema_version trace_id
-context_indicator_snapshots: snapshot_time write_time context_indicator_id source ticker_or_sector indicator_name value_json window units freshness_seconds source_event_time run_id session_id schema_version trace_id
+context_indicator_snapshots: snapshot_time write_time context_indicator_id source ticker_or_sector indicator_name value_json window units freshness_seconds source_event_time details_json run_id session_id schema_version trace_id
 context_ai_events: event_time write_time context_event_id source source_id affected_tickers_json affected_sector event_type sentiment urgency risk_level confidence valid_from valid_until summary prompt_version model_version raw_input_hash run_id session_id schema_version trace_id
 context_flags: event_time write_time context_flag_id source flag_type severity ticker sector confidence valid_until run_id session_id schema_version trace_id
 order_events: order_time write_time order_id ticker side order_type quantity status expected_price submitted_price broker broker_order_id paper_trading model_signal_id risk_decision_id feature_snapshot_id run_id session_id schema_version trace_id
@@ -267,6 +267,9 @@ class QuestDBLedgerWriter:
     def write_context_indicator_snapshot(self, snapshot: Any, **kwargs: Any) -> QuestDBWriteResult:
         return self.write_row('context_indicator_snapshots', context_indicator_snapshot_to_row(snapshot, **kwargs))
 
+    def write_context_flag(self, flag: Any, **kwargs: Any) -> QuestDBWriteResult:
+        return self.write_row('context_flags', context_flag_to_row(flag, **kwargs))
+
     def write_risk_decision(self, decision: Any, **kwargs: Any) -> QuestDBWriteResult:
         return self.write_row('risk_decisions', risk_decision_to_row(decision, **kwargs))
 
@@ -392,6 +395,7 @@ def context_indicator_snapshot_to_row(record: Any, *, run_id: str | None = None,
         'units': record.units,
         'freshness_seconds': record.freshness_seconds,
         'source_event_time': record.source_event_time,
+        'details_json': to_json_string(record.details),
         'run_id': run_id,
         'session_id': session_id,
         'schema_version': record.schema_version,

@@ -80,6 +80,11 @@ python scripts/check_config.py
 
 See `docs/configuration.md` for the config file map and safety rules.
 
+PR26 adds a disabled-by-default EIA WPSR collector for reviewed release-window
+flags and sector-level `OIL` numeric research context. Run
+`python scripts/check_eia_wpsr.py` for its offline fixture check and see
+`docs/eia_wpsr.md` for schedule, timing, provenance, and live-read guidance.
+
 ## QuestDB Health Check
 
 The QuestDB health check validates the local HTTP `/exec` endpoint with

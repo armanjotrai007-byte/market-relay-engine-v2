@@ -29,6 +29,9 @@ from market_relay_engine.questdb.health import (  # noqa: E402
 
 
 SCHEMA_PATH = REPO_ROOT / "db" / "schema" / "questdb_ledger_v1.sql"
+PR26_MIGRATION_PATH = (
+    REPO_ROOT / "db" / "schema" / "questdb_pr26_add_context_indicator_details_json.sql"
+)
 
 OLD_TABLES = (
     "raw_trades",
@@ -137,6 +140,12 @@ def validate_schema_text(sql_text: str) -> list[str]:
     if "context_state_snapshots" not in created_tables:
         failures.append("context_state_snapshots table is missing")
 
+    indicator_body = _table_body(cleaned, "context_indicator_snapshots")
+    if indicator_body is None:
+        failures.append("context_indicator_snapshots table body is missing")
+    elif not re.search(r"\bdetails_json\s+STRING\b", indicator_body, flags=re.IGNORECASE):
+        failures.append("context_indicator_snapshots.details_json STRING is missing")
+
     risk_body = _table_body(cleaned, "risk_decisions")
     if risk_body is None:
         failures.append("risk_decisions table body is missing")
@@ -158,6 +167,22 @@ def validate_schema_text(sql_text: str) -> list[str]:
 
 def validate_schema_file(schema_path: Path = SCHEMA_PATH) -> list[str]:
     return validate_schema_text(load_schema_text(schema_path))
+
+
+def validate_pr26_migration_file(
+    migration_path: Path = PR26_MIGRATION_PATH,
+) -> list[str]:
+    if not migration_path.is_file():
+        return [f"PR26 migration file not found: {migration_path}"]
+    text = migration_path.read_text(encoding="utf-8")
+    cleaned = strip_sql_line_comments(text).strip()
+    expected = "ALTER TABLE context_indicator_snapshots ADD COLUMN details_json STRING;"
+    failures: list[str] = []
+    if cleaned != expected:
+        failures.append("PR26 migration must contain only the details_json ALTER TABLE statement")
+    if re.search(r"\b(DROP|CREATE|INSERT|SELECT)\b", cleaned, flags=re.IGNORECASE):
+        failures.append("PR26 migration must be non-destructive")
+    return failures
 
 
 def apply_schema_statements(
@@ -227,6 +252,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         sql_text = load_schema_text()
         failures = validate_schema_text(sql_text)
+        failures.extend(validate_pr26_migration_file())
         if failures:
             for failure in failures:
                 print(f"[FAIL] {failure}")

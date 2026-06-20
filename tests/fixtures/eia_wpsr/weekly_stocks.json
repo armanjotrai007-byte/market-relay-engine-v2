@@ -1,0 +1,16 @@
+{
+  "response": {
+    "frequency": "weekly",
+    "dateFormat": "YYYY-MM-DD",
+    "data": [
+      {"period":"2026-06-05","duoarea":"NUS","area-name":"U.S.","product":"EPC0","product-name":"Crude Oil","process":"SAX","process-name":"Ending Stocks Excluding SPR","series":"WCESTUS1","series-description":"U.S. Ending Stocks excluding SPR of Crude Oil (Thousand Barrels)","value":"426485","units":"MBBL"},
+      {"period":"2026-06-12","duoarea":"NUS","area-name":"U.S.","product":"EPC0","product-name":"Crude Oil","process":"SAX","process-name":"Ending Stocks Excluding SPR","series":"WCESTUS1","series-description":"U.S. Ending Stocks excluding SPR of Crude Oil (Thousand Barrels)","value":"418222","units":"MBBL"},
+      {"period":"2026-06-12","duoarea":"YCUOK","area-name":"NA","product":"EPC0","product-name":"Crude Oil","process":"SAX","process-name":"Ending Stocks Excluding SPR","series":"W_EPC0_SAX_YCUOK_MBBL","series-description":"Cushing, OK Ending Stocks excluding SPR of Crude Oil (Thousand Barrels)","value":"20034","units":"MBBL"},
+      {"period":"2026-06-05","duoarea":"YCUOK","area-name":"NA","product":"EPC0","product-name":"Crude Oil","process":"SAX","process-name":"Ending Stocks Excluding SPR","series":"W_EPC0_SAX_YCUOK_MBBL","series-description":"Cushing, OK Ending Stocks excluding SPR of Crude Oil (Thousand Barrels)","value":"21640","units":"MBBL"},
+      {"period":"2026-06-05","duoarea":"NUS","area-name":"U.S.","product":"EPM0","product-name":"Total Gasoline","process":"SAE","process-name":"Ending Stocks","series":"WGTSTUS1","series-description":"U.S. Ending Stocks of Total Gasoline (Thousand Barrels)","value":"215141","units":"MBBL"},
+      {"period":"2026-06-12","duoarea":"NUS","area-name":"U.S.","product":"EPM0","product-name":"Total Gasoline","process":"SAE","process-name":"Ending Stocks","series":"WGTSTUS1","series-description":"U.S. Ending Stocks of Total Gasoline (Thousand Barrels)","value":"214235","units":"MBBL"},
+      {"period":"2026-06-12","duoarea":"NUS","area-name":"U.S.","product":"EPD0","product-name":"Distillate Fuel Oil","process":"SAE","process-name":"Ending Stocks","series":"WDISTUS1","series-description":"U.S. Ending Stocks of Distillate Fuel Oil (Thousand Barrels)","value":"103052","units":"MBBL"},
+      {"period":"2026-06-05","duoarea":"NUS","area-name":"U.S.","product":"EPD0","product-name":"Distillate Fuel Oil","process":"SAE","process-name":"Ending Stocks","series":"WDISTUS1","series-description":"U.S. Ending Stocks of Distillate Fuel Oil (Thousand Barrels)","value":"102101","units":"MBBL"}
+    ]
+  }
+}

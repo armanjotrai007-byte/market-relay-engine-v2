@@ -511,6 +511,7 @@ def test_context_records_map_to_context_rows() -> None:
         ticker_or_sector="oil",
         indicator_name="eia_window",
         value={"summary": "Fed's"},
+        details={"release_id": "release_1", "nested": {"verified": True}},
     )
     ai_event = ContextAIEvent(
         event_time=EXAMPLE_TIME,
@@ -529,10 +530,47 @@ def test_context_records_map_to_context_rows() -> None:
     )
     state = _context_state()
 
-    assert context_indicator_snapshot_to_row(indicator)["value_json"] == '{"summary":"Fed\'s"}'
+    indicator_row = context_indicator_snapshot_to_row(indicator)
+    assert indicator_row["value_json"] == '{"summary":"Fed\'s"}'
+    assert indicator_row["details_json"] == '{"nested":{"verified":true},"release_id":"release_1"}'
     assert context_ai_event_to_row(ai_event)["context_event_id"] == ai_event.context_event_id
     assert context_flag_to_row(flag)["context_flag_id"] == flag.context_flag_id
     assert context_state_snapshot_to_row(state)["context_snapshot_id"] == state.context_snapshot_id
+
+
+def test_context_indicator_details_column_is_allowed_and_unknown_columns_rejected() -> None:
+    sql = build_insert_sql(
+        "context_indicator_snapshots",
+        {"snapshot_time": EXAMPLE_TIME, "details_json": "{}"},
+    )
+    assert "details_json" in sql
+    with pytest.raises(QuestDBWriteError, match="unknown columns"):
+        build_insert_sql(
+            "context_indicator_snapshots",
+            {"snapshot_time": EXAMPLE_TIME, "not_migrated_column": "x"},
+        )
+
+
+def test_writer_context_flag_convenience_uses_existing_converter(monkeypatch: pytest.MonkeyPatch) -> None:
+    writer = QuestDBLedgerWriter(QuestDBWriteConfig())
+    captured: dict[str, object] = {}
+
+    def fake_write_row(table_name: str, row: dict[str, object]) -> str:
+        captured["table"] = table_name
+        captured["row"] = row
+        return "written"
+
+    monkeypatch.setattr(writer, "write_row", fake_write_row)
+    flag = ContextFlag(
+        event_time=EXAMPLE_TIME,
+        source="eia_wpsr_v1",
+        flag_type="eia_wpsr_event_window",
+        severity="NORMAL",
+        ticker="XOM",
+    )
+    assert writer.write_context_flag(flag) == "written"
+    assert captured["table"] == "context_flags"
+    assert captured["row"] == context_flag_to_row(flag)
 
 
 def test_context_state_snapshot_mapper_preserves_explicit_write_time() -> None:

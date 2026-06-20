@@ -192,6 +192,7 @@ CREATE TABLE context_indicator_snapshots (
     units SYMBOL,
     freshness_seconds DOUBLE,
     source_event_time TIMESTAMP,
+    details_json STRING,
     run_id STRING,
     session_id STRING,
     schema_version SYMBOL,

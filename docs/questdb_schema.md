@@ -9,6 +9,11 @@ The schema file is:
 db/schema/questdb_ledger_v1.sql
 ```
 
+PR26 adds `details_json STRING` to `context_indicator_snapshots`. Existing
+servers should run the non-destructive one-time migration
+`db/schema/questdb_pr26_add_context_indicator_details_json.sql` before enabling
+live EIA WPSR ledger writes.
+
 It is a destructive local-development reset. It drops old V1/raw/PDF-era table
 names, drops existing V2 ledger tables, and recreates the V2 ledger tables from
 scratch. Do not run it against data you need to preserve.

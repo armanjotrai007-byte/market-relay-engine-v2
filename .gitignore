@@ -301,6 +301,8 @@ alpaca_orders*.json
 alpaca_fills*.json
 databento_downloads/
 eia_raw/
+eia_wpsr_discovery_sanitized.json
+eia_wpsr_schedule_candidates.yaml
 fred_raw/
 edgar_raw/
 usaspending_raw/
