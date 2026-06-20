@@ -485,13 +485,19 @@ class EIAWPSRCollector:
         next_release = self.config.releases[release_index + 1] if release_index + 1 < len(self.config.releases) else None
         valid_until = next_release.release_at if next_release is not None else release.release_at + timedelta(seconds=self.config.max_staleness_seconds)
 
+        required_routes = (STOCK_ROUTE, UTILIZATION_ROUTE)
         records_by_route: dict[str, list[dict[str, object]]] = {}
-        for route in (STOCK_ROUTE, UTILIZATION_ROUTE):
+        failed_routes: set[str] = set()
+        for route in required_routes:
             specs = [spec for spec in METRICS if spec.route == route]
             try:
                 records_by_route[route] = self.client.fetch_weekly_records(route, [spec.series_id for spec in specs], observations_per_series=3)
             except Exception as exc:  # noqa: BLE001 - source adapter boundary.
-                issues.append(EIAWPSRIssue(issue_type="SOURCE_REQUEST_FAILED", message=str(exc), details={"route": route}))
+                failed_routes.add(route)
+                issues.append(EIAWPSRIssue(issue_type="SOURCE_REQUEST_FAILED", message="official EIA source request failed", details={"route": route, "error_type": type(exc).__name__}))
+
+        if failed_routes == set(required_routes):
+            return _result(EIAWPSRCollectionStatus.FAILED, plan, None, flags, snapshots, cache_results, ledger_results, issues)
 
         seen_periods: list[date] = []
         for route_records in records_by_route.values():
@@ -525,6 +531,8 @@ class EIAWPSRCollector:
             data_status = EIAWPSRDataStatus.WAITING_FOR_DATA
             status = EIAWPSRCollectionStatus.NO_FRESH_DATA if not snapshots else EIAWPSRCollectionStatus.PARTIAL
             next_retry = now + timedelta(seconds=release.fast_retry_interval_seconds)
+        if failed_routes:
+            status = EIAWPSRCollectionStatus.PARTIAL if snapshots or flags else EIAWPSRCollectionStatus.FAILED
         adjusted_plan = EIAWPSRActionPlan(release_id=plan.release_id, action_kind=plan.action_kind, due_at=plan.due_at, next_action_at=next_retry if next_retry is not None else (None if next_release is None else next_release.window_start), expected_report_period=plan.expected_report_period, data_status=data_status, next_release_id=plan.next_release_id)
         return EIAWPSRCollectionResult(status=status, action_plan=adjusted_plan, expected_report_period=release.report_period, last_seen_report_period=last_seen, next_retry_at=next_retry, data_status=data_status, context_flags=tuple(flags), indicator_snapshots=tuple(snapshots), cache_update_results=tuple(cache_results), ledger_write_results=tuple(ledger_results), issues=tuple(issues))
 

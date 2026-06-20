@@ -32,6 +32,7 @@ from market_relay_engine.risk import (
     context_risk_input_from_contracts,
     evaluate_risk,
 )
+import scripts.check_eia_wpsr as check_eia_wpsr
 from scripts.refresh_eia_wpsr_schedule import parse_schedule_candidates
 from tests.fixtures.model_signals import make_model_signal
 
@@ -87,6 +88,18 @@ class FakeClient:
 
     def fetch_weekly_records(self, route: str, series_ids: object, *, observations_per_series: int = 3) -> list[dict[str, object]]:
         self.calls.append(route)
+        return deepcopy(self.stocks if route == STOCK_ROUTE else self.utilization)
+
+
+class RouteFailingClient(FakeClient):
+    def __init__(self, *, fail_routes: set[str]) -> None:
+        super().__init__()
+        self.fail_routes = fail_routes
+
+    def fetch_weekly_records(self, route: str, series_ids: object, *, observations_per_series: int = 3) -> list[dict[str, object]]:
+        self.calls.append(route)
+        if route in self.fail_routes:
+            raise RuntimeError("simulated EIA source failure")
         return deepcopy(self.stocks if route == STOCK_ROUTE else self.utilization)
 
 
@@ -501,7 +514,42 @@ def test_nonmatching_current_period_publishes_no_numeric_rows() -> None:
     result = EIAWPSRCollector(cache=ContextStateCache(), config=_config(), client=FakeClient(stocks=stocks, utilization=utilization)).collect(evaluation_time=RELEASE_AT + timedelta(seconds=30))
     assert result.indicator_snapshots == ()
     assert result.status is EIAWPSRCollectionStatus.NO_FRESH_DATA
+    assert "SOURCE_REQUEST_FAILED" not in {issue.issue_type for issue in result.issues}
 
+
+def test_all_required_route_failures_return_failed_without_numeric_writes() -> None:
+    evaluation_time = RELEASE_AT + timedelta(seconds=30)
+    cache = ContextStateCache()
+    writer = FakeWriter()
+    result = EIAWPSRCollector(
+        cache=cache,
+        config=_config(),
+        client=RouteFailingClient(fail_routes={STOCK_ROUTE, UTILIZATION_ROUTE}),
+        ledger_writer=writer,
+    ).collect(evaluation_time=evaluation_time, write_questdb=True)
+    source_issues = [issue for issue in result.issues if issue.issue_type == "SOURCE_REQUEST_FAILED"]
+
+    assert result.status is EIAWPSRCollectionStatus.FAILED
+    assert len(source_issues) == 2
+    assert {issue.details["route"] for issue in source_issues} == {STOCK_ROUTE, UTILIZATION_ROUTE}
+    assert result.indicator_snapshots == ()
+    assert writer.indicators == []
+    assert len(result.context_flags) == len(writer.flags) == 2
+    assert cache.to_context_state_snapshot(ticker="XOM", sector="OIL", now=evaluation_time).context_summary["sectors"] == {}
+    assert result.next_retry_at is not None and result.next_retry_at >= evaluation_time
+
+
+def test_single_route_failure_returns_partial_with_usable_metrics() -> None:
+    result = EIAWPSRCollector(
+        cache=ContextStateCache(),
+        config=_config(),
+        client=RouteFailingClient(fail_routes={UTILIZATION_ROUTE}),
+    ).collect(evaluation_time=RELEASE_AT + timedelta(seconds=30))
+
+    assert result.status is EIAWPSRCollectionStatus.PARTIAL
+    assert {issue.issue_type for issue in result.issues} >= {"SOURCE_REQUEST_FAILED"}
+    assert len(result.indicator_snapshots) == 8
+    assert all(not item.indicator_name.startswith("refinery_utilization") for item in result.indicator_snapshots)
 
 def test_numeric_validity_uses_existing_inclusive_cache_boundary() -> None:
     cache = ContextStateCache()
@@ -635,14 +683,31 @@ def test_release_window_flag_writes_are_idempotent_per_release() -> None:
     )
 
 
-def test_missing_api_key_fails_safely_without_request(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_missing_api_key_collection_fails_safely_without_request(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("EIA_API_KEY", raising=False)
     called: list[bool] = []
     client = EIAWPSRClient(request_get=lambda *args, **kwargs: called.append(True))
-    with pytest.raises(EIAWPSRError, match="EIA_API_KEY missing"):
-        client.fetch_weekly_records(STOCK_ROUTE, ["WCESTUS1"])
-    assert called == []
+    result = EIAWPSRCollector(cache=ContextStateCache(), config=_config(), client=client).collect(
+        evaluation_time=RELEASE_AT + timedelta(seconds=30),
+    )
+    issue_text = json.dumps([{"message": issue.message, "details": issue.details} for issue in result.issues])
 
+    assert result.status is EIAWPSRCollectionStatus.FAILED
+    assert len([issue for issue in result.issues if issue.issue_type == "SOURCE_REQUEST_FAILED"]) == 2
+    assert called == []
+    assert "EIA_API_KEY" not in issue_text
+    assert "api_key" not in issue_text.lower()
+
+
+def test_live_check_returns_nonzero_for_failed_collection(monkeypatch: pytest.MonkeyPatch) -> None:
+    result = EIAWPSRCollector(
+        cache=ContextStateCache(),
+        config=_config(),
+        client=RouteFailingClient(fail_routes={STOCK_ROUTE, UTILIZATION_ROUTE}),
+    ).collect(evaluation_time=RELEASE_AT + timedelta(seconds=30))
+    monkeypatch.setattr(check_eia_wpsr, "run_live", lambda: result)
+
+    assert check_eia_wpsr.main(["--live"]) == 1
 
 def test_delayed_next_report_does_not_extend_old_validity() -> None:
     cache = ContextStateCache()
