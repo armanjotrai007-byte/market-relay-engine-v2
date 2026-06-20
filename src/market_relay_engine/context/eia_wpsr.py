@@ -361,33 +361,17 @@ def plan_eia_wpsr_action(
             data_status=EIAWPSRDataStatus.NOT_DUE,
         )
 
-    target_index = _target_release_index(
-        ordered,
-        now,
-        last_attempt,
-        last_successful_report_period,
-    )
+    target_index = _target_release_index(ordered, now)
     release = ordered[target_index]
     next_release = ordered[target_index + 1] if target_index + 1 < len(ordered) else None
-    attempt_for_target = last_attempt if _attempt_belongs_to_release(ordered, target_index, last_attempt) else None
+    effective_last_attempt = last_attempt if _attempt_belongs_to_release(ordered, target_index, last_attempt) else None
+    effective_successful_report_period = (
+        last_successful_report_period
+        if last_successful_report_period == release.report_period
+        else None
+    )
 
-    if (
-        attempt_for_target is not None
-        and last_successful_report_period != release.report_period
-        and next_release is not None
-        and now >= next_release.window_start
-    ):
-        return EIAWPSRActionPlan(
-            release_id=release.release_id,
-            action_kind=EIAWPSRActionKind.NO_ACTION,
-            due_at=next_release.window_start,
-            next_action_at=next_release.window_start,
-            expected_report_period=release.report_period,
-            data_status=EIAWPSRDataStatus.SUPERSEDED,
-            next_release_id=next_release.release_id,
-        )
-
-    if last_successful_report_period == release.report_period:
+    if effective_successful_report_period == release.report_period:
         return EIAWPSRActionPlan(
             release_id=release.release_id,
             action_kind=EIAWPSRActionKind.NO_ACTION,
@@ -404,15 +388,15 @@ def plan_eia_wpsr_action(
         return _plan(release, EIAWPSRActionKind.REFRESH_RELEASE_WINDOW, release.window_start, release.initial_fetch_at, EIAWPSRDataStatus.NOT_DUE)
 
     if now <= release.fast_retry_end:
-        due = release.initial_fetch_at if attempt_for_target is None else attempt_for_target + timedelta(seconds=release.fast_retry_interval_seconds)
+        due = release.initial_fetch_at if effective_last_attempt is None else effective_last_attempt + timedelta(seconds=release.fast_retry_interval_seconds)
         if now >= due:
-            kind = EIAWPSRActionKind.FETCH_NUMERIC_REPORT if attempt_for_target is None else EIAWPSRActionKind.RETRY_NUMERIC_REPORT
+            kind = EIAWPSRActionKind.FETCH_NUMERIC_REPORT if effective_last_attempt is None else EIAWPSRActionKind.RETRY_NUMERIC_REPORT
             return _plan(release, kind, due, now + timedelta(seconds=release.fast_retry_interval_seconds), EIAWPSRDataStatus.WAITING_FOR_DATA)
         if release.window_start <= now <= release.window_end:
             return _plan(release, EIAWPSRActionKind.REFRESH_RELEASE_WINDOW, release.window_start, due, EIAWPSRDataStatus.WAITING_FOR_DATA)
         return _plan(release, EIAWPSRActionKind.NO_ACTION, None, due, EIAWPSRDataStatus.WAITING_FOR_DATA)
 
-    delayed_due = now if attempt_for_target is None else attempt_for_target + timedelta(seconds=release.delayed_retry_interval_seconds)
+    delayed_due = now if effective_last_attempt is None else effective_last_attempt + timedelta(seconds=release.delayed_retry_interval_seconds)
     if now >= delayed_due:
         return _plan(release, EIAWPSRActionKind.RETRY_NUMERIC_REPORT, delayed_due, now + timedelta(seconds=release.delayed_retry_interval_seconds), EIAWPSRDataStatus.DATA_DELAYED)
     return _plan(release, EIAWPSRActionKind.NO_ACTION, None, delayed_due, EIAWPSRDataStatus.DATA_DELAYED)
@@ -659,8 +643,6 @@ def _plan(release: EIARelease, action: EIAWPSRActionKind, due: datetime | None, 
 def _target_release_index(
     releases: Sequence[EIARelease],
     now: datetime,
-    last_attempt: datetime | None,
-    last_successful_report_period: date | None,
 ) -> int:
     selected = 0
     for index, release in enumerate(releases):
@@ -668,13 +650,6 @@ def _target_release_index(
             selected = index
         else:
             break
-    if last_attempt is not None:
-        for index in range(len(releases) - 1, -1, -1):
-            next_start = releases[index + 1].window_start if index + 1 < len(releases) else None
-            if last_attempt >= releases[index].initial_fetch_at and (next_start is None or last_attempt < next_start):
-                if last_successful_report_period == releases[index].report_period and selected > index:
-                    return selected
-                return index
     return selected
 
 

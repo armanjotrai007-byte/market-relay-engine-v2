@@ -187,13 +187,13 @@ def test_planner_fetch_retry_and_delayed_boundaries() -> None:
     assert delayed.data_status is EIAWPSRDataStatus.DATA_DELAYED
 
 
-def test_delayed_release_is_superseded_and_new_cycle_advances() -> None:
+def test_failed_release_state_advances_to_new_cycle() -> None:
     releases = _releases()
     at_next_window = NEXT_RELEASE_AT - timedelta(seconds=300)
-    superseded = plan_eia_wpsr_action(
+    failed_state = plan_eia_wpsr_action(
         releases=releases,
         evaluation_time=at_next_window,
-        last_numeric_attempt_at=RELEASE_AT + timedelta(hours=1),
+        last_numeric_attempt_at=releases[0].initial_fetch_at,
         last_successful_report_period=None,
     )
     advanced = plan_eia_wpsr_action(
@@ -202,12 +202,13 @@ def test_delayed_release_is_superseded_and_new_cycle_advances() -> None:
         last_numeric_attempt_at=None,
         last_successful_report_period=None,
     )
-    assert superseded.data_status is EIAWPSRDataStatus.SUPERSEDED
-    assert superseded.action_kind is EIAWPSRActionKind.NO_ACTION
-    assert superseded.next_release_id == releases[1].release_id
+    assert failed_state.release_id == releases[1].release_id
+    assert failed_state.action_kind is EIAWPSRActionKind.REFRESH_RELEASE_WINDOW
+    assert failed_state.data_status is EIAWPSRDataStatus.NOT_DUE
+    assert failed_state.next_action_at == releases[1].initial_fetch_at
+    assert failed_state.next_action_at >= at_next_window
     assert advanced.release_id == releases[1].release_id
     assert advanced.action_kind is EIAWPSRActionKind.REFRESH_RELEASE_WINDOW
-
 
 def test_completed_release_advances_with_carried_attempt() -> None:
     releases = _releases()
@@ -238,7 +239,24 @@ def test_completed_release_advances_with_carried_attempt() -> None:
     assert at_next_fetch.due_at == releases[1].initial_fetch_at
 
 
-def test_incomplete_release_retries_before_next_window_then_is_superseded() -> None:
+def test_failed_prior_attempt_does_not_block_next_release_fetch() -> None:
+    releases = _releases()
+    plan = plan_eia_wpsr_action(
+        releases=releases,
+        evaluation_time=releases[1].initial_fetch_at,
+        last_numeric_attempt_at=releases[0].initial_fetch_at,
+        last_successful_report_period=None,
+    )
+
+    assert plan.release_id == releases[1].release_id
+    assert plan.expected_report_period == releases[1].report_period
+    assert plan.action_kind is EIAWPSRActionKind.FETCH_NUMERIC_REPORT
+    assert plan.data_status is EIAWPSRDataStatus.WAITING_FOR_DATA
+    assert plan.due_at == releases[1].initial_fetch_at
+    assert plan.next_action_at is not None and plan.next_action_at >= releases[1].initial_fetch_at
+
+
+def test_incomplete_release_retries_before_next_window_then_yields() -> None:
     releases = _releases()
     next_window_start = releases[1].window_start
     prior_attempt = next_window_start - timedelta(hours=2)
@@ -249,7 +267,7 @@ def test_incomplete_release_retries_before_next_window_then_is_superseded() -> N
         last_numeric_attempt_at=prior_attempt,
         last_successful_report_period=None,
     )
-    superseded = plan_eia_wpsr_action(
+    next_cycle = plan_eia_wpsr_action(
         releases=releases,
         evaluation_time=next_window_start,
         last_numeric_attempt_at=prior_attempt,
@@ -259,11 +277,25 @@ def test_incomplete_release_retries_before_next_window_then_is_superseded() -> N
     assert retry.release_id == releases[0].release_id
     assert retry.action_kind is EIAWPSRActionKind.RETRY_NUMERIC_REPORT
     assert retry.data_status is EIAWPSRDataStatus.DATA_DELAYED
-    assert superseded.release_id == releases[0].release_id
-    assert superseded.action_kind is EIAWPSRActionKind.NO_ACTION
-    assert superseded.data_status is EIAWPSRDataStatus.SUPERSEDED
-    assert superseded.next_release_id == releases[1].release_id
+    assert next_cycle.release_id == releases[1].release_id
+    assert next_cycle.action_kind is EIAWPSRActionKind.REFRESH_RELEASE_WINDOW
+    assert next_cycle.data_status is EIAWPSRDataStatus.NOT_DUE
 
+
+def test_current_release_attempt_keeps_normal_retry_timing() -> None:
+    releases = _releases()
+    retry_at = releases[1].initial_fetch_at + timedelta(seconds=60)
+    plan = plan_eia_wpsr_action(
+        releases=releases,
+        evaluation_time=retry_at,
+        last_numeric_attempt_at=releases[1].initial_fetch_at,
+        last_successful_report_period=None,
+    )
+
+    assert plan.release_id == releases[1].release_id
+    assert plan.action_kind is EIAWPSRActionKind.RETRY_NUMERIC_REPORT
+    assert plan.due_at == retry_at
+    assert plan.next_action_at is not None and plan.next_action_at >= retry_at
 
 def test_disabled_collection_has_no_side_effects() -> None:
     client = FakeClient()
