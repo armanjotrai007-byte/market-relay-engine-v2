@@ -137,7 +137,7 @@ def test_repository_config_requires_all_window_fields() -> None:
             }
         }
     }
-    sources = {"structured_sources": {"eia": {"enabled": False}}}
+    sources = {"structured_sources": {"eia": {"enabled": False, "max_staleness_seconds": 86400}}}
     symbols = {"tradable_universe": {}}
     for missing in ("pre_release_window_seconds", "post_release_window_seconds"):
         candidate = deepcopy(calendar)
@@ -283,6 +283,44 @@ def test_pre_release_flags_are_inclusive_and_numeric_is_not_fetched() -> None:
     assert after.context_flags == ()
 
 
+def test_flag_only_collection_reports_optional_ledger_failures() -> None:
+    evaluation_time = RELEASE_AT - timedelta(seconds=300)
+    successful = EIAWPSRCollector(cache=ContextStateCache(), config=_config(), client=FakeClient()).collect(
+        evaluation_time=evaluation_time,
+        write_questdb=False,
+    )
+
+    cache = ContextStateCache()
+    partial = EIAWPSRCollector(cache=cache, config=_config(), client=FakeClient(), ledger_writer=FakeWriter(fail=True)).collect(
+        evaluation_time=evaluation_time,
+        write_questdb=True,
+    )
+
+    assert successful.status is EIAWPSRCollectionStatus.SUCCESS
+    assert len(successful.context_flags) == 2
+    assert successful.issues == ()
+    assert partial.status is EIAWPSRCollectionStatus.PARTIAL
+    assert len(partial.context_flags) == 2
+    assert len(partial.cache_update_results) == 2
+    assert cache.snapshot(now=evaluation_time)["entry_count"] == 2
+    assert {issue.issue_type for issue in partial.issues} == {"LEDGER_WRITE_FAILED"}
+
+
+def test_flag_only_required_ledger_failure_still_raises() -> None:
+    collector = EIAWPSRCollector(
+        cache=ContextStateCache(),
+        config=_config(),
+        client=FakeClient(),
+        ledger_writer=FakeWriter(fail=True),
+    )
+    with pytest.raises(EIAWPSRError, match="writer unavailable"):
+        collector.collect(
+            evaluation_time=RELEASE_AT - timedelta(seconds=300),
+            write_questdb=True,
+            questdb_required=True,
+        )
+
+
 def test_release_flag_maps_to_existing_event_window_risk_input() -> None:
     result = EIAWPSRCollector(cache=ContextStateCache(), config=_config(), client=FakeClient()).collect(evaluation_time=RELEASE_AT - timedelta(seconds=300))
     risk_input = context_risk_input_from_contracts(
@@ -345,11 +383,66 @@ def test_nonmatching_current_period_publishes_no_numeric_rows() -> None:
 
 def test_numeric_validity_uses_existing_inclusive_cache_boundary() -> None:
     cache = ContextStateCache()
-    EIAWPSRCollector(cache=cache, config=_config(), client=FakeClient()).collect(evaluation_time=RELEASE_AT + timedelta(seconds=30))
+    result = EIAWPSRCollector(cache=cache, config=_config(), client=FakeClient()).collect(evaluation_time=RELEASE_AT + timedelta(seconds=30))
     name = "eia_wpsr_v1:commercial_crude_inventory:weekly"
     assert cache.get_sector("OIL", name, now=NEXT_RELEASE_AT) is not None
     assert cache.get_sector("OIL", name, now=NEXT_RELEASE_AT + timedelta(microseconds=1)) is None
     assert cache.get_sector("OIL", name, now=NEXT_RELEASE_AT + timedelta(microseconds=1), include_expired=True) is not None
+    assert {item.details["valid_until"] for item in result.indicator_snapshots} == {NEXT_RELEASE_AT.isoformat().replace("+00:00", "Z")}
+
+
+def test_final_release_collects_with_bounded_fallback_validity() -> None:
+    final_release = _release()
+    max_staleness_seconds = 7200
+    config = EIAWPSRConfig(
+        event_windows_enabled=True,
+        numeric_source_enabled=True,
+        releases=(final_release,),
+        oil_tickers=("XOM", "CVX"),
+        max_staleness_seconds=max_staleness_seconds,
+    )
+    cache = ContextStateCache()
+    client = FakeClient()
+    result = EIAWPSRCollector(cache=cache, config=config, client=client).collect(
+        evaluation_time=final_release.initial_fetch_at,
+    )
+    valid_until = final_release.release_at + timedelta(seconds=max_staleness_seconds)
+
+    assert result.status is EIAWPSRCollectionStatus.SUCCESS
+    assert client.calls == [STOCK_ROUTE, UTILIZATION_ROUTE]
+    assert len(result.indicator_snapshots) == 10
+    assert "NEXT_RELEASE_UNAVAILABLE" not in {issue.issue_type for issue in result.issues}
+    assert {item.details["valid_until"] for item in result.indicator_snapshots} == {valid_until.isoformat().replace("+00:00", "Z")}
+    for snapshot in result.indicator_snapshots:
+        entry = cache.get_sector("OIL", f"eia_wpsr_v1:{snapshot.indicator_name}:weekly", now=final_release.initial_fetch_at)
+        assert entry is not None
+        assert entry.valid_until == valid_until
+
+
+def test_final_release_retry_does_not_extend_fallback_validity() -> None:
+    final_release = _release()
+    config = EIAWPSRConfig(
+        event_windows_enabled=True,
+        numeric_source_enabled=True,
+        releases=(final_release,),
+        oil_tickers=("XOM", "CVX"),
+        max_staleness_seconds=7200,
+    )
+    cache = ContextStateCache()
+    EIAWPSRCollector(cache=cache, config=config, client=FakeClient()).collect(
+        evaluation_time=final_release.initial_fetch_at,
+    )
+    name = "eia_wpsr_v1:commercial_crude_inventory:weekly"
+    original = cache.get_sector("OIL", name, now=final_release.initial_fetch_at, include_expired=True)
+    delayed = EIAWPSRCollector(cache=cache, config=config, client=FakeClient(stocks=[], utilization=[])).collect(
+        evaluation_time=final_release.release_at + timedelta(seconds=3630),
+        last_numeric_attempt_at=final_release.initial_fetch_at,
+    )
+    after = cache.get_sector("OIL", name, now=final_release.release_at + timedelta(seconds=3630), include_expired=True)
+
+    assert delayed.data_status is EIAWPSRDataStatus.DATA_DELAYED
+    assert original is not None and after is not None
+    assert after.valid_until == original.valid_until == final_release.release_at + timedelta(seconds=7200)
 
 
 def test_required_writer_is_checked_before_cache_mutation() -> None:

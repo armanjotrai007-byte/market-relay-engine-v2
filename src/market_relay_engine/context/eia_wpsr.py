@@ -128,6 +128,7 @@ class EIAWPSRConfig:
     oil_tickers: tuple[str, ...]
     api_key_env: str = "EIA_API_KEY"
     timeout_seconds: float = 10.0
+    max_staleness_seconds: int = 86400
     writes_questdb_ledger: bool = True
 
     def __post_init__(self) -> None:
@@ -145,10 +146,12 @@ class EIAWPSRConfig:
         if self.event_windows_enabled and not tickers:
             raise EIAWPSRError("enabled EIA configuration requires oil tickers")
         timeout = _positive_float(self.timeout_seconds, "timeout_seconds")
+        max_staleness = _positive_int(self.max_staleness_seconds, "max_staleness_seconds")
         object.__setattr__(self, "releases", releases)
         object.__setattr__(self, "oil_tickers", tickers)
         object.__setattr__(self, "api_key_env", _required_string(self.api_key_env, "api_key_env"))
         object.__setattr__(self, "timeout_seconds", timeout)
+        object.__setattr__(self, "max_staleness_seconds", max_staleness)
 
     @classmethod
     def from_repository_configs(
@@ -201,6 +204,7 @@ class EIAWPSRConfig:
             "oil_tickers": derive_oil_tickers(symbols),
             "api_key_env": source.get("api_key_env", "EIA_API_KEY"),
             "timeout_seconds": source.get("timeout_seconds", 10.0),
+            "max_staleness_seconds": _required_positive_int(source, "max_staleness_seconds"),
             "writes_questdb_ledger": source.get("writes_questdb_ledger", True),
         }
         values.update(overrides)
@@ -485,7 +489,7 @@ class EIAWPSRCollector:
 
         numeric_due = plan.action_kind in {EIAWPSRActionKind.FETCH_NUMERIC_REPORT, EIAWPSRActionKind.RETRY_NUMERIC_REPORT}
         if not numeric_due or not self.config.numeric_source_enabled:
-            status = EIAWPSRCollectionStatus.SUCCESS if flags else EIAWPSRCollectionStatus.NO_FRESH_DATA
+            status = EIAWPSRCollectionStatus.PARTIAL if flags and issues else (EIAWPSRCollectionStatus.SUCCESS if flags else EIAWPSRCollectionStatus.NO_FRESH_DATA)
             return _result(status, plan, None, flags, snapshots, cache_results, ledger_results, issues)
 
         release_index = next((index for index, item in enumerate(self.config.releases) if item.release_id == plan.release_id), None)
@@ -493,9 +497,7 @@ class EIAWPSRCollector:
             raise EIAWPSRError("action plan release is absent from configuration")
         release = self.config.releases[release_index]
         next_release = self.config.releases[release_index + 1] if release_index + 1 < len(self.config.releases) else None
-        if next_release is None:
-            issues.append(EIAWPSRIssue(issue_type="NEXT_RELEASE_UNAVAILABLE", message="numeric publication requires the next reviewed release"))
-            return _result(EIAWPSRCollectionStatus.FAILED, plan, None, flags, snapshots, cache_results, ledger_results, issues)
+        valid_until = next_release.release_at if next_release is not None else release.release_at + timedelta(seconds=self.config.max_staleness_seconds)
 
         records_by_route: dict[str, list[dict[str, object]]] = {}
         for route in (STOCK_ROUTE, UTILIZATION_ROUTE):
@@ -514,10 +516,10 @@ class EIAWPSRCollector:
                     continue
 
         for spec in METRICS:
-            builds, metric_issues = _normalize_metric(spec, records_by_route.get(spec.route, []), release, next_release, now)
+            builds, metric_issues = _normalize_metric(spec, records_by_route.get(spec.route, []), release, valid_until, now)
             issues.extend(metric_issues)
             for snapshot, details in builds:
-                update = self.cache.update(make_sector_context_entry(sector=SECTOR, name=f"{SOURCE_NAME}:{snapshot.indicator_name}:weekly", value=snapshot.value, updated_at=now, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=next_release.release_at, details=details))
+                update = self.cache.update(make_sector_context_entry(sector=SECTOR, name=f"{SOURCE_NAME}:{snapshot.indicator_name}:weekly", value=snapshot.value, updated_at=now, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=valid_until, details=details))
                 cache_results.append(update)
                 snapshots.append(snapshot)
                 self._write_if_changed(snapshot, update, ledger_results, issues, write_questdb, questdb_required, run_id, session_id)
@@ -583,7 +585,7 @@ def deterministic_context_indicator_id(release: EIARelease, spec: EIAMetricSpec,
     return _deterministic_id("context_indicator", payload)
 
 
-def _normalize_metric(spec: EIAMetricSpec, records: Sequence[Mapping[str, object]], release: EIARelease, next_release: EIARelease, collected_at: datetime) -> tuple[list[tuple[ContextIndicatorSnapshot, dict[str, object]]], list[EIAWPSRIssue]]:
+def _normalize_metric(spec: EIAMetricSpec, records: Sequence[Mapping[str, object]], release: EIARelease, valid_until: datetime, collected_at: datetime) -> tuple[list[tuple[ContextIndicatorSnapshot, dict[str, object]]], list[EIAWPSRIssue]]:
     issues: list[EIAWPSRIssue] = []
     by_period: dict[date, list[Mapping[str, object]]] = {}
     parsed_records: list[tuple[date, Mapping[str, object]]] = []
@@ -605,7 +607,7 @@ def _normalize_metric(spec: EIAMetricSpec, records: Sequence[Mapping[str, object
     current_value = _numeric_value(current.get("value"))
     expected_prior = release.report_period - timedelta(days=7)
     prior, prior_issue = _select_record(by_period.get(expected_prior, []), spec, "EXPECTED_PRIOR_PERIOD_MISSING")
-    details: dict[str, object] = {"release_id": release.release_id, "release_at": to_utc_iso(release.release_at), "report_period": release.report_period.isoformat(), "expected_prior_period": expected_prior.isoformat(), "actual_prior_period": None if prior is None else expected_prior.isoformat(), "route": f"/v2/{spec.route}/data/", "series_id": spec.series_id, "facets": dict(spec.facets), "source_units": spec.units, "collection_verification_status": "CURRENT_VERIFIED" if prior is None else "CURRENT_AND_PRIOR_VERIFIED", "valid_until": to_utc_iso(next_release.release_at)}
+    details: dict[str, object] = {"release_id": release.release_id, "release_at": to_utc_iso(release.release_at), "report_period": release.report_period.isoformat(), "expected_prior_period": expected_prior.isoformat(), "actual_prior_period": None if prior is None else expected_prior.isoformat(), "route": f"/v2/{spec.route}/data/", "series_id": spec.series_id, "facets": dict(spec.facets), "source_units": spec.units, "collection_verification_status": "CURRENT_VERIFIED" if prior is None else "CURRENT_AND_PRIOR_VERIFIED", "valid_until": to_utc_iso(valid_until)}
     level = ContextIndicatorSnapshot(snapshot_time=collected_at, source=SOURCE_NAME, ticker_or_sector=SECTOR, indicator_name=spec.indicator_name, value=current_value, context_indicator_id=deterministic_context_indicator_id(release, spec, spec.indicator_name), window="weekly", units=spec.units, freshness_seconds=max(0.0, (collected_at - release.release_at).total_seconds()), source_event_time=release.release_at, details=details)
     builds = [(level, details)]
     if prior_issue:
