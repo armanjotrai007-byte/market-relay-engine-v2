@@ -363,6 +363,7 @@ class _Fact:
     valid_until: datetime
     identity_payload: Mapping[str, object]
     details: Mapping[str, object]
+    required_raw_indicators: tuple[str, ...]
 
 
 class FREDCollector:
@@ -495,7 +496,10 @@ class FREDCollector:
                 )
             )
 
-        if request_failures == len(SERIES_SPECS):
+        usable_latest_observation_count = sum(
+            item.latest_valid_observation is not None for item in series_results
+        )
+        if usable_latest_observation_count == 0:
             return _collection_result(
                 FREDCollectionStatus.FAILED,
                 checked_at,
@@ -503,15 +507,6 @@ class FREDCollector:
                 issues=issues,
             )
         reachable = [item for item in series_results if item.status is not FREDSeriesStatus.REQUEST_FAILED]
-        if request_failures == 0 and reachable and all(
-            item.latest_valid_observation is None for item in reachable
-        ):
-            return _collection_result(
-                FREDCollectionStatus.FAILED,
-                checked_at,
-                series_results,
-                issues=issues,
-            )
         if request_failures == 0 and len(reachable) == len(SERIES_SPECS) and all(
             item.status is FREDSeriesStatus.STALE for item in reachable
         ):
@@ -601,10 +596,44 @@ class FREDCollector:
         snapshots: list[ContextIndicatorSnapshot] = []
         cache_results: list[ContextStateUpdateResult] = []
         ledger_results: list[object] = []
-        for fact in facts:
+        rejected_raw_indicators: set[str] = set()
+        raw_facts = [fact for fact in facts if fact.value_kind == "yield_level"]
+        derived_facts = [fact for fact in facts if fact.value_kind != "yield_level"]
+
+        for fact in raw_facts:
             snapshot, update = self._cache_fact(fact, checked_at)
-            snapshots.append(snapshot)
             cache_results.append(update)
+            if update.status is ContextStateUpdateStatus.IGNORED_STALE:
+                rejected_raw_indicators.add(fact.indicator_name)
+                issues.append(_cache_ignored_stale_issue(fact))
+                continue
+            snapshots.append(snapshot)
+            self._write_if_changed(
+                snapshot,
+                update,
+                ledger_results,
+                issues,
+                write_questdb=write_questdb,
+                required=questdb_required,
+                run_id=run_id,
+                session_id=session_id,
+            )
+
+        for fact in derived_facts:
+            stale_components = tuple(
+                name
+                for name in fact.required_raw_indicators
+                if name in rejected_raw_indicators
+            )
+            if stale_components:
+                issues.append(_derivation_suppressed_issue(fact, stale_components))
+                continue
+            snapshot, update = self._cache_fact(fact, checked_at)
+            cache_results.append(update)
+            if update.status is ContextStateUpdateStatus.IGNORED_STALE:
+                issues.append(_cache_ignored_stale_issue(fact))
+                continue
+            snapshots.append(snapshot)
             self._write_if_changed(
                 snapshot,
                 update,
@@ -776,6 +805,7 @@ def _raw_fact(spec: FREDSeriesSpec, observation: FREDObservation, max_age: int) 
             "normalized_value": _canonical_decimal(observation.value),
         },
         details=details,
+        required_raw_indicators=(spec.indicator_name,),
     )
 
 
@@ -821,6 +851,7 @@ def _change_fact(
             "normalized_value": _canonical_decimal(change),
         },
         details=details,
+        required_raw_indicators=(spec.indicator_name,),
     )
 
 
@@ -873,6 +904,7 @@ def _spread_fact(
             "normalized_value": _canonical_decimal(value),
         },
         details=details,
+        required_raw_indicators=component_names,
     )
 
 
@@ -932,6 +964,7 @@ def _regime_fact(results: Sequence[FREDSeriesResult], max_age: int) -> _Fact:
             "regime_value": value,
         },
         details=details,
+        required_raw_indicators=tuple(item.indicator_name for item in results),
     )
 
 
@@ -961,6 +994,36 @@ def _date_misaligned_issue(
                 item.indicator_name: item.latest_valid_observation.observation_date.isoformat()  # type: ignore[union-attr]
                 for item in results
             }
+        },
+    )
+
+
+def _cache_ignored_stale_issue(fact: _Fact) -> FREDIssue:
+    return FREDIssue(
+        issue_type="CACHE_UPDATE_IGNORED_STALE",
+        message="cache rejected an older FRED candidate fact",
+        indicator_name=fact.indicator_name,
+        details={
+            "indicator_name": fact.indicator_name,
+            "candidate_observation_date": fact.details.get("observation_date"),
+            "candidate_source_event_time": to_utc_iso(fact.source_event_time),
+            "cache_key": f"fred:{fact.indicator_name}",
+        },
+    )
+
+
+def _derivation_suppressed_issue(
+    fact: _Fact,
+    stale_components: Sequence[str],
+) -> FREDIssue:
+    return FREDIssue(
+        issue_type="DERIVATION_SUPPRESSED_STALE_COMPONENT",
+        message="derived FRED fact was suppressed because a required raw component was cache-stale",
+        indicator_name=fact.indicator_name,
+        details={
+            "indicator_name": fact.indicator_name,
+            "stale_component_indicators": list(stale_components),
+            "cache_key": f"fred:{fact.indicator_name}",
         },
     )
 

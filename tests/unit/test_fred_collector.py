@@ -20,6 +20,7 @@ from market_relay_engine.context.fred_collector import (
 from market_relay_engine.context.state_cache import (
     ContextStateCache,
     ContextStateUpdateStatus,
+    make_global_context_entry,
 )
 
 
@@ -341,6 +342,51 @@ def test_all_request_failures_and_all_reachable_unusable_are_failed() -> None:
     assert failed.indicator_snapshots == unusable.indicator_snapshots == ()
 
 
+def test_mixed_request_failure_with_no_usable_reachable_data_is_failed() -> None:
+    payloads = _payloads()
+    unusable_rows = [
+        {"date": LATEST_DATE, "value": "."},
+        {"date": LATEST_DATE, "value": ""},
+        {"date": "bad-date", "value": "4.0"},
+        {"date": PRIOR_DATE, "value": "NaN"},
+        {"date": "2026-06-15", "value": "Infinity"},
+    ]
+    payloads["DGS3MO"] = deepcopy(unusable_rows)
+    payloads["DGS2"] = deepcopy(unusable_rows)
+    writer = FakeWriter()
+    result = _collector(
+        client=FakeClient(payloads, failures={"DGS10"}),
+        writer=writer,
+    ).collect(evaluation_time=CHECKED_AT, write_questdb=True)
+
+    assert result.status is FREDCollectionStatus.FAILED
+    assert {
+        (issue.issue_type, issue.series_id) for issue in result.issues
+    } >= {
+        ("SOURCE_REQUEST_FAILED", "DGS10"),
+        ("NO_VALID_OBSERVATION", "DGS3MO"),
+        ("NO_VALID_OBSERVATION", "DGS2"),
+    }
+    assert result.indicator_snapshots == ()
+    assert result.cache_update_results == ()
+    assert writer.snapshots == []
+
+
+def test_one_usable_series_with_failure_and_no_valid_series_is_partial() -> None:
+    payloads = _payloads()
+    payloads["DGS2"] = [{"date": LATEST_DATE, "value": "."}]
+    result = _collector(
+        client=FakeClient(payloads, failures={"DGS10"}),
+    ).collect(evaluation_time=CHECKED_AT)
+    names = {item.indicator_name for item in result.indicator_snapshots}
+
+    assert result.status is FREDCollectionStatus.PARTIAL
+    assert "us_treasury_3m_yield" in names
+    assert "us_treasury_3m_yield_change_prev_valid_obs" in names
+    assert not any("minus" in name for name in names)
+    assert "rate_curve_regime_v1" not in names
+
+
 def test_mixed_request_failure_and_current_or_stale_are_partial() -> None:
     partial_failure = _collector(client=FakeClient(failures={"DGS10"})).collect(
         evaluation_time=CHECKED_AT
@@ -356,6 +402,19 @@ def test_mixed_request_failure_and_current_or_stale_are_partial() -> None:
     assert partial_failure.status is FREDCollectionStatus.PARTIAL
     assert mixed_stale.status is FREDCollectionStatus.PARTIAL
     assert "hidden-secret-value" not in json.dumps([issue.__dict__ for issue in partial_failure.issues])
+
+
+def test_request_failure_with_all_reachable_usable_stale_is_partial() -> None:
+    payloads = {
+        series_id: _rows("4.0", "3.9", latest_date="2026-06-10", prior_date="2026-06-09")
+        for series_id in EXPECTED_SERIES_IDS.values()
+    }
+    result = _collector(
+        client=FakeClient(payloads, failures={"DGS10"}),
+    ).collect(evaluation_time=CHECKED_AT)
+
+    assert result.status is FREDCollectionStatus.PARTIAL
+    assert result.status is not FREDCollectionStatus.STALE
 
 
 def test_all_reachable_valid_stale_is_stale_and_does_not_update_cache() -> None:
@@ -397,6 +456,64 @@ def test_cache_and_ledger_are_idempotent_with_stable_first_collection() -> None:
         cache.get_global(f"fred:{item.indicator_name}", now=second_time, include_expired=True).updated_at
         for item in second.indicator_snapshots
     } == {datetime(2026, 6, 19, tzinfo=UTC)}
+    assert not any(
+        issue.issue_type == "CACHE_UPDATE_IGNORED_STALE" for issue in second.issues
+    )
+
+
+def test_cache_rejected_raw_is_not_returned_and_suppresses_derivations() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="fred:us_treasury_3m_yield",
+            value=4.5,
+            updated_at=datetime(2026, 6, 20, tzinfo=UTC),
+            source="fred_rates_v1",
+            source_event_time=datetime(2026, 6, 20, tzinfo=UTC),
+            valid_until=datetime(2026, 6, 26, tzinfo=UTC),
+            details={"preseeded": True},
+        )
+    )
+    writer = FakeWriter()
+    result = _collector(cache=cache, writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
+    returned_names = {item.indicator_name for item in result.indicator_snapshots}
+    update_by_name = {
+        update.key.name: update.status for update in result.cache_update_results
+    }
+    ledger_names = {item.indicator_name for item in writer.snapshots}
+
+    assert result.status is FREDCollectionStatus.PARTIAL
+    assert update_by_name["fred:us_treasury_3m_yield"] is ContextStateUpdateStatus.IGNORED_STALE
+    assert "us_treasury_3m_yield" not in returned_names
+    assert "us_treasury_3m_yield" not in ledger_names
+    assert "us_treasury_3m_yield_change_prev_valid_obs" not in returned_names
+    assert "us_treasury_2y_minus_3m" not in returned_names
+    assert "us_treasury_10y_minus_3m" not in returned_names
+    assert "rate_curve_regime_v1" not in returned_names
+    assert "us_treasury_3m_yield_change_prev_valid_obs" not in ledger_names
+    assert "fred:us_treasury_3m_yield_change_prev_valid_obs" not in update_by_name
+    assert "fred:us_treasury_2y_minus_3m" not in update_by_name
+    assert "fred:us_treasury_10y_minus_3m" not in update_by_name
+    assert "fred:rate_curve_regime_v1" not in update_by_name
+    assert any(
+        issue.issue_type == "CACHE_UPDATE_IGNORED_STALE"
+        and issue.indicator_name == "us_treasury_3m_yield"
+        for issue in result.issues
+    )
+    suppressed = {
+        issue.indicator_name
+        for issue in result.issues
+        if issue.issue_type == "DERIVATION_SUPPRESSED_STALE_COMPONENT"
+    }
+    assert suppressed == {
+        "us_treasury_3m_yield_change_prev_valid_obs",
+        "us_treasury_2y_minus_3m",
+        "us_treasury_10y_minus_3m",
+        "rate_curve_regime_v1",
+    }
 
 
 def test_unpinned_realtime_changes_do_not_change_identity_or_write() -> None:
