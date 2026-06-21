@@ -11,6 +11,7 @@ from scripts import check_questdb_schema
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "db" / "schema" / "questdb_ledger_v1.sql"
+MIGRATION_PATH = REPO_ROOT / "db" / "schema" / "questdb_pr26_add_context_indicator_details_json.sql"
 
 
 class FakeResponse:
@@ -26,6 +27,7 @@ class FakeResponse:
 
 def test_schema_file_exists() -> None:
     assert SCHEMA_PATH.is_file()
+    assert MIGRATION_PATH.is_file()
 
 
 def test_offline_schema_validation_passes() -> None:
@@ -68,6 +70,20 @@ def test_context_state_snapshots_and_risk_context_snapshot_link_exist() -> None:
     risk_body = check_questdb_schema._table_body(cleaned, "risk_decisions")
     assert risk_body is not None
     assert "context_snapshot_id STRING" in risk_body
+
+
+def test_context_indicator_details_schema_and_migration_are_valid() -> None:
+    text = SCHEMA_PATH.read_text(encoding="utf-8")
+    body = check_questdb_schema._table_body(
+        check_questdb_schema.strip_sql_line_comments(text),
+        "context_indicator_snapshots",
+    )
+    assert body is not None
+    assert "details_json STRING" in body
+    assert check_questdb_schema.validate_pr26_migration_file(MIGRATION_PATH) == []
+    migration = MIGRATION_PATH.read_text(encoding="utf-8").upper()
+    assert "ALTER TABLE CONTEXT_INDICATOR_SNAPSHOTS ADD COLUMN DETAILS_JSON STRING" in migration
+    assert "DROP TABLE" not in migration
 
 
 @pytest.mark.parametrize("forbidden", ["TTL", "INSERT", "SELECT"])

@@ -204,6 +204,87 @@ def test_context_adapter_maps_snapshot_flags_expiration_and_neutral_state() -> N
     assert context_risk_input_from_contracts(evaluation_time=EVALUATION_TIME) == ContextRiskInput()
 
 
+def test_context_adapter_maps_snapshot_event_metadata_and_deduplicates_reasons() -> None:
+    entry = {
+        'value': True,
+        'valid_until': (EVALUATION_TIME + timedelta(minutes=5)).isoformat().replace('+00:00', 'Z'),
+        'expired': False,
+        'details': {'context_flag_id': 'flag_cached', 'flag_type': 'macro_event_window'},
+    }
+    snapshot = ContextStateSnapshot(
+        snapshot_time=EVALUATION_TIME,
+        ticker='XOM',
+        active_context_flag_ids=['flag_cached', 'flag_cached'],
+        context_summary={'global': {}, 'tickers': {'XOM': {'event': entry}}, 'sectors': {}},
+    )
+    direct_flag = _flag(severity='normal', flag_type='macro_event_window')
+
+    snapshot_only = context_risk_input_from_contracts(
+        context_snapshot=snapshot,
+        context_flags=(),
+        evaluation_time=EVALUATION_TIME,
+    )
+    combined = context_risk_input_from_contracts(
+        context_snapshot=snapshot,
+        context_flags=[direct_flag, direct_flag],
+        evaluation_time=EVALUATION_TIME,
+    )
+
+    assert snapshot_only.event_window_active is True
+    assert snapshot_only.reasons == ['context_snapshot_event_window_active']
+    assert combined.reasons.count('context_snapshot_event_window_active') == 1
+    assert combined.reasons.count('context_flag_event_window_active') == 1
+
+
+def test_context_adapter_rejects_non_event_false_numeric_and_stale_snapshot_entries() -> None:
+    cases = (
+        (418222, {'context_indicator_id': 'indicator_eia'}, [], None, False),
+        (False, {'context_flag_id': 'flag_false', 'flag_type': 'macro_event_window'}, ['flag_false'], None, False),
+        (True, {'context_flag_id': 'flag_non_event', 'flag_type': 'research_context'}, ['flag_non_event'], None, False),
+        (
+            True,
+            {'context_flag_id': 'flag_stale', 'flag_type': 'macro_event_window'},
+            ['flag_stale'],
+            (EVALUATION_TIME - timedelta(seconds=1)).isoformat().replace('+00:00', 'Z'),
+            False,
+        ),
+        (
+            True,
+            {'context_flag_id': 'flag_expired', 'flag_type': 'macro_event_window'},
+            ['flag_expired'],
+            (EVALUATION_TIME + timedelta(minutes=5)).isoformat().replace('+00:00', 'Z'),
+            True,
+        ),
+    )
+    for value, details, active_ids, valid_until, expired in cases:
+        snapshot = ContextStateSnapshot(
+            snapshot_time=EVALUATION_TIME,
+            ticker='XOM',
+            active_context_flag_ids=active_ids,
+            context_summary={
+                'global': {},
+                'tickers': {
+                    'XOM': {
+                        'candidate': {
+                            'value': value,
+                            'valid_until': valid_until,
+                            'expired': expired,
+                            'details': details,
+                        }
+                    }
+                },
+                'sectors': {},
+            },
+        )
+        context = context_risk_input_from_contracts(
+            context_snapshot=snapshot,
+            context_flags=(),
+            evaluation_time=EVALUATION_TIME,
+        )
+        assert context.event_window_active is False
+        assert 'context_snapshot_event_window_active' not in context.reasons
+
+
 def test_decision_output_fields_thresholds_and_questdb_cost_id_fallback() -> None:
     signal = make_model_signal(trace_id='trace_pr16')
     decision = _evaluate(signal=signal, context=ContextRiskInput(context_snapshot_id='context_snapshot_1'))

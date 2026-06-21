@@ -10,7 +10,13 @@ event_windows:
   eia:
     enabled: false
     timezone: America/New_York
-    windows: []
+    pre_release_window_seconds: 300
+    post_release_window_seconds: 900
+    initial_fetch_delay_seconds: 30
+    fast_retry_interval_seconds: 60
+    fast_retry_window_seconds: 1200
+    delayed_retry_interval_seconds: 3600
+    releases: []
 
   cpi:
     enabled: false

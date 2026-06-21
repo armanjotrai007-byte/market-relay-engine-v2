@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import json
 from typing import Any
 
 from market_relay_engine.common.ids import new_record_id
+from market_relay_engine.common.serialization import to_json_string
 from market_relay_engine.contracts.base import (
     DEFAULT_SCHEMA_VERSION,
     optional_utc_datetime,
@@ -32,6 +34,7 @@ class ContextIndicatorSnapshot:
     units: str | None = None
     freshness_seconds: float | None = None
     source_event_time: datetime | None = None
+    details: dict[str, object] = field(default_factory=dict)
     schema_version: str = DEFAULT_SCHEMA_VERSION
     trace_id: str | None = None
 
@@ -44,6 +47,12 @@ class ContextIndicatorSnapshot:
         )
         require_non_empty_string(self.context_indicator_id, "context_indicator_id")
         require_optional_non_empty_string(self.trace_id, "trace_id")
+        if not isinstance(self.details, dict):
+            raise TypeError("details must be a dictionary")
+        copied_details = json.loads(to_json_string(self.details))
+        if not isinstance(copied_details, dict):
+            raise TypeError("details must be a dictionary")
+        object.__setattr__(self, "details", copied_details)
 
 
 @dataclass(frozen=True, kw_only=True)

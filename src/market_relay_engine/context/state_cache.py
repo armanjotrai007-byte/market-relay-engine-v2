@@ -393,6 +393,7 @@ class ContextStateCache:
                 snapshot_time=timestamp,
                 ticker=ticker,
                 sector=sector,
+                active_context_flag_ids=_active_context_flag_ids(fresh_entries),
                 context_summary=_json_safe_object_copy(context_summary),
                 highest_severity=highest_severity,
                 risk_level=risk_level,
@@ -657,6 +658,17 @@ def _key_sort_key(key: ContextStateKey) -> tuple[str, str, str, str]:
 
 def _entry_sort_key(entry: ContextStateEntry) -> tuple[str, str, str, str]:
     return _key_sort_key(entry.key)
+
+
+def _active_context_flag_ids(entries: list[ContextStateEntry]) -> list[str]:
+    flag_ids = {
+        flag_id.strip()
+        for entry in entries
+        if entry.value is True
+        and isinstance((flag_id := entry.details.get("context_flag_id")), str)
+        and flag_id.strip()
+    }
+    return sorted(flag_ids)
 
 
 def _entry_copy(entry: ContextStateEntry) -> ContextStateEntry:

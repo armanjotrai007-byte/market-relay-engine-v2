@@ -10,6 +10,7 @@ structured_sources:
     feeds_memory_cache: true
     writes_questdb_ledger: true
     used_in_per_tick_loop: false
+    timeout_seconds: 10.0
     max_staleness_seconds: 86400
 
   fred:

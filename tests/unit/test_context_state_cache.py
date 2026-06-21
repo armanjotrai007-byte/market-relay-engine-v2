@@ -182,6 +182,67 @@ def test_cache_config_validation() -> None:
         ContextStateCache(max_entries=True)
 
 
+def test_snapshot_active_flag_ids_require_fresh_truthy_structured_entries() -> None:
+    cache = ContextStateCache()
+    entries = (
+        make_ticker_context_entry(
+            ticker="XOM",
+            name="event_window",
+            value=True,
+            updated_at=BASE_TIME,
+            valid_until=BASE_TIME + timedelta(minutes=5),
+            details={"context_flag_id": "flag_z", "flag_type": "macro_event_window"},
+        ),
+        make_sector_context_entry(
+            sector="OIL",
+            name="duplicate_event_window",
+            value=True,
+            updated_at=BASE_TIME,
+            valid_until=BASE_TIME + timedelta(minutes=5),
+            details={"context_flag_id": "flag_z", "flag_type": "eia_event_window"},
+        ),
+        make_global_context_entry(
+            name="false_event_window",
+            value=False,
+            updated_at=BASE_TIME,
+            details={"context_flag_id": "flag_false", "flag_type": "macro_event_window"},
+        ),
+        make_sector_context_entry(
+            sector="OIL",
+            name="numeric_eia_indicator",
+            value=418222,
+            updated_at=BASE_TIME,
+            details={"context_indicator_id": "indicator_eia"},
+        ),
+        make_ticker_context_entry(
+            ticker="XOM",
+            name="non_event_flag",
+            value=True,
+            updated_at=BASE_TIME,
+            details={"context_flag_id": "flag_non_event", "flag_type": "research_context"},
+        ),
+        make_ticker_context_entry(
+            ticker="XOM",
+            name="expired_event_window",
+            value=True,
+            updated_at=BASE_TIME - timedelta(minutes=2),
+            valid_until=BASE_TIME - timedelta(microseconds=1),
+            details={"context_flag_id": "flag_expired", "flag_type": "macro_event_window"},
+        ),
+    )
+    for entry in entries:
+        cache.update(entry)
+
+    snapshot = cache.to_context_state_snapshot(ticker="XOM", sector="OIL", now=BASE_TIME)
+
+    assert snapshot.active_context_flag_ids == ["flag_non_event", "flag_z"]
+    assert snapshot.active_context_flag_ids.count("flag_z") == 1
+    assert "flag_false" not in snapshot.active_context_flag_ids
+    assert "flag_expired" not in snapshot.active_context_flag_ids
+    assert "indicator_eia" not in snapshot.active_context_flag_ids
+    assert snapshot.context_summary["tickers"]["XOM"]["event_window"]["details"]["flag_type"] == "macro_event_window"
+
+
 def test_update_statuses_do_not_raise_for_stale_or_duplicate_updates() -> None:
     cache = ContextStateCache(max_entries=10)
     first = make_ticker_context_entry(
