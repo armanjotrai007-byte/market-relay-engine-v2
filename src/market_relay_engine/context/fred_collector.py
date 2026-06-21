@@ -539,7 +539,71 @@ class FREDCollector:
             facts.append(
                 _raw_fact(
                     spec,
-                    result.latest_valid_…701 tokens truncated…ot)
+                    result.latest_valid_observation,
+                    self.config.max_observation_age_calendar_days,
+                )
+            )
+            if result.previous_valid_observation is not None:
+                facts.append(
+                    _change_fact(
+                        spec,
+                        result.latest_valid_observation,
+                        result.previous_valid_observation,
+                        self.config.max_observation_age_calendar_days,
+                    )
+                )
+
+        spread_definitions = (
+            ("us_treasury_2y_minus_3m", "us_treasury_2y_yield", "us_treasury_3m_yield"),
+            ("us_treasury_10y_minus_2y", "us_treasury_10y_yield", "us_treasury_2y_yield"),
+            ("us_treasury_10y_minus_3m", "us_treasury_10y_yield", "us_treasury_3m_yield"),
+        )
+        for indicator_name, left_name, right_name in spread_definitions:
+            left = current_by_name.get(left_name)
+            right = current_by_name.get(right_name)
+            if left is None or right is None:
+                continue
+            assert left.latest_valid_observation is not None
+            assert right.latest_valid_observation is not None
+            if left.latest_valid_observation.observation_date != right.latest_valid_observation.observation_date:
+                issues.append(
+                    _date_misaligned_issue(
+                        indicator_name,
+                        (left, right),
+                    )
+                )
+                continue
+            facts.append(
+                _spread_fact(
+                    indicator_name,
+                    left,
+                    right,
+                    self.config.max_observation_age_calendar_days,
+                )
+            )
+
+        if len(current_by_name) == len(SERIES_SPECS):
+            ordered = tuple(current_by_name[spec.indicator_name] for spec in SERIES_SPECS)
+            observation_dates = {
+                item.latest_valid_observation.observation_date  # type: ignore[union-attr]
+                for item in ordered
+            }
+            if len(observation_dates) == 1:
+                facts.append(
+                    _regime_fact(
+                        ordered,
+                        self.config.max_observation_age_calendar_days,
+                    )
+                )
+            else:
+                issues.append(_date_misaligned_issue("rate_curve_regime_v1", ordered))
+
+        snapshots: list[ContextIndicatorSnapshot] = []
+        cache_results: list[ContextStateUpdateResult] = []
+        ledger_results: list[object] = []
+        for fact in facts:
+            snapshot, update = self._cache_fact(fact, checked_at)
+            snapshots.append(snapshot)
             cache_results.append(update)
             self._write_if_changed(
                 snapshot,
