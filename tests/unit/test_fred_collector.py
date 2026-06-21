@@ -22,6 +22,7 @@ from market_relay_engine.context.state_cache import (
     ContextStateUpdateStatus,
     make_global_context_entry,
 )
+from market_relay_engine.contracts.context import ContextFlag
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -459,6 +460,20 @@ def test_cache_and_ledger_are_idempotent_with_stable_first_collection() -> None:
     assert not any(
         issue.issue_type == "CACHE_UPDATE_IGNORED_STALE" for issue in second.issues
     )
+    first_regime = next(
+        item for item in first.indicator_snapshots if item.indicator_name == "rate_curve_regime_v1"
+    )
+    second_regime = next(
+        item for item in second.indicator_snapshots if item.indicator_name == "rate_curve_regime_v1"
+    )
+    second_regime_update = next(
+        item
+        for item in second.cache_update_results
+        if item.key.name == "fred:rate_curve_regime_v1"
+    )
+    assert second_regime.context_indicator_id == first_regime.context_indicator_id
+    assert second_regime_update.status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    assert len([item for item in writer.snapshots if item.indicator_name == "rate_curve_regime_v1"]) == 1
 
 
 def test_cache_rejected_raw_is_not_returned_and_suppresses_derivations() -> None:
@@ -520,7 +535,7 @@ def test_unpinned_realtime_changes_do_not_change_identity_or_write() -> None:
     cache = ContextStateCache()
     writer = FakeWriter()
     first_client = FakeClient()
-    _collector(cache=cache, client=first_client, writer=writer).collect(
+    first = _collector(cache=cache, client=first_client, writer=writer).collect(
         evaluation_time=CHECKED_AT,
         write_questdb=True,
     )
@@ -539,12 +554,25 @@ def test_unpinned_realtime_changes_do_not_change_identity_or_write() -> None:
 
     assert all(item.status is ContextStateUpdateStatus.IGNORED_DUPLICATE for item in second.cache_update_results)
     assert len(writer.snapshots) == 10
+    first_regime = next(item for item in first.indicator_snapshots if item.indicator_name == "rate_curve_regime_v1")
+    second_regime = next(item for item in second.indicator_snapshots if item.indicator_name == "rate_curve_regime_v1")
+    regime_update = next(
+        item
+        for item in second.cache_update_results
+        if item.key.name == "fred:rate_curve_regime_v1"
+    )
+    assert second_regime.context_indicator_id == first_regime.context_indicator_id
+    assert regime_update.status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    assert len([item for item in writer.snapshots if item.indicator_name == "rate_curve_regime_v1"]) == 1
 
 
 def test_same_date_value_revision_replaces_only_affected_facts() -> None:
     cache = ContextStateCache()
     writer = FakeWriter()
-    _collector(cache=cache, writer=writer).collect(evaluation_time=CHECKED_AT, write_questdb=True)
+    first = _collector(cache=cache, writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
     revised = _payloads()
     revised["DGS2"][0]["value"] = "4.05"
     result = _collector(cache=cache, client=FakeClient(revised), writer=writer).collect(
@@ -570,7 +598,61 @@ def test_same_date_value_revision_replaces_only_affected_facts() -> None:
     assert statuses["fred:us_treasury_10y_minus_3m"] is ContextStateUpdateStatus.IGNORED_DUPLICATE
     assert statuses["fred:rate_curve_regime_v1"] is ContextStateUpdateStatus.REPLACED
     assert revised_ids["us_treasury_2y_yield"] != original_ids["us_treasury_2y_yield"]
+    first_regime = next(item for item in first.indicator_snapshots if item.indicator_name == "rate_curve_regime_v1")
+    revised_regime = next(item for item in result.indicator_snapshots if item.indicator_name == "rate_curve_regime_v1")
+    first_component_ids = first_regime.details["component_indicator_ids"]
+    revised_component_ids = revised_regime.details["component_indicator_ids"]
+    assert revised_regime.value == first_regime.value
+    assert revised_regime.context_indicator_id != first_regime.context_indicator_id
+    assert revised_component_ids["us_treasury_2y_yield"] != first_component_ids["us_treasury_2y_yield"]
+    assert revised_component_ids["us_treasury_3m_yield"] == first_component_ids["us_treasury_3m_yield"]
+    assert revised_component_ids["us_treasury_10y_yield"] == first_component_ids["us_treasury_10y_yield"]
+    assert len({item.context_indicator_id for item in writer.snapshots if item.indicator_name == "rate_curve_regime_v1"}) == 2
     assert len(writer.snapshots) > 10
+
+
+def test_all_same_date_revised_yields_change_regime_identity_without_changing_label() -> None:
+    first_payloads = {
+        "DGS3MO": _rows("3.00", "2.90"),
+        "DGS2": _rows("4.00", "3.90"),
+        "DGS10": _rows("5.00", "4.90"),
+    }
+    revised_payloads = {
+        "DGS3MO": _rows("3.10", "2.90"),
+        "DGS2": _rows("4.10", "3.90"),
+        "DGS10": _rows("5.10", "4.90"),
+    }
+    cache = ContextStateCache()
+    writer = FakeWriter()
+    first = _collector(cache=cache, client=FakeClient(first_payloads), writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
+    revised = _collector(cache=cache, client=FakeClient(revised_payloads), writer=writer).collect(
+        evaluation_time=CHECKED_AT + timedelta(hours=1),
+        write_questdb=True,
+    )
+    first_regime = next(item for item in first.indicator_snapshots if item.indicator_name == "rate_curve_regime_v1")
+    revised_regime = next(item for item in revised.indicator_snapshots if item.indicator_name == "rate_curve_regime_v1")
+    regime_update = next(
+        item
+        for item in revised.cache_update_results
+        if item.key.name == "fred:rate_curve_regime_v1"
+    )
+
+    assert first_regime.value == revised_regime.value == "FRONT_POSITIVE__LONG_POSITIVE"
+    assert revised_regime.context_indicator_id != first_regime.context_indicator_id
+    assert revised_regime.details["component_indicator_ids"] != first_regime.details["component_indicator_ids"]
+    assert regime_update.status is ContextStateUpdateStatus.REPLACED
+    assert revised_regime.details["component_yields"] == {
+        "us_treasury_3m_yield": 3.1,
+        "us_treasury_2y_yield": 4.1,
+        "us_treasury_10y_yield": 5.1,
+    }
+    assert revised_regime.details["front_spread"] == pytest.approx(1.0)
+    assert revised_regime.details["long_spread"] == pytest.approx(1.0)
+    assert revised_regime.details["regime_value"] == revised_regime.value
+    assert len([item for item in writer.snapshots if item.indicator_name == "rate_curve_regime_v1"]) == 2
 
 
 def test_stale_refresh_preserves_existing_numeric_cache_deadline() -> None:
@@ -629,6 +711,7 @@ def test_regime_is_cached_and_written_but_absent_when_misaligned() -> None:
 
     assert cache.get_global("fred:rate_curve_regime_v1", now=CHECKED_AT) is not None
     assert regime in writer.snapshots
+    assert not isinstance(regime, ContextFlag)
     assert regime.details["value_kind"] == "categorical_regime"
     assert regime.details["derivation_version"] == "fred_rate_curve_regime_v1"
 
@@ -641,6 +724,11 @@ def test_regime_is_cached_and_written_but_absent_when_misaligned() -> None:
     )
     assert "rate_curve_regime_v1" not in _values(misaligned)
     assert all(item.indicator_name != "rate_curve_regime_v1" for item in misaligned_writer.snapshots)
+
+    missing = _payloads()
+    missing["DGS10"] = [{"date": LATEST_DATE, "value": "."}]
+    missing_result = _collector(client=FakeClient(missing)).collect(evaluation_time=CHECKED_AT)
+    assert "rate_curve_regime_v1" not in _values(missing_result)
 
 
 def test_writer_failure_required_and_optional_behavior_is_sanitized() -> None:

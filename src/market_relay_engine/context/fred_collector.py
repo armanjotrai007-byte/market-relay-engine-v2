@@ -797,13 +797,7 @@ def _raw_fact(spec: FREDSeriesSpec, observation: FREDObservation, max_age: int) 
         value_kind="yield_level",
         source_event_time=source_event_time,
         valid_until=_valid_until(observation.observation_date, max_age),
-        identity_payload={
-            "source": SOURCE_NAME,
-            "indicator_name": spec.indicator_name,
-            "series_id": spec.series_id,
-            "observation_date": observation.observation_date.isoformat(),
-            "normalized_value": _canonical_decimal(observation.value),
-        },
+        identity_payload=_raw_identity_payload(spec, observation),
         details=details,
         required_raw_indicators=(spec.indicator_name,),
     )
@@ -927,6 +921,19 @@ def _regime_fact(results: Sequence[FREDSeriesResult], max_age: int) -> _Fact:
         for item in results
     }
     component_ids = [_SPEC_BY_NAME[item.indicator_name].series_id for item in results]
+    component_indicator_ids = {
+        spec.indicator_name: _deterministic_id(
+            _raw_identity_payload(
+                spec,
+                by_name[spec.indicator_name].latest_valid_observation,  # type: ignore[arg-type]
+            )
+        )
+        for spec in SERIES_SPECS
+    }
+    component_yields = {
+        item.indicator_name: _float_value(item.latest_valid_observation.value)  # type: ignore[union-attr]
+        for item in results
+    }
     details = _base_details(
         units="category",
         value_kind="categorical_regime",
@@ -938,13 +945,12 @@ def _regime_fact(results: Sequence[FREDSeriesResult], max_age: int) -> _Fact:
             "component_series_names": {
                 spec.series_id: spec.series_name for spec in SERIES_SPECS
             },
+            "component_indicator_ids": component_indicator_ids,
             "component_observation_dates": component_dates,
-            "component_values": {
-                item.indicator_name: _float_value(item.latest_valid_observation.value)  # type: ignore[union-attr]
-                for item in results
-            },
-            "front_spread_percentage_points": _float_value(front),
-            "long_spread_percentage_points": _float_value(long),
+            "component_yields": component_yields,
+            "front_spread": _float_value(front),
+            "long_spread": _float_value(long),
+            "regime_value": value,
             "derivation_version": REGIME_DERIVATION_VERSION,
         }
     )
@@ -960,12 +966,28 @@ def _regime_fact(results: Sequence[FREDSeriesResult], max_age: int) -> _Fact:
             "indicator_name": "rate_curve_regime_v1",
             "derivation_version": REGIME_DERIVATION_VERSION,
             "component_series_ids": component_ids,
+            "component_raw_snapshot_ids": [
+                component_indicator_ids[spec.indicator_name] for spec in SERIES_SPECS
+            ],
             "component_observation_dates": component_dates,
             "regime_value": value,
         },
         details=details,
         required_raw_indicators=tuple(item.indicator_name for item in results),
     )
+
+
+def _raw_identity_payload(
+    spec: FREDSeriesSpec,
+    observation: FREDObservation,
+) -> dict[str, object]:
+    return {
+        "source": SOURCE_NAME,
+        "indicator_name": spec.indicator_name,
+        "series_id": spec.series_id,
+        "observation_date": observation.observation_date.isoformat(),
+        "normalized_value": _canonical_decimal(observation.value),
+    }
 
 
 def _base_details(*, units: str, value_kind: str, observation_date: date) -> dict[str, object]:
