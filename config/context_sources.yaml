@@ -16,11 +16,17 @@ structured_sources:
   fred:
     enabled: false
     api_key_env: FRED_API_KEY
-    purpose: "Macro/rates context."
+    purpose: "Slow daily Treasury-rate context."
     feeds_memory_cache: true
     writes_questdb_ledger: true
     used_in_per_tick_loop: false
-    max_staleness_seconds: 86400
+    timeout_seconds: 10.0
+    max_observation_age_calendar_days: 5
+    observation_fetch_limit: 20
+    series_ids:
+      us_treasury_3m_yield: DGS3MO
+      us_treasury_2y_yield: DGS2
+      us_treasury_10y_yield: DGS10
 
   usaspending:
     enabled: false
