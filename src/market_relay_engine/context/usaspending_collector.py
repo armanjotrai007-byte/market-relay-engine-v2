@@ -1482,7 +1482,7 @@ def _semantic_identity(
             detail.get("base_and_all_options")
         ),
         "award_last_modified_date": _award_last_modified_date(detail, None),
-        "funding_page_complete": funding_complete,
+        "funding_page_complete": funding_page_complete,
         "funding_records_returned_count": funding_records_returned_count,
         "funding_evidence_fingerprint": funding_evidence_fingerprint,
     }
