@@ -31,11 +31,24 @@ structured_sources:
   usaspending:
     enabled: false
     api_key_required: false
-    purpose: "Defense contract award context."
+    purpose: "Ticker-linked U.S. government contract award discovery for future profitability research."
     feeds_memory_cache: true
     writes_questdb_ledger: true
     used_in_per_tick_loop: false
-    max_staleness_seconds: 86400
+    timeout_seconds: 10.0
+    intended_poll_interval_seconds: 900
+    discovery_last_modified_lookback_calendar_days: 14
+    source_last_updated_max_age_calendar_days: 3
+    search_limit_per_recipient: 100
+    max_award_details_per_recipient_per_run: 50
+    funding_limit_per_award: 100
+    revision_recheck_calendar_days: 45
+    max_revision_rechecks_per_run: 50
+    late_discovery_calendar_days: 2
+    award_registry_retention_calendar_days: 180
+    checkpoint_path: "data/usaspending/award_checkpoint.json"
+    recipient_map_path: "config/usaspending_recipient_ticker_map.yaml"
+    contract_awards_only: true
 
   yfinance_dev_only:
     enabled: false
