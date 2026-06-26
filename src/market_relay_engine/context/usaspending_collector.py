@@ -1329,6 +1329,7 @@ def _build_event(
         canonical_award_id=canonical_award_id,
         mapping=mapping,
         classification=stored_classification,
+        candidate=candidate,
         detail=detail,
         source_business_date=source_business_date,
         funding_page_complete=funding_complete,
@@ -1346,6 +1347,7 @@ def _build_event(
             canonical_award_id=canonical_award_id,
             mapping=mapping,
             classification=stored_classification,
+            candidate=candidate,
             detail=detail,
             source_business_date=source_business_date,
             funding_page_complete=funding_complete,
@@ -1456,6 +1458,7 @@ def _semantic_identity(
     canonical_award_id: str,
     mapping: USAspendingRecipientMapping,
     classification: USAspendingEventClassification,
+    candidate: USAspendingAwardCandidate,
     detail: Mapping[str, object],
     source_business_date: date | None,
     funding_page_complete: bool,
@@ -1481,7 +1484,7 @@ def _semantic_identity(
         "base_and_all_options_usd": _canonical_number(
             detail.get("base_and_all_options")
         ),
-        "award_last_modified_date": _award_last_modified_date(detail, None),
+        "award_last_modified_date": _award_last_modified_date(detail, candidate),
         "funding_page_complete": funding_page_complete,
         "funding_records_returned_count": funding_records_returned_count,
         "funding_evidence_fingerprint": funding_evidence_fingerprint,

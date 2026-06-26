@@ -548,6 +548,46 @@ def test_semantic_revision_changes_identity_and_replaces_same_award_cache(tmp_pa
     assert len([entry for entry in entries if entry.key.name == cache_entry_name("TST", "CONT_AWD_1")]) == 1
 
 
+def test_candidate_last_modified_fallback_changes_revision_identity(tmp_path: Path) -> None:
+    detail = _detail("CONT_AWD_1")
+    del detail["last_modified_date"]
+    detail.pop("last_modified", None)
+    first_client = FakeClient(
+        searches={
+            UEI: {
+                "results": [_search_row("lookup-1", last_modified="2026-06-20")],
+                "page_metadata": {"hasNext": False},
+            }
+        },
+        details={"lookup-1": detail, "CONT_AWD_1": detail},
+        funding={"CONT_AWD_1": _funding()},
+    )
+    first = _collector(tmp_path, first_client).collect(evaluation_time=CHECKED_AT)
+    changed_client = FakeClient(
+        searches={
+            UEI: {
+                "results": [_search_row("lookup-1", last_modified="2026-06-21")],
+                "page_metadata": {"hasNext": False},
+            }
+        },
+        details={"lookup-1": detail, "CONT_AWD_1": detail},
+        funding={"CONT_AWD_1": _funding()},
+    )
+    second = _collector(tmp_path, changed_client).collect(
+        evaluation_time=CHECKED_AT + timedelta(hours=1)
+    )
+
+    first_details = first.indicator_snapshots[0].details
+    second_details = second.indicator_snapshots[0].details
+    assert first_details["award_last_modified_date"] == "2026-06-20"
+    assert second_details["award_last_modified_date"] == "2026-06-21"
+    assert (
+        first_details["semantic_event_fingerprint"]
+        != second_details["semantic_event_fingerprint"]
+    )
+    assert second.indicator_snapshots[0].value == "AWARD_REVISION_DISCOVERED"
+
+
 def test_funding_evidence_revision_changes_identity(tmp_path: Path) -> None:
     first = _collector(tmp_path, _single_award_client()).collect(evaluation_time=CHECKED_AT)
     changed = _single_award_client(funding=_funding(object_class="26.0"))
