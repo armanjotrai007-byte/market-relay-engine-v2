@@ -155,10 +155,30 @@ research horizon passing does not create expired-context risk elevation. The
 cache is a current-process convenience. QuestDB remains the durable historical
 research ledger.
 
-The JSON checkpoint prevents duplicate QuestDB rows across restarts and stores
-enough details to rehydrate an in-memory cache entry when the same known event is
-seen again in a fresh process. Checkpoint exclusivity is enforced by an
-OS-backed non-blocking advisory lock on the stable lock file:
+The JSON checkpoint is bounded dedupe and revision state for events whose
+required QuestDB ledger write has already succeeded. Non-durable/offline runs,
+including runs with `write_questdb=false`, may return snapshots and update the
+current-process cache, but they do not permanently mark new award events as seen
+and therefore do not suppress a later durable QuestDB write. If a QuestDB write
+is requested but the writer is unavailable or fails, the new event is not added
+to checkpoint event/registry dedupe state.
+
+For durable runs, the collector writes the QuestDB snapshot first and then
+records the event fingerprint in the JSON checkpoint. This is a practical
+ordering boundary, not an exactly-once distributed transaction: if the process
+or filesystem fails after a successful QuestDB write but before checkpoint
+persistence, a later run may retry the same event.
+
+When a revision recheck successfully processes durable-safe checkpoint changes,
+those changes are written even if every normal recipient-search path failed.
+That search-outage persistence does not advance
+`last_successful_collection_at`, source-wide discovery metadata, or other
+signals that would claim the full discovery collection succeeded. QuestDB remains
+the durable historical research ledger; the JSON checkpoint remains bounded
+dedupe/revision state.
+
+Checkpoint exclusivity is enforced by an OS-backed non-blocking advisory lock on
+the stable lock file:
 
 ```text
 data/usaspending/award_checkpoint.json.lock

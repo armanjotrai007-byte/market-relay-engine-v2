@@ -793,7 +793,7 @@ class USAspendingCollector:
                 if accepted.canonical_award_id is not None:
                     processed_canonical_ids.add(accepted.canonical_award_id)
 
-        revision_complete = self._run_revision_rechecks(
+        revision_outcome = self._run_revision_rechecks(
             observed_at=observed_at,
             active_by_uei=active_by_uei,
             processed_canonical_ids=processed_canonical_ids,
@@ -807,16 +807,23 @@ class USAspendingCollector:
             run_id=run_id,
             session_id=session_id,
         )
-        coverage_complete = coverage_complete and revision_complete
+        coverage_complete = coverage_complete and revision_outcome.coverage_complete
 
         failed_all_paths = recipient_path_failures == len(mappings)
-        if not failed_all_paths:
+        checkpoint_must_persist = not failed_all_paths or revision_outcome.checkpoint_changed
+        if checkpoint_must_persist:
             try:
                 self._persist_checkpoint(
                     checkpoint,
                     observed_at=observed_at,
                     source_last_updated_date=source_last_updated_date,
-                    prune=coverage_complete and not issues and source_current is True,
+                    advance_discovery_metadata=not failed_all_paths,
+                    prune=(
+                        not failed_all_paths
+                        and coverage_complete
+                        and not issues
+                        and source_current is True
+                    ),
                 )
             except USAspendingCollectorError as exc:
                 coverage_complete = False
@@ -922,7 +929,7 @@ class USAspendingCollector:
                     award_identifier=candidate.award_id,
                 )
             )
-            return _ProcessOutcome(False, candidate.award_id)
+            return _ProcessOutcome(False, candidate.award_id, False)
         try:
             detail = self.client.fetch_award_detail(candidate.search_detail_lookup_id)
         except Exception as exc:  # noqa: BLE001 - source adapter boundary.
@@ -936,7 +943,7 @@ class USAspendingCollector:
                     details={"error_type": type(exc).__name__},
                 )
             )
-            return _ProcessOutcome(False, None)
+            return _ProcessOutcome(False, None, False)
         canonical_award_id = _string_or_none(detail.get("generated_unique_award_id"))
         if canonical_award_id is None:
             issues.append(
@@ -948,7 +955,7 @@ class USAspendingCollector:
                     award_identifier=candidate.search_detail_lookup_id,
                 )
             )
-            return _ProcessOutcome(False, None)
+            return _ProcessOutcome(False, None, False)
         detail_uei = _detail_recipient_uei(detail)
         if detail_uei != mapping.recipient_uei:
             issues.append(
@@ -961,7 +968,7 @@ class USAspendingCollector:
                     details={"detail_recipient_uei": detail_uei},
                 )
             )
-            return _ProcessOutcome(False, canonical_award_id)
+            return _ProcessOutcome(False, canonical_award_id, False)
         try:
             funding = self.client.fetch_award_funding(
                 canonical_award_id,
@@ -978,7 +985,7 @@ class USAspendingCollector:
                     details={"error_type": type(exc).__name__},
                 )
             )
-            return _ProcessOutcome(False, canonical_award_id)
+            return _ProcessOutcome(False, canonical_award_id, False)
         return self._accept_event(
             candidate=candidate,
             mapping=mapping,
@@ -1033,7 +1040,11 @@ class USAspendingCollector:
                     award_identifier=_string_or_none(detail.get("generated_unique_award_id")),
                 )
             )
-            return _ProcessOutcome(False, _string_or_none(detail.get("generated_unique_award_id")))
+            return _ProcessOutcome(
+                False,
+                _string_or_none(detail.get("generated_unique_award_id")),
+                False,
+            )
         if not funding_complete:
             issues.append(
                 USAspendingIssue(
@@ -1048,53 +1059,91 @@ class USAspendingCollector:
         seen = _seen_events(checkpoint)
         existing_seen = seen.get(event.semantic_event_fingerprint)
         if existing_seen is not None:
+            checkpoint_changed = isinstance(existing_seen, dict)
             _update_seen_last_observed(existing_seen, observed_at)
             update = self._rehydrate_cache_if_needed(existing_seen, observed_at)
             if update is not None:
                 cache_results.append(update)
-            return _ProcessOutcome(funding_complete, event.canonical_award_id)
+            return _ProcessOutcome(
+                funding_complete,
+                event.canonical_award_id,
+                checkpoint_changed,
+            )
 
         snapshot, cache_update = _snapshot_and_cache_entry(self.cache, event)
         cache_results.append(cache_update)
-        ledger_ok = True
-        if (
-            write_questdb
-            and self.config.writes_questdb_ledger
-            and self.ledger_writer is not None
-            and cache_update.status
-            in {
-                ContextStateUpdateStatus.WRITTEN,
-                ContextStateUpdateStatus.REPLACED,
-                ContextStateUpdateStatus.IGNORED_DUPLICATE,
-            }
-        ):
-            try:
-                result = self.ledger_writer.write_context_indicator_snapshot(
-                    snapshot,
-                    run_id=run_id,
-                    session_id=session_id,
-                )
-                if result is not None:
-                    ledger_results.append(result)
-            except Exception as exc:  # noqa: BLE001 - writer protocol boundary.
-                ledger_ok = False
+        durable_ledger_write_requested = write_questdb and self.config.writes_questdb_ledger
+        durable_ledger_write_succeeded = False
+        cache_state_is_writer_eligible = cache_update.status in {
+            ContextStateUpdateStatus.WRITTEN,
+            ContextStateUpdateStatus.REPLACED,
+            ContextStateUpdateStatus.IGNORED_DUPLICATE,
+        }
+        if durable_ledger_write_requested:
+            if self.ledger_writer is None:
                 issues.append(
                     USAspendingIssue(
-                        issue_type="LEDGER_WRITE_FAILED",
-                        message="QuestDB context indicator write failed",
+                        issue_type="LEDGER_WRITER_UNAVAILABLE",
+                        message="QuestDB context indicator write was requested but no writer was provided",
                         ticker=event.ticker,
                         award_identifier=event.canonical_award_id,
-                        details={"error_type": type(exc).__name__},
                     )
                 )
                 if questdb_required:
                     raise USAspendingCollectorError(
-                        "QuestDB context indicator write failed"
-                    ) from None
-        if ledger_ok:
+                        "QuestDB writes are required but no writer was provided"
+                    )
+            elif not cache_state_is_writer_eligible:
+                issues.append(
+                    USAspendingIssue(
+                        issue_type="LEDGER_WRITE_NOT_ELIGIBLE",
+                        message="QuestDB context indicator write was not eligible for this cache update",
+                        ticker=event.ticker,
+                        award_identifier=event.canonical_award_id,
+                        details={"cache_update_status": cache_update.status.value},
+                    )
+                )
+                if questdb_required:
+                    raise USAspendingCollectorError(
+                        "QuestDB context indicator write was not eligible"
+                    )
+            else:
+                try:
+                    result = self.ledger_writer.write_context_indicator_snapshot(
+                        snapshot,
+                        run_id=run_id,
+                        session_id=session_id,
+                    )
+                    durable_ledger_write_succeeded = True
+                    if result is not None:
+                        ledger_results.append(result)
+                except Exception as exc:  # noqa: BLE001 - writer protocol boundary.
+                    issues.append(
+                        USAspendingIssue(
+                            issue_type="LEDGER_WRITE_FAILED",
+                            message="QuestDB context indicator write failed",
+                            ticker=event.ticker,
+                            award_identifier=event.canonical_award_id,
+                            details={"error_type": type(exc).__name__},
+                        )
+                    )
+                    if questdb_required:
+                        raise USAspendingCollectorError(
+                            "QuestDB context indicator write failed"
+                        ) from None
+        checkpoint_event_is_safe_to_persist = durable_ledger_write_succeeded
+        event_is_safe_for_result = (
+            not durable_ledger_write_requested or durable_ledger_write_succeeded
+        )
+        if event_is_safe_for_result:
             snapshots.append(snapshot)
+        if checkpoint_event_is_safe_to_persist:
             _record_event_in_checkpoint(checkpoint, event, observed_at)
-        return _ProcessOutcome(funding_complete and ledger_ok, event.canonical_award_id)
+        return _ProcessOutcome(
+            funding_complete and event_is_safe_for_result,
+            event.canonical_award_id,
+            checkpoint_event_is_safe_to_persist,
+        )
 
     def _rehydrate_cache_if_needed(
         self,
@@ -1148,7 +1197,7 @@ class USAspendingCollector:
         questdb_required: bool,
         run_id: str | None,
         session_id: str | None,
-    ) -> bool:
+    ) -> "_RevisionRecheckOutcome":
         registry = _award_registry(checkpoint)
         cutoff = observed_at - timedelta(days=self.config.revision_recheck_calendar_days)
         eligible: list[Mapping[str, object]] = []
@@ -1173,6 +1222,7 @@ class USAspendingCollector:
             )
         )
         complete = True
+        checkpoint_changed = False
         if len(eligible) > self.config.max_revision_rechecks_per_run:
             complete = False
             issues.append(
@@ -1213,11 +1263,13 @@ class USAspendingCollector:
                 session_id=session_id,
             )
             complete = complete and outcome.coverage_complete
-            if outcome.canonical_award_id in registry:
+            checkpoint_changed = checkpoint_changed or outcome.checkpoint_changed
+            if outcome.checkpoint_changed and outcome.canonical_award_id in registry:
                 registry[outcome.canonical_award_id]["last_revision_checked_at"] = to_utc_iso(
                     observed_at
                 )
-        return complete
+                checkpoint_changed = True
+        return _RevisionRecheckOutcome(complete, checkpoint_changed)
 
     def _persist_checkpoint(
         self,
@@ -1225,12 +1277,14 @@ class USAspendingCollector:
         *,
         observed_at: datetime,
         source_last_updated_date: date | None,
+        advance_discovery_metadata: bool,
         prune: bool,
     ) -> None:
-        checkpoint["last_successful_collection_at"] = to_utc_iso(observed_at)
-        checkpoint["source_last_updated_date"] = (
-            None if source_last_updated_date is None else source_last_updated_date.isoformat()
-        )
+        if advance_discovery_metadata:
+            checkpoint["last_successful_collection_at"] = to_utc_iso(observed_at)
+            checkpoint["source_last_updated_date"] = (
+                None if source_last_updated_date is None else source_last_updated_date.isoformat()
+            )
         if prune:
             _prune_checkpoint(
                 checkpoint,
@@ -1244,6 +1298,13 @@ class USAspendingCollector:
 class _ProcessOutcome:
     coverage_complete: bool
     canonical_award_id: str | None
+    checkpoint_changed: bool
+
+
+@dataclass(frozen=True)
+class _RevisionRecheckOutcome:
+    coverage_complete: bool
+    checkpoint_changed: bool
 
 
 def load_recipient_mappings(path: str | Path) -> tuple[USAspendingRecipientMapping, ...]:

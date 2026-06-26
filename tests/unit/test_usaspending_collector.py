@@ -243,6 +243,29 @@ def _single_award_client(
     )
 
 
+def _read_checkpoint(tmp_path: Path) -> dict[str, object]:
+    return json.loads((tmp_path / "award_checkpoint.json").read_text(encoding="utf-8"))
+
+
+def _seed_durable_award(
+    tmp_path: Path,
+    *,
+    observed_at: datetime,
+    last_updated: object,
+    detail: dict[str, object] | None = None,
+) -> tuple[FakeWriter, object]:
+    client = _single_award_client(detail=detail)
+    client.last_updated = last_updated
+    writer = FakeWriter()
+    result = _collector(tmp_path, client, writer=writer).collect(
+        evaluation_time=observed_at,
+        write_questdb=True,
+    )
+    assert result.status is USAspendingCollectionStatus.SUCCESS
+    assert len(writer.snapshots) == 1
+    return writer, result
+
+
 def test_repository_configuration_is_exact_and_disabled_by_default() -> None:
     loaded = yaml.safe_load((REPO_ROOT / "config" / "context_sources.yaml").read_text(encoding="utf-8"))
     config = USAspendingConfig.from_repository_config(loaded)
@@ -433,6 +456,53 @@ def test_new_award_emits_snapshot_cache_and_ledger(tmp_path: Path) -> None:
     assert entry.severity == "INFO"
 
 
+def test_non_durable_default_collection_does_not_checkpoint_new_event(
+    tmp_path: Path,
+) -> None:
+    offline = _collector(tmp_path, _single_award_client()).collect(evaluation_time=CHECKED_AT)
+    checkpoint = _read_checkpoint(tmp_path)
+
+    assert offline.status is USAspendingCollectionStatus.SUCCESS
+    assert len(offline.indicator_snapshots) == 1
+    assert checkpoint["seen_event_fingerprints"] == {}
+    assert checkpoint["award_registry"] == {}
+
+    writer = FakeWriter()
+    durable = _collector(tmp_path, _single_award_client(), writer=writer).collect(
+        evaluation_time=CHECKED_AT + timedelta(minutes=10),
+        write_questdb=True,
+    )
+    checkpoint = _read_checkpoint(tmp_path)
+
+    assert durable.status is USAspendingCollectionStatus.SUCCESS
+    assert len(writer.snapshots) == 1
+    assert len(checkpoint["seen_event_fingerprints"]) == 1
+    assert set(checkpoint["award_registry"]) == {"CONT_AWD_1"}
+
+
+def test_requested_ledger_without_writer_does_not_checkpoint_new_event(
+    tmp_path: Path,
+) -> None:
+    result = _collector(tmp_path, _single_award_client()).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
+    checkpoint = _read_checkpoint(tmp_path)
+
+    assert result.status is USAspendingCollectionStatus.PARTIAL
+    assert result.indicator_snapshots == ()
+    assert checkpoint["seen_event_fingerprints"] == {}
+    assert checkpoint["award_registry"] == {}
+    assert any(issue.issue_type == "LEDGER_WRITER_UNAVAILABLE" for issue in result.issues)
+
+    with pytest.raises(USAspendingCollectorError, match="QuestDB writes are required"):
+        _collector(tmp_path, _single_award_client()).collect(
+            evaluation_time=CHECKED_AT + timedelta(minutes=10),
+            write_questdb=True,
+            questdb_required=True,
+        )
+
+
 def test_nested_agency_detail_fields_are_preserved(tmp_path: Path) -> None:
     detail = _detail("CONT_AWD_1")
     detail["awarding_agency"] = {
@@ -609,7 +679,11 @@ def test_candidate_last_modified_fallback_changes_revision_identity(tmp_path: Pa
         details={"lookup-1": detail, "CONT_AWD_1": detail},
         funding={"CONT_AWD_1": _funding()},
     )
-    first = _collector(tmp_path, first_client).collect(evaluation_time=CHECKED_AT)
+    writer = FakeWriter()
+    first = _collector(tmp_path, first_client, writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
     changed_client = FakeClient(
         searches={
             UEI: {
@@ -620,8 +694,9 @@ def test_candidate_last_modified_fallback_changes_revision_identity(tmp_path: Pa
         details={"lookup-1": detail, "CONT_AWD_1": detail},
         funding={"CONT_AWD_1": _funding()},
     )
-    second = _collector(tmp_path, changed_client).collect(
-        evaluation_time=CHECKED_AT + timedelta(hours=1)
+    second = _collector(tmp_path, changed_client, writer=writer).collect(
+        evaluation_time=CHECKED_AT + timedelta(hours=1),
+        write_questdb=True,
     )
 
     first_details = first.indicator_snapshots[0].details
@@ -651,8 +726,10 @@ def test_revision_recheck_uses_nested_last_modified_identity(tmp_path: Path) -> 
         details={"lookup-1": first_detail, "CONT_AWD_1": first_detail},
         funding={"CONT_AWD_1": _funding()},
     )
-    first = _collector(tmp_path, first_client).collect(
-        evaluation_time=datetime(2026, 6, 1, 16, 0, tzinfo=UTC)
+    writer = FakeWriter()
+    first = _collector(tmp_path, first_client, writer=writer).collect(
+        evaluation_time=datetime(2026, 6, 1, 16, 0, tzinfo=UTC),
+        write_questdb=True,
     )
     revised_detail = deepcopy(first_detail)
     revised_detail["period_of_performance"]["last_modified_date"] = "2026-06-20"
@@ -661,7 +738,10 @@ def test_revision_recheck_uses_nested_last_modified_identity(tmp_path: Path) -> 
         details={"CONT_AWD_1": revised_detail},
         funding={"CONT_AWD_1": _funding()},
     )
-    second = _collector(tmp_path, client).collect(evaluation_time=CHECKED_AT)
+    second = _collector(tmp_path, client, writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
 
     first_details = first.indicator_snapshots[0].details
     second_details = second.indicator_snapshots[0].details
@@ -676,9 +756,16 @@ def test_revision_recheck_uses_nested_last_modified_identity(tmp_path: Path) -> 
 
 
 def test_funding_evidence_revision_changes_identity(tmp_path: Path) -> None:
-    first = _collector(tmp_path, _single_award_client()).collect(evaluation_time=CHECKED_AT)
+    writer = FakeWriter()
+    first = _collector(tmp_path, _single_award_client(), writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
     changed = _single_award_client(funding=_funding(object_class="26.0"))
-    second = _collector(tmp_path, changed).collect(evaluation_time=CHECKED_AT + timedelta(hours=1))
+    second = _collector(tmp_path, changed, writer=writer).collect(
+        evaluation_time=CHECKED_AT + timedelta(hours=1),
+        write_questdb=True,
+    )
 
     assert first.indicator_snapshots[0].context_indicator_id != second.indicator_snapshots[0].context_indicator_id
     assert second.indicator_snapshots[0].value == "AWARD_REVISION_DISCOVERED"
@@ -701,6 +788,8 @@ def test_restart_rehydrates_cache_without_duplicate_ledger_row(tmp_path: Path) -
     assert second.status is USAspendingCollectionStatus.SUCCESS
     assert len(writer.snapshots) == 1
     assert second.indicator_snapshots == ()
+    checkpoint = _read_checkpoint(tmp_path)
+    assert len(checkpoint["seen_event_fingerprints"]) == 1
     restored = second_cache.get_ticker(
         "TST",
         cache_entry_name("TST", "CONT_AWD_1"),
@@ -711,11 +800,16 @@ def test_restart_rehydrates_cache_without_duplicate_ledger_row(tmp_path: Path) -
 
 
 def test_classification_does_not_drift_from_new_to_late(tmp_path: Path) -> None:
-    _collector(tmp_path, _single_award_client()).collect(evaluation_time=CHECKED_AT)
-    later = _collector(tmp_path, _single_award_client()).collect(
-        evaluation_time=CHECKED_AT + timedelta(days=10)
+    writer = FakeWriter()
+    _collector(tmp_path, _single_award_client(), writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
     )
-    checkpoint = json.loads((tmp_path / "award_checkpoint.json").read_text(encoding="utf-8"))
+    later = _collector(tmp_path, _single_award_client(), writer=writer).collect(
+        evaluation_time=CHECKED_AT + timedelta(days=10),
+        write_questdb=True,
+    )
+    checkpoint = _read_checkpoint(tmp_path)
     records = list(checkpoint["seen_event_fingerprints"].values())
 
     assert later.indicator_snapshots == ()
@@ -725,8 +819,10 @@ def test_classification_does_not_drift_from_new_to_late(tmp_path: Path) -> None:
 def test_revision_recheck_finds_revision_when_search_empty(tmp_path: Path) -> None:
     first_client = _single_award_client()
     first_client.last_updated = "2026-06-01"
-    first = _collector(tmp_path, first_client).collect(
-        evaluation_time=datetime(2026, 6, 1, 16, 0, tzinfo=UTC)
+    writer = FakeWriter()
+    first = _collector(tmp_path, first_client, writer=writer).collect(
+        evaluation_time=datetime(2026, 6, 1, 16, 0, tzinfo=UTC),
+        write_questdb=True,
     )
     assert first.status is USAspendingCollectionStatus.SUCCESS
     revised_detail = _detail("CONT_AWD_1", amount=300.0)
@@ -735,11 +831,121 @@ def test_revision_recheck_finds_revision_when_search_empty(tmp_path: Path) -> No
         details={"CONT_AWD_1": revised_detail},
         funding={"CONT_AWD_1": _funding()},
     )
-    result = _collector(tmp_path, client).collect(evaluation_time=CHECKED_AT)
+    result = _collector(tmp_path, client, writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
 
     assert result.status is USAspendingCollectionStatus.SUCCESS
     assert len(result.indicator_snapshots) == 1
     assert result.indicator_snapshots[0].value == "AWARD_REVISION_DISCOVERED"
+
+
+def test_revision_recheck_persists_durable_revision_during_search_outage(
+    tmp_path: Path,
+) -> None:
+    first_observed_at = datetime(2026, 6, 1, 16, 0, tzinfo=UTC)
+    _seed_durable_award(
+        tmp_path,
+        observed_at=first_observed_at,
+        last_updated="2026-06-01",
+        detail=_detail("CONT_AWD_1", last_modified="2026-06-01"),
+    )
+    before = _read_checkpoint(tmp_path)
+    before_success = before["last_successful_collection_at"]
+    before_source_date = before["source_last_updated_date"]
+
+    revised_detail = _detail("CONT_AWD_1", amount=300.0, last_modified="2026-06-20")
+    outage_client = FakeClient(
+        last_updated="2026-06-20",
+        fail_search=True,
+        details={"CONT_AWD_1": revised_detail},
+        funding={"CONT_AWD_1": _funding()},
+    )
+    writer = FakeWriter()
+    result = _collector(tmp_path, outage_client, writer=writer).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
+    checkpoint = _read_checkpoint(tmp_path)
+    revision_fingerprint = writer.snapshots[0].details["semantic_event_fingerprint"]
+
+    assert result.status is USAspendingCollectionStatus.FAILED
+    assert result.coverage_complete is False
+    assert len(writer.snapshots) == 1
+    assert writer.snapshots[0].value == "AWARD_REVISION_DISCOVERED"
+    assert len(checkpoint["seen_event_fingerprints"]) == 2
+    assert checkpoint["award_registry"]["CONT_AWD_1"]["latest_event_fingerprint"] == revision_fingerprint
+    assert checkpoint["award_registry"]["CONT_AWD_1"]["last_revision_checked_at"] == (
+        "2026-06-20T16:00:00Z"
+    )
+    assert checkpoint["last_successful_collection_at"] == before_success
+    assert checkpoint["source_last_updated_date"] == before_source_date
+
+    replay_client = FakeClient(
+        last_updated="2026-06-20",
+        fail_search=True,
+        details={"CONT_AWD_1": revised_detail},
+        funding={"CONT_AWD_1": _funding()},
+    )
+    replay = _collector(tmp_path, replay_client, writer=writer).collect(
+        evaluation_time=CHECKED_AT + timedelta(hours=1),
+        write_questdb=True,
+    )
+
+    assert replay.status is USAspendingCollectionStatus.FAILED
+    assert replay.indicator_snapshots == ()
+    assert len(writer.snapshots) == 1
+    assert _read_checkpoint(tmp_path)["last_successful_collection_at"] == before_success
+
+
+def test_revision_recheck_writer_failure_remains_retryable(tmp_path: Path) -> None:
+    _seed_durable_award(
+        tmp_path,
+        observed_at=datetime(2026, 6, 1, 16, 0, tzinfo=UTC),
+        last_updated="2026-06-01",
+        detail=_detail("CONT_AWD_1", last_modified="2026-06-01"),
+    )
+    before = _read_checkpoint(tmp_path)
+    original_fingerprint = before["award_registry"]["CONT_AWD_1"]["latest_event_fingerprint"]
+    revised_detail = _detail("CONT_AWD_1", amount=300.0, last_modified="2026-06-20")
+    failing_client = FakeClient(
+        last_updated="2026-06-20",
+        fail_search=True,
+        details={"CONT_AWD_1": revised_detail},
+        funding={"CONT_AWD_1": _funding()},
+    )
+    failing = _collector(tmp_path, failing_client, writer=FakeWriter(fail=True)).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
+    after_failure = _read_checkpoint(tmp_path)
+
+    assert failing.status is USAspendingCollectionStatus.FAILED
+    assert failing.indicator_snapshots == ()
+    assert any(issue.issue_type == "LEDGER_WRITE_FAILED" for issue in failing.issues)
+    assert len(after_failure["seen_event_fingerprints"]) == 1
+    assert after_failure["award_registry"]["CONT_AWD_1"]["latest_event_fingerprint"] == original_fingerprint
+    assert after_failure["award_registry"]["CONT_AWD_1"]["last_revision_checked_at"] is None
+
+    retry_writer = FakeWriter()
+    retry_client = FakeClient(
+        last_updated="2026-06-20",
+        fail_search=True,
+        details={"CONT_AWD_1": revised_detail},
+        funding={"CONT_AWD_1": _funding()},
+    )
+    retry = _collector(tmp_path, retry_client, writer=retry_writer).collect(
+        evaluation_time=CHECKED_AT + timedelta(hours=1),
+        write_questdb=True,
+    )
+    checkpoint = _read_checkpoint(tmp_path)
+
+    assert retry.status is USAspendingCollectionStatus.FAILED
+    assert len(retry_writer.snapshots) == 1
+    assert retry_writer.snapshots[0].value == "AWARD_REVISION_DISCOVERED"
+    assert len(checkpoint["seen_event_fingerprints"]) == 2
+    assert checkpoint["award_registry"]["CONT_AWD_1"]["latest_event_fingerprint"] != original_fingerprint
 
 
 def test_caps_and_truncation_are_partial(tmp_path: Path) -> None:
@@ -932,10 +1138,11 @@ def test_optional_writer_failure_is_partial_and_retryable(tmp_path: Path) -> Non
         evaluation_time=CHECKED_AT,
         write_questdb=True,
     )
-    checkpoint = json.loads((tmp_path / "award_checkpoint.json").read_text(encoding="utf-8"))
+    checkpoint = _read_checkpoint(tmp_path)
 
     assert result.status is USAspendingCollectionStatus.PARTIAL
     assert checkpoint["seen_event_fingerprints"] == {}
+    assert checkpoint["award_registry"] == {}
     assert any(issue.issue_type == "LEDGER_WRITE_FAILED" for issue in result.issues)
 
 
