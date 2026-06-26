@@ -157,14 +157,19 @@ research ledger.
 
 The JSON checkpoint prevents duplicate QuestDB rows across restarts and stores
 enough details to rehydrate an in-memory cache entry when the same known event is
-seen again in a fresh process. The checkpoint uses a lock file:
+seen again in a fresh process. Checkpoint exclusivity is enforced by an
+OS-backed non-blocking advisory lock on the stable lock file:
 
 ```text
 data/usaspending/award_checkpoint.json.lock
 ```
 
-Lock contention raises a busy error and performs no HTTP, cache write, ledger
-write, or checkpoint write.
+The physical `.lock` file may remain after a crash or restart. That stale file
+is harmless because liveness is determined by the operating-system lock, which
+is released when the owning process dies. Concurrent active collectors still
+fail closed: lock contention raises a busy error and performs no HTTP, cache
+write, ledger write, or checkpoint write. Lock-file owner metadata is diagnostic
+only and is not used to decide whether a lock is live.
 
 Checkpoint retention is bounded:
 

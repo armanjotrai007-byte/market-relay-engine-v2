@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+import multiprocessing as mp
 from pathlib import Path
 import json
+from typing import Any
 
 import pytest
 import yaml
@@ -182,6 +184,29 @@ class FakeWriter:
             raise RuntimeError("writer failed")
         self.snapshots.append(snapshot)
         return "written"
+
+
+def _hold_checkpoint_lock_for_test(
+    checkpoint_path: str,
+    ready: Any,
+    release: Any,
+) -> None:
+    store = JSONUSAspendingCheckpointStore(Path(checkpoint_path))
+    store.acquire_lock()
+    try:
+        ready.set()
+        release.wait(30)
+    finally:
+        store.release_lock()
+
+
+def _exit_after_checkpoint_lock_for_test(checkpoint_path: str, ready: Any) -> None:
+    import os
+
+    store = JSONUSAspendingCheckpointStore(Path(checkpoint_path))
+    store.acquire_lock()
+    ready.set()
+    os._exit(0)
 
 
 def _collector(
@@ -775,6 +800,29 @@ def test_all_discovery_paths_failing_is_failed(tmp_path: Path) -> None:
     assert result.status is USAspendingCollectionStatus.FAILED
 
 
+def test_checkpoint_lock_acquire_release_allows_reacquire(tmp_path: Path) -> None:
+    store = JSONUSAspendingCheckpointStore(tmp_path / "award_checkpoint.json")
+    store.acquire_lock()
+    assert store.lock_path.exists()
+    store.release_lock()
+    assert store.lock_path.exists()
+
+    second = JSONUSAspendingCheckpointStore(tmp_path / "award_checkpoint.json")
+    second.acquire_lock()
+    second.release_lock()
+
+
+def test_stale_physical_lock_file_does_not_block_collection(tmp_path: Path) -> None:
+    store = JSONUSAspendingCheckpointStore(tmp_path / "award_checkpoint.json")
+    store.lock_path.write_text("old malformed stale lock", encoding="utf-8")
+    client = _single_award_client()
+    result = _collector(tmp_path, client).collect(evaluation_time=CHECKED_AT)
+
+    assert result.status is USAspendingCollectionStatus.SUCCESS
+    assert store.lock_path.exists()
+    assert any(call[0] == "last_updated" for call in client.calls)
+
+
 def test_lock_contention_performs_no_work(tmp_path: Path) -> None:
     client = _single_award_client()
     store = JSONUSAspendingCheckpointStore(tmp_path / "award_checkpoint.json")
@@ -793,6 +841,76 @@ def test_lock_contention_performs_no_work(tmp_path: Path) -> None:
         store.release_lock()
 
     assert client.calls == []
+
+
+def test_active_checkpoint_lock_blocks_without_work_then_releases(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "award_checkpoint.json"
+    context = mp.get_context("spawn")
+    ready = context.Event()
+    release = context.Event()
+    process = context.Process(
+        target=_hold_checkpoint_lock_for_test,
+        args=(str(checkpoint), ready, release),
+    )
+    process.start()
+    try:
+        assert ready.wait(10)
+        client = _single_award_client()
+        cache = ContextStateCache()
+        writer = FakeWriter()
+        with pytest.raises(USAspendingCollectorBusyError) as exc_info:
+            USAspendingCollector(
+                cache=cache,
+                config=USAspendingConfig(enabled=True),
+                client=client,
+                ledger_writer=writer,
+                checkpoint_store=JSONUSAspendingCheckpointStore(checkpoint),
+                recipient_mappings=(_mapping(),),
+            ).collect(evaluation_time=CHECKED_AT, write_questdb=True)
+
+        assert str(checkpoint.with_name("award_checkpoint.json.lock")) in str(exc_info.value)
+        assert "owner=" in str(exc_info.value)
+        assert client.calls == []
+        assert writer.snapshots == []
+        assert cache.latest_for_ticker("TST", now=CHECKED_AT) == []
+
+        release.set()
+        process.join(10)
+        assert process.exitcode == 0
+
+        result = _collector(tmp_path, _single_award_client()).collect(evaluation_time=CHECKED_AT)
+        assert result.status is USAspendingCollectionStatus.SUCCESS
+    finally:
+        release.set()
+        process.join(1)
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
+
+
+def test_checkpoint_lock_recovers_after_holder_process_exits(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "award_checkpoint.json"
+    lock_path = checkpoint.with_name("award_checkpoint.json.lock")
+    context = mp.get_context("spawn")
+    ready = context.Event()
+    process = context.Process(
+        target=_exit_after_checkpoint_lock_for_test,
+        args=(str(checkpoint), ready),
+    )
+    process.start()
+    try:
+        assert ready.wait(10)
+        process.join(10)
+        assert process.exitcode == 0
+        assert lock_path.exists()
+
+        result = _collector(tmp_path, _single_award_client()).collect(evaluation_time=CHECKED_AT)
+        assert result.status is USAspendingCollectionStatus.SUCCESS
+    finally:
+        process.join(1)
+        if process.is_alive():
+            process.terminate()
+            process.join(5)
 
 
 def test_research_horizon_passing_does_not_create_expired_context(tmp_path: Path) -> None:

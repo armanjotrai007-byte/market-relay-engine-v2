@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
+import errno
 from enum import Enum
 import hashlib
 import json
@@ -472,23 +473,46 @@ class JSONUSAspendingCheckpointStore:
         self._lock_fd: int | None = None
 
     def acquire_lock(self) -> None:
+        if self._lock_fd is not None:
+            raise self._busy_error()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
         try:
-            self._lock_fd = os.open(str(self.lock_path), flags)
-        except FileExistsError:
-            raise USAspendingCollectorBusyError("USAspending checkpoint lock is held") from None
-        os.write(self._lock_fd, str(os.getpid()).encode("ascii", errors="ignore"))
+            fd = os.open(str(self.lock_path), flags, 0o644)
+        except OSError as exc:
+            raise USAspendingCollectorError("USAspending checkpoint lock open failed") from exc
+        try:
+            if not _try_lock_fd(fd):
+                raise self._busy_error()
+            _write_lock_owner(fd, self.lock_path)
+            self._lock_fd = fd
+        except Exception:
+            try:
+                _unlock_fd(fd)
+            except OSError:
+                pass
+            os.close(fd)
+            raise
 
     def release_lock(self) -> None:
         fd = self._lock_fd
         self._lock_fd = None
         if fd is not None:
-            os.close(fd)
-        try:
-            self.lock_path.unlink()
-        except FileNotFoundError:
-            pass
+            try:
+                _unlock_fd(fd)
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
+
+    def _busy_error(self) -> USAspendingCollectorBusyError:
+        message = f"USAspending checkpoint lock is held: {self.lock_path}"
+        diagnostics = _read_lock_owner_diagnostics(self.lock_path)
+        if diagnostics is not None:
+            message = f"{message}; owner={diagnostics}"
+        return USAspendingCollectorBusyError(message)
 
     def read(self) -> dict[str, object]:
         if not self.path.exists():
@@ -523,6 +547,76 @@ class JSONUSAspendingCheckpointStore:
                 tmp_path.unlink()
             except FileNotFoundError:
                 pass
+
+
+_WINDOWS_LOCK_BYTE_OFFSET = 4096
+
+
+def _try_lock_fd(fd: int) -> bool:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, _WINDOWS_LOCK_BYTE_OFFSET, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False
+        return True
+
+    import fcntl
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    except OSError as exc:
+        if exc.errno in {errno.EACCES, errno.EAGAIN}:
+            return False
+        raise
+    return True
+
+
+def _unlock_fd(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, _WINDOWS_LOCK_BYTE_OFFSET, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _write_lock_owner(fd: int, lock_path: Path) -> None:
+    owner = {
+        "pid": os.getpid(),
+        "acquired_at_utc": to_utc_iso(datetime.now(UTC)),
+        "lock_path": str(lock_path),
+    }
+    payload = json.dumps(owner, ensure_ascii=True, sort_keys=True)
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    os.write(fd, payload.encode("utf-8"))
+    os.fsync(fd)
+
+
+def _read_lock_owner_diagnostics(lock_path: Path) -> str | None:
+    try:
+        raw = lock_path.read_text(encoding="utf-8", errors="replace")[:2048]
+    except OSError:
+        return None
+    text = raw.strip()
+    if not text:
+        return "<empty>"
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    if isinstance(loaded, Mapping):
+        return json.dumps(loaded, ensure_ascii=True, sort_keys=True)
+    return text
 
 
 class USAspendingCollector:
