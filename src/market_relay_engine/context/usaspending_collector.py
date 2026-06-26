@@ -1685,9 +1685,12 @@ def _award_last_modified_date(
     detail: Mapping[str, object],
     candidate: USAspendingAwardCandidate | None,
 ) -> str | None:
+    period_of_performance = _mapping_or_empty(detail.get("period_of_performance"))
     return (
         _date_text_or_none(detail.get("last_modified_date"))
         or _date_text_or_none(detail.get("last_modified"))
+        or _date_text_or_none(period_of_performance.get("last_modified_date"))
+        or _date_text_or_none(period_of_performance.get("last_modified"))
         or (None if candidate is None else candidate.last_modified_date)
     )
 
@@ -1712,11 +1715,28 @@ def _detail_recipient_name(detail: Mapping[str, object]) -> str | None:
 
 def _agency_field(detail: Mapping[str, object], object_name: str, field_name: str) -> str | None:
     agency = _mapping_or_empty(detail.get(object_name))
-    return (
+    subtier = _mapping_or_empty(agency.get("subtier_agency"))
+    toptier = _mapping_or_empty(agency.get("toptier_agency"))
+    direct = (
         _string_or_none(agency.get(field_name))
         or _string_or_none(agency.get(f"agency_{field_name}"))
         or _string_or_none(detail.get(f"{object_name}_{field_name}"))
     )
+    if field_name == "name":
+        return (
+            _string_or_none(subtier.get("name"))
+            or _string_or_none(toptier.get("name"))
+            or direct
+        )
+    if field_name == "code":
+        return (
+            _string_or_none(subtier.get("subtier_code"))
+            or _string_or_none(subtier.get("code"))
+            or _string_or_none(toptier.get("toptier_code"))
+            or _string_or_none(toptier.get("code"))
+            or direct
+        )
+    return direct
 
 
 def _latest_contract_data_field(detail: Mapping[str, object], field_name: str) -> str | None:

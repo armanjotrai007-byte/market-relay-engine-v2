@@ -408,6 +408,28 @@ def test_new_award_emits_snapshot_cache_and_ledger(tmp_path: Path) -> None:
     assert entry.severity == "INFO"
 
 
+def test_nested_agency_detail_fields_are_preserved(tmp_path: Path) -> None:
+    detail = _detail("CONT_AWD_1")
+    detail["awarding_agency"] = {
+        "toptier_agency": {"name": "Awarding Top Agency", "toptier_code": "ATA"},
+        "subtier_agency": {"name": "Awarding Sub Agency", "subtier_code": "ASA"},
+    }
+    detail["funding_agency"] = {
+        "toptier_agency": {"name": "Funding Top Agency", "toptier_code": "FTA"},
+        "subtier_agency": {"name": "Funding Sub Agency", "subtier_code": "FSA"},
+    }
+    result = _collector(
+        tmp_path,
+        _single_award_client(detail=detail),
+    ).collect(evaluation_time=CHECKED_AT)
+
+    details = result.indicator_snapshots[0].details
+    assert details["awarding_agency_name"] == "Awarding Sub Agency"
+    assert details["awarding_agency_code"] == "ASA"
+    assert details["funding_agency_name"] == "Funding Sub Agency"
+    assert details["funding_agency_code"] == "FSA"
+
+
 def test_multiple_same_ticker_awards_coexist_and_do_not_overwrite(tmp_path: Path) -> None:
     details = {
         "lookup-1": _detail("CONT_AWD_MAJOR", amount=1_000_000.0),
@@ -581,6 +603,46 @@ def test_candidate_last_modified_fallback_changes_revision_identity(tmp_path: Pa
     second_details = second.indicator_snapshots[0].details
     assert first_details["award_last_modified_date"] == "2026-06-20"
     assert second_details["award_last_modified_date"] == "2026-06-21"
+    assert (
+        first_details["semantic_event_fingerprint"]
+        != second_details["semantic_event_fingerprint"]
+    )
+    assert second.indicator_snapshots[0].value == "AWARD_REVISION_DISCOVERED"
+
+
+def test_revision_recheck_uses_nested_last_modified_identity(tmp_path: Path) -> None:
+    first_detail = _detail("CONT_AWD_1")
+    del first_detail["last_modified_date"]
+    first_detail.pop("last_modified", None)
+    first_detail["period_of_performance"] = {"last_modified_date": "2026-06-01"}
+    first_client = FakeClient(
+        last_updated="2026-06-01",
+        searches={
+            UEI: {
+                "results": [_search_row("lookup-1", last_modified="2026-06-01")],
+                "page_metadata": {"hasNext": False},
+            }
+        },
+        details={"lookup-1": first_detail, "CONT_AWD_1": first_detail},
+        funding={"CONT_AWD_1": _funding()},
+    )
+    first = _collector(tmp_path, first_client).collect(
+        evaluation_time=datetime(2026, 6, 1, 16, 0, tzinfo=UTC)
+    )
+    revised_detail = deepcopy(first_detail)
+    revised_detail["period_of_performance"]["last_modified_date"] = "2026-06-20"
+    client = FakeClient(
+        searches={UEI: {"results": [], "page_metadata": {"hasNext": False}}},
+        details={"CONT_AWD_1": revised_detail},
+        funding={"CONT_AWD_1": _funding()},
+    )
+    second = _collector(tmp_path, client).collect(evaluation_time=CHECKED_AT)
+
+    first_details = first.indicator_snapshots[0].details
+    second_details = second.indicator_snapshots[0].details
+    assert ("detail", "CONT_AWD_1") in client.calls
+    assert first_details["award_last_modified_date"] == "2026-06-01"
+    assert second_details["award_last_modified_date"] == "2026-06-20"
     assert (
         first_details["semantic_event_fingerprint"]
         != second_details["semantic_event_fingerprint"]
