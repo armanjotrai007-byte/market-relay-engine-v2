@@ -26,6 +26,10 @@ from market_relay_engine.context.usaspending_collector import (
     discovery_window,
     load_recipient_mappings,
 )
+from market_relay_engine.questdb.jsonl_fallback import (
+    EmergencyJSONLLedgerFallback,
+    EmergencyLedgerFallbackConfig,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -186,6 +190,11 @@ class FakeWriter:
         return "written"
 
 
+class FailingFallback:
+    def append_record(self, **kwargs: object) -> object:
+        raise RuntimeError("fallback failed")
+
+
 def _hold_checkpoint_lock_for_test(
     checkpoint_path: str,
     ready: Any,
@@ -215,6 +224,7 @@ def _collector(
     *,
     cache: ContextStateCache | None = None,
     writer: FakeWriter | None = None,
+    fallback: object | None = None,
     mappings: tuple[USAspendingRecipientMapping, ...] | None = None,
     config: USAspendingConfig | None = None,
 ) -> USAspendingCollector:
@@ -223,6 +233,7 @@ def _collector(
         config=config or USAspendingConfig(enabled=True),
         client=client,
         ledger_writer=writer,
+        emergency_ledger_fallback=fallback or _fallback(tmp_path),
         checkpoint_store=JSONUSAspendingCheckpointStore(tmp_path / "award_checkpoint.json"),
         recipient_mappings=(_mapping(),) if mappings is None else mappings,
     )
@@ -245,6 +256,34 @@ def _single_award_client(
 
 def _read_checkpoint(tmp_path: Path) -> dict[str, object]:
     return json.loads((tmp_path / "award_checkpoint.json").read_text(encoding="utf-8"))
+
+
+def _read_checkpoint_if_present(tmp_path: Path) -> dict[str, object]:
+    path = tmp_path / "award_checkpoint.json"
+    if not path.exists():
+        return {"seen_event_fingerprints": {}, "award_registry": {}}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _fallback(tmp_path: Path) -> EmergencyJSONLLedgerFallback:
+    return EmergencyJSONLLedgerFallback(
+        EmergencyLedgerFallbackConfig(
+            enabled=True,
+            directory=tmp_path / "emergency_ledger",
+        ),
+        clock=lambda: CHECKED_AT + timedelta(minutes=1),
+    )
+
+
+def _read_fallback_rows(tmp_path: Path) -> list[dict[str, object]]:
+    fallback_files = sorted((tmp_path / "emergency_ledger").glob("*.jsonl"))
+    rows: list[dict[str, object]] = []
+    for fallback_file in fallback_files:
+        rows.extend(
+            json.loads(line)
+            for line in fallback_file.read_text(encoding="utf-8").splitlines()
+        )
+    return rows
 
 
 def _seed_durable_award(
@@ -454,6 +493,7 @@ def test_new_award_emits_snapshot_cache_and_ledger(tmp_path: Path) -> None:
     assert entry is not None
     assert entry.valid_until is None
     assert entry.severity == "INFO"
+    assert not (tmp_path / "emergency_ledger").exists()
 
 
 def test_non_durable_default_collection_does_not_checkpoint_new_event(
@@ -466,6 +506,7 @@ def test_non_durable_default_collection_does_not_checkpoint_new_event(
     assert len(offline.indicator_snapshots) == 1
     assert checkpoint["seen_event_fingerprints"] == {}
     assert checkpoint["award_registry"] == {}
+    assert not (tmp_path / "emergency_ledger").exists()
 
     writer = FakeWriter()
     durable = _collector(tmp_path, _single_award_client(), writer=writer).collect(
@@ -494,6 +535,20 @@ def test_requested_ledger_without_writer_does_not_checkpoint_new_event(
     assert checkpoint["seen_event_fingerprints"] == {}
     assert checkpoint["award_registry"] == {}
     assert any(issue.issue_type == "LEDGER_WRITER_UNAVAILABLE" for issue in result.issues)
+    assert any(
+        issue.issue_type == "EMERGENCY_LEDGER_FALLBACK_WRITTEN"
+        for issue in result.issues
+    )
+    rows = _read_fallback_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["record_type"] == "context_indicator_snapshot"
+    assert rows[0]["target_table"] == "context_indicator_snapshots"
+    assert rows[0]["record_id"] == rows[0]["payload"]["context_indicator_snapshot"][
+        "context_indicator_id"
+    ]
+    assert rows[0]["primary_write_failure"]["failure_code"] == (
+        "QUESTDB_CONTEXT_INDICATOR_WRITER_UNAVAILABLE"
+    )
 
     with pytest.raises(USAspendingCollectorError, match="QuestDB writes are required"):
         _collector(tmp_path, _single_award_client()).collect(
@@ -501,6 +556,7 @@ def test_requested_ledger_without_writer_does_not_checkpoint_new_event(
             write_questdb=True,
             questdb_required=True,
         )
+    assert len(_read_fallback_rows(tmp_path)) == 2
 
 
 def test_nested_agency_detail_fields_are_preserved(tmp_path: Path) -> None:
@@ -1178,7 +1234,103 @@ def test_optional_writer_failure_is_partial_and_retryable(tmp_path: Path) -> Non
     assert result.status is USAspendingCollectionStatus.PARTIAL
     assert checkpoint["seen_event_fingerprints"] == {}
     assert checkpoint["award_registry"] == {}
+    assert result.indicator_snapshots == ()
+    assert len(result.ledger_write_results) == 1
     assert any(issue.issue_type == "LEDGER_WRITE_FAILED" for issue in result.issues)
+    assert any(
+        issue.issue_type == "EMERGENCY_LEDGER_FALLBACK_WRITTEN"
+        for issue in result.issues
+    )
+    rows = _read_fallback_rows(tmp_path)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["record_id"] == row["payload"]["context_indicator_snapshot"][
+        "context_indicator_id"
+    ]
+    assert row["event_time"] == "2026-06-20T16:00:00Z"
+    assert row["source"] == SOURCE_NAME
+    assert row["ticker_or_sector"] == "TST"
+    assert row["primary_write_failure"] == {
+        "failure_code": "QUESTDB_CONTEXT_INDICATOR_WRITE_FAILED",
+        "failure_type": "RuntimeError",
+        "target_table": "context_indicator_snapshots",
+    }
+    snapshot_payload = row["payload"]["context_indicator_snapshot"]
+    assert snapshot_payload["details"]["canonical_award_id"] == "CONT_AWD_1"
+    assert snapshot_payload["details"]["semantic_event_fingerprint"]
+    assert row["payload"]["write_request"] == {
+        "run_id": None,
+        "session_id": None,
+        "questdb_required": False,
+    }
+
+
+def test_required_writer_failure_spools_then_raises_without_checkpoint(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(USAspendingCollectorError, match="QuestDB context indicator write failed"):
+        _collector(tmp_path, _single_award_client(), writer=FakeWriter(fail=True)).collect(
+            evaluation_time=CHECKED_AT,
+            write_questdb=True,
+            questdb_required=True,
+        )
+
+    checkpoint = _read_checkpoint_if_present(tmp_path)
+    assert checkpoint["seen_event_fingerprints"] == {}
+    assert checkpoint["award_registry"] == {}
+    rows = _read_fallback_rows(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["primary_write_failure"]["failure_code"] == (
+        "QUESTDB_CONTEXT_INDICATOR_WRITE_FAILED"
+    )
+
+
+def test_writer_and_fallback_failure_do_not_claim_durable_record(
+    tmp_path: Path,
+) -> None:
+    result = _collector(
+        tmp_path,
+        _single_award_client(),
+        writer=FakeWriter(fail=True),
+        fallback=FailingFallback(),
+    ).collect(
+        evaluation_time=CHECKED_AT,
+        write_questdb=True,
+    )
+    checkpoint = _read_checkpoint_if_present(tmp_path)
+
+    assert result.status is USAspendingCollectionStatus.PARTIAL
+    assert result.ledger_write_results == ()
+    assert result.indicator_snapshots == ()
+    assert checkpoint["seen_event_fingerprints"] == {}
+    assert checkpoint["award_registry"] == {}
+    assert not (tmp_path / "emergency_ledger").exists()
+    assert any(issue.issue_type == "LEDGER_WRITE_FAILED" for issue in result.issues)
+    assert any(
+        issue.issue_type == "EMERGENCY_LEDGER_FALLBACK_FAILED"
+        for issue in result.issues
+    )
+
+
+def test_required_writer_and_fallback_failure_raises_without_checkpoint(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(USAspendingCollectorError, match="emergency JSONL fallback failed"):
+        _collector(
+            tmp_path,
+            _single_award_client(),
+            writer=FakeWriter(fail=True),
+            fallback=FailingFallback(),
+        ).collect(
+            evaluation_time=CHECKED_AT,
+            write_questdb=True,
+            questdb_required=True,
+        )
+
+    checkpoint = _read_checkpoint_if_present(tmp_path)
+    assert checkpoint["seen_event_fingerprints"] == {}
+    assert checkpoint["award_registry"] == {}
+    assert not (tmp_path / "emergency_ledger").exists()
 
 
 def test_no_forbidden_imports_or_trading_authority_terms() -> None:

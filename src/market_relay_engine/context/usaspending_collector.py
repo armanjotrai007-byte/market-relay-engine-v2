@@ -29,6 +29,7 @@ from market_relay_engine.context.state_cache import (
     make_ticker_context_entry,
 )
 from market_relay_engine.contracts.context import ContextIndicatorSnapshot
+from market_relay_engine.questdb.jsonl_fallback import EmergencyJSONLLedgerFallback
 
 
 SOURCE_NAME = "usaspending_awards_v1"
@@ -385,6 +386,22 @@ class USAspendingLedgerWriter(Protocol):
         ...
 
 
+class USAspendingEmergencyLedgerFallback(Protocol):
+    def append_record(
+        self,
+        *,
+        record_type: str,
+        target_table: str,
+        record_id: str,
+        event_time: datetime,
+        source: str,
+        ticker_or_sector: str,
+        primary_write_failure: Mapping[str, object],
+        payload: Mapping[str, object],
+    ) -> object:
+        ...
+
+
 class USAspendingHTTPClient:
     """Small official USAspending API client with no credentials."""
 
@@ -629,6 +646,7 @@ class USAspendingCollector:
         config: USAspendingConfig,
         client: USAspendingClient | None = None,
         ledger_writer: USAspendingLedgerWriter | None = None,
+        emergency_ledger_fallback: USAspendingEmergencyLedgerFallback | None = None,
         checkpoint_store: USAspendingCheckpointStore | None = None,
         recipient_mappings: Sequence[USAspendingRecipientMapping] | None = None,
         clock: Callable[[], datetime] = utc_now,
@@ -637,6 +655,7 @@ class USAspendingCollector:
         self.config = config
         self.client = client or USAspendingHTTPClient(timeout_seconds=config.timeout_seconds)
         self.ledger_writer = ledger_writer
+        self.emergency_ledger_fallback = emergency_ledger_fallback
         self.checkpoint_store = checkpoint_store or JSONUSAspendingCheckpointStore(
             config.checkpoint_path
         )
@@ -657,10 +676,6 @@ class USAspendingCollector:
             return USAspendingCollectionResult(
                 status=USAspendingCollectionStatus.DISABLED,
                 collector_observed_at=observed_at,
-            )
-        if write_questdb and questdb_required and self.ledger_writer is None:
-            raise USAspendingCollectorError(
-                "QuestDB writes are required but no writer was provided"
             )
 
         mappings = self._load_active_mappings()
@@ -1081,17 +1096,35 @@ class USAspendingCollector:
         }
         if durable_ledger_write_requested:
             if self.ledger_writer is None:
+                fallback_succeeded = self._append_emergency_ledger_fallback(
+                    snapshot=snapshot,
+                    event=event,
+                    failure_code="QUESTDB_CONTEXT_INDICATOR_WRITER_UNAVAILABLE",
+                    failure_type=None,
+                    run_id=run_id,
+                    session_id=session_id,
+                    questdb_required=questdb_required,
+                    issues=issues,
+                    ledger_results=ledger_results,
+                )
                 issues.append(
                     USAspendingIssue(
                         issue_type="LEDGER_WRITER_UNAVAILABLE",
                         message="QuestDB context indicator write was requested but no writer was provided",
                         ticker=event.ticker,
                         award_identifier=event.canonical_award_id,
+                        details={
+                            "failure_code": "QUESTDB_CONTEXT_INDICATOR_WRITER_UNAVAILABLE",
+                            "emergency_fallback_status": "WRITTEN"
+                            if fallback_succeeded
+                            else "FAILED",
+                        },
                     )
                 )
                 if questdb_required:
+                    suffix = "" if fallback_succeeded else "; emergency JSONL fallback failed"
                     raise USAspendingCollectorError(
-                        "QuestDB writes are required but no writer was provided"
+                        f"QuestDB writes are required but no writer was provided{suffix}"
                     )
             elif not cache_state_is_writer_eligible:
                 issues.append(
@@ -1118,18 +1151,36 @@ class USAspendingCollector:
                     if result is not None:
                         ledger_results.append(result)
                 except Exception as exc:  # noqa: BLE001 - writer protocol boundary.
+                    fallback_succeeded = self._append_emergency_ledger_fallback(
+                        snapshot=snapshot,
+                        event=event,
+                        failure_code="QUESTDB_CONTEXT_INDICATOR_WRITE_FAILED",
+                        failure_type=type(exc).__name__,
+                        run_id=run_id,
+                        session_id=session_id,
+                        questdb_required=questdb_required,
+                        issues=issues,
+                        ledger_results=ledger_results,
+                    )
                     issues.append(
                         USAspendingIssue(
                             issue_type="LEDGER_WRITE_FAILED",
                             message="QuestDB context indicator write failed",
                             ticker=event.ticker,
                             award_identifier=event.canonical_award_id,
-                            details={"error_type": type(exc).__name__},
+                            details={
+                                "error_type": type(exc).__name__,
+                                "failure_code": "QUESTDB_CONTEXT_INDICATOR_WRITE_FAILED",
+                                "emergency_fallback_status": "WRITTEN"
+                                if fallback_succeeded
+                                else "FAILED",
+                            },
                         )
                     )
                     if questdb_required:
+                        suffix = "" if fallback_succeeded else "; emergency JSONL fallback failed"
                         raise USAspendingCollectorError(
-                            "QuestDB context indicator write failed"
+                            f"QuestDB context indicator write failed{suffix}"
                         ) from None
         checkpoint_event_is_safe_to_persist = durable_ledger_write_succeeded
         event_is_safe_for_result = (
@@ -1144,6 +1195,79 @@ class USAspendingCollector:
             event.canonical_award_id,
             checkpoint_event_is_safe_to_persist,
         )
+
+    def _append_emergency_ledger_fallback(
+        self,
+        *,
+        snapshot: ContextIndicatorSnapshot,
+        event: USAspendingAwardEvent,
+        failure_code: str,
+        failure_type: str | None,
+        run_id: str | None,
+        session_id: str | None,
+        questdb_required: bool,
+        issues: list[USAspendingIssue],
+        ledger_results: list[object],
+    ) -> bool:
+        fallback = self.emergency_ledger_fallback
+        if fallback is None:
+            fallback = EmergencyJSONLLedgerFallback()
+            self.emergency_ledger_fallback = fallback
+        try:
+            result = fallback.append_record(
+                record_type="context_indicator_snapshot",
+                target_table="context_indicator_snapshots",
+                record_id=snapshot.context_indicator_id,
+                event_time=snapshot.snapshot_time,
+                source=snapshot.source,
+                ticker_or_sector=snapshot.ticker_or_sector,
+                primary_write_failure={
+                    "failure_code": failure_code,
+                    "failure_type": failure_type,
+                    "target_table": "context_indicator_snapshots",
+                },
+                payload={
+                    "context_indicator_snapshot": snapshot,
+                    "write_request": {
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "questdb_required": questdb_required,
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - fallback protocol boundary.
+            issues.append(
+                USAspendingIssue(
+                    issue_type="EMERGENCY_LEDGER_FALLBACK_FAILED",
+                    message="emergency JSONL ledger fallback write failed",
+                    ticker=event.ticker,
+                    award_identifier=event.canonical_award_id,
+                    details={
+                        "error_type": type(exc).__name__,
+                        "failure_code": "EMERGENCY_JSONL_FALLBACK_WRITE_FAILED",
+                    },
+                )
+            )
+            return False
+        ledger_results.append(result)
+        issues.append(
+            USAspendingIssue(
+                issue_type="EMERGENCY_LEDGER_FALLBACK_WRITTEN",
+                message=(
+                    "QuestDB context indicator write did not complete; event was "
+                    "appended to emergency JSONL fallback"
+                ),
+                ticker=event.ticker,
+                award_identifier=event.canonical_award_id,
+                details={
+                    "path": str(getattr(result, "path", "")),
+                    "record_id": str(getattr(result, "record_id", snapshot.context_indicator_id)),
+                    "bytes_written": getattr(result, "bytes_written", None),
+                    "fallback_written_at": to_utc_iso(getattr(result, "written_at")),
+                },
+            )
+        )
+        return True
 
     def _rehydrate_cache_if_needed(
         self,

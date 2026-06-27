@@ -17,6 +17,7 @@ def test_questdb_health_import() -> None:
     assert importlib.import_module("market_relay_engine.questdb.health")
     assert importlib.import_module("market_relay_engine.questdb.writer")
     assert importlib.import_module("market_relay_engine.questdb.analysis")
+    assert importlib.import_module("market_relay_engine.questdb.jsonl_fallback")
 
 
 def test_risk_filter_import() -> None:

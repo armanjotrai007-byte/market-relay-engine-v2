@@ -164,6 +164,24 @@ and therefore do not suppress a later durable QuestDB write. If a QuestDB write
 is requested but the writer is unavailable or fails, the new event is not added
 to checkpoint event/registry dedupe state.
 
+QuestDB remains the canonical durable research ledger. When a requested QuestDB
+context-indicator write fails after a USAspending award event has been built,
+the collector appends a self-contained emergency preservation row to the
+configured JSONL fallback directory:
+
+```text
+data/emergency_ledger/YYYYMMDD.jsonl
+```
+
+The JSONL row preserves the intended `ContextIndicatorSnapshot`, safe
+run/session metadata, the deterministic `context_indicator_id`, and a stable
+primary-write failure code. The `YYYYMMDD` filename is based on the UTC time the
+fallback row is written. This fallback is not a successful QuestDB write and
+does not grant primary-ledger checkpoint completion. It is intentionally a tiny
+append-only emergency mechanism, not an automatic replay queue, importer,
+retry worker, or distributed transaction system. Future reconciliation can use
+the deterministic record IDs to avoid duplicate canonical QuestDB ledger rows.
+
 For durable runs, the collector writes the QuestDB snapshot first and then
 records the event fingerprint in the JSON checkpoint. This is a practical
 ordering boundary, not an exactly-once distributed transaction: if the process
