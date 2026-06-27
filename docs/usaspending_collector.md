@@ -18,9 +18,10 @@ The collector uses only official USAspending endpoints:
 - `GET /api/v2/awards/{award_id}/`
 - `POST /api/v2/awards/funding/`
 
-The last-updated endpoint returns a source-health date. It is not an award
-publication timestamp, market availability timestamp, award-level revision feed,
-or proof that all awards are complete.
+The last-updated endpoint returns a source-health date. The collector accepts
+the supported source-health representations `YYYY-MM-DD` and `MM/DD/YYYY`. This
+date is not an award publication timestamp, market availability timestamp,
+award-level revision feed, or proof that all awards are complete.
 
 ## Recipient Mapping
 

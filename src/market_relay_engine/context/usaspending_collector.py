@@ -879,7 +879,7 @@ class USAspendingCollector:
             )
             return None, None, None
         try:
-            source_date = _parse_date(value)
+            source_date = parse_source_last_updated_date(value)
         except USAspendingCollectorError:
             issues.append(
                 USAspendingIssue(
@@ -2044,6 +2044,22 @@ def _parse_date(value: object) -> date:
     except ValueError:
         raise USAspendingCollectorError("date must be YYYY-MM-DD") from None
     return parsed
+
+
+def parse_source_last_updated_date(value: object) -> date:
+    if not isinstance(value, str):
+        raise USAspendingCollectorError("last_updated date must be YYYY-MM-DD or MM/DD/YYYY")
+    text = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return _parse_date(text)
+    if re.fullmatch(r"\d{2}/\d{2}/\d{4}", text):
+        try:
+            return datetime.strptime(text, "%m/%d/%Y").date()
+        except ValueError:
+            raise USAspendingCollectorError(
+                "last_updated date must be YYYY-MM-DD or MM/DD/YYYY"
+            ) from None
+    raise USAspendingCollectorError("last_updated date must be YYYY-MM-DD or MM/DD/YYYY")
 
 
 def _parse_datetime_or_none(value: object) -> datetime | None:

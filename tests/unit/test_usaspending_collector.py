@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 import multiprocessing as mp
 from pathlib import Path
 import json
@@ -971,9 +971,17 @@ def test_caps_and_truncation_are_partial(tmp_path: Path) -> None:
 
 
 def test_source_health_date_arithmetic_current_stale_future_and_failed(tmp_path: Path) -> None:
-    assert _collector(tmp_path, FakeClient(last_updated="2026-06-20")).collect(
+    iso_current = _collector(tmp_path, FakeClient(last_updated="2026-06-20")).collect(
         evaluation_time=CHECKED_AT
-    ).status is USAspendingCollectionStatus.SUCCESS
+    )
+    slash_current = _collector(
+        tmp_path / "slash",
+        FakeClient(last_updated="06/20/2026"),
+    ).collect(evaluation_time=CHECKED_AT)
+    slash_stale = _collector(
+        tmp_path / "slash-stale",
+        FakeClient(last_updated="06/01/2026"),
+    ).collect(evaluation_time=CHECKED_AT)
     assert _collector(tmp_path / "stale", FakeClient(last_updated="2026-06-01")).collect(
         evaluation_time=CHECKED_AT
     ).status is USAspendingCollectionStatus.STALE
@@ -985,9 +993,36 @@ def test_source_health_date_arithmetic_current_stale_future_and_failed(tmp_path:
         FakeClient(fail_last_updated=True),
     ).collect(evaluation_time=CHECKED_AT)
 
+    assert iso_current.status is USAspendingCollectionStatus.SUCCESS
+    assert iso_current.source_last_updated_date == date(2026, 6, 20)
+    assert slash_current.status is USAspendingCollectionStatus.SUCCESS
+    assert slash_current.source_last_updated_date == date(2026, 6, 20)
+    assert not any(
+        issue.issue_type == "SOURCE_LAST_UPDATED_INVALID"
+        for issue in slash_current.issues
+    )
+    assert slash_stale.status is USAspendingCollectionStatus.STALE
+    assert slash_stale.source_last_updated_date == date(2026, 6, 1)
     assert future.status is USAspendingCollectionStatus.PARTIAL
     assert any(issue.issue_type == "SOURCE_LAST_UPDATED_FUTURE" for issue in future.issues)
     assert failed_health.status is USAspendingCollectionStatus.PARTIAL
+
+
+@pytest.mark.parametrize(
+    "last_updated",
+    ("2026/06/26", "06-26-2026", "not-a-date", "13/40/2026"),
+)
+def test_source_health_rejects_unsupported_date_formats(
+    tmp_path: Path,
+    last_updated: str,
+) -> None:
+    result = _collector(tmp_path, FakeClient(last_updated=last_updated)).collect(
+        evaluation_time=CHECKED_AT
+    )
+
+    assert result.status is USAspendingCollectionStatus.PARTIAL
+    assert result.source_last_updated_date is None
+    assert any(issue.issue_type == "SOURCE_LAST_UPDATED_INVALID" for issue in result.issues)
 
 
 def test_empty_successful_search_with_failed_source_health_is_partial_not_failed(tmp_path: Path) -> None:
