@@ -32,9 +32,15 @@ checked against the encoded `/exec` GET URL, not just the raw SQL string,
 because spaces, quotes, JSON punctuation, and timestamps expand when sent as
 query parameters. If the encoded request is larger than the configured limit,
 the writer raises `QuestDBWriteError` before sending the request. Oversized rows
-are not truncated, and JSON fields are not dropped. PR 14 is expected to add
-JSONL fallback for failed or oversized ledger writes; a future bulk ingestion
-path can handle larger payloads later.
+are not truncated, and JSON fields are not dropped.
+
+The shared emergency JSONL fallback helper is separate from the writer. Callers
+that request a primary QuestDB write can append a versioned preservation record
+under the configured `jsonl_fallback.directory` after a failed write. The
+fallback row is durable emergency evidence, not a successful QuestDB insert, and
+it does not provide retries, replay, batching, or distributed transaction
+semantics. A future bulk ingestion or manual reconciliation path can handle
+larger or spooled payloads later.
 
 String literals are sanitized before SQL quoting:
 
@@ -81,6 +87,6 @@ python scripts/check_questdb_writer.py --required
 
 ## Not Added
 
-PR 13 does not add JSONL fallback, retries, queues, background writing, batching,
-raw market-data writes, Databento API calls, Alpaca integration, model training,
-risk engine logic, or live trading.
+The QuestDB writer itself does not add retries, queues, background writing,
+batching, raw market-data writes, Databento API calls, Alpaca integration, model
+training, risk engine logic, or live trading.
