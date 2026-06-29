@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 import errno
@@ -22,6 +22,7 @@ import yaml
 
 from market_relay_engine.common.config import repo_root
 from market_relay_engine.common.time import ensure_timezone_aware_utc, to_utc_iso, utc_now
+from market_relay_engine.context.provenance import attach_provenance
 from market_relay_engine.context.state_cache import (
     ContextStateCache,
     ContextStateUpdateResult,
@@ -1801,11 +1802,20 @@ def _snapshot_and_cache_entry(
             details=details,
         )
     )
+    if update.status is ContextStateUpdateStatus.IGNORED_DUPLICATE:
+        existing = cache.get_ticker(
+            event.ticker,
+            event.cache_entry_name,
+            now=event.collector_observed_at,
+            include_expired=True,
+        )
+        if existing is not None:
+            snapshot = replace(snapshot, details=existing.details)
     return snapshot, update
 
 
 def _event_details(event: USAspendingAwardEvent) -> dict[str, object]:
-    return {
+    details: dict[str, object] = {
         "source": SOURCE_NAME,
         "canonical_award_id": event.canonical_award_id,
         "generated_unique_award_id": event.generated_unique_award_id,
@@ -1859,12 +1869,28 @@ def _event_details(event: USAspendingAwardEvent) -> dict[str, object]:
         "cache_retention_policy": "bounded_process_memory_only",
         "availability_basis": "collector_observed",
         "historical_action_date_asof_eligible": False,
-        "forward_outcome_anchor_time": to_utc_iso(event.collector_observed_at),
+        "forward_outcome_anchor_time": to_utc_iso(event.event_first_observed_at),
         "forward_outcome_study_eligible": True,
         "source_last_updated_is_precise_publication_time": False,
         "recipient_discovery_method": RECIPIENT_DISCOVERY_METHOD,
         "recipient_search_is_complete_coverage": False,
     }
+    return attach_provenance(
+        details,
+        {
+            "source_event_time": event.source_event_time,
+            "source_observed_at": None,
+            "available_at": None,
+            "collected_at": event.collector_observed_at,
+            "effective_from": None,
+            "valid_until": None,
+            "availability_basis": "collector_observed",
+            "research_asof_eligible": False,
+            "revision_id": None,
+            "vintage_id": None,
+            "source_record_id": event.canonical_award_id,
+        },
+    )
 
 
 def _record_event_in_checkpoint(

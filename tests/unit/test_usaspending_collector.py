@@ -489,6 +489,15 @@ def test_new_award_emits_snapshot_cache_and_ledger(tmp_path: Path) -> None:
     assert snapshot.ticker_or_sector == "TST"
     assert snapshot.details["canonical_award_id"] == "CONT_AWD_1"
     assert snapshot.details["cache_entry_name"] == cache_entry_name("TST", "CONT_AWD_1")
+    assert snapshot.details["forward_outcome_anchor_time"] == "2026-06-20T16:00:00Z"
+    provenance = snapshot.details["provenance"]
+    assert provenance["source_event_time"] == "2026-06-20T00:00:00Z"
+    assert provenance["available_at"] is None
+    assert provenance["availability_basis"] == "collector_observed"
+    assert provenance["research_asof_eligible"] is False
+    assert provenance["source_record_id"] == "CONT_AWD_1"
+    assert provenance["revision_id"] is None
+    assert provenance["vintage_id"] is None
     entry = cache.get_ticker("TST", cache_entry_name("TST", "CONT_AWD_1"), now=CHECKED_AT)
     assert entry is not None
     assert entry.valid_until is None
@@ -853,6 +862,39 @@ def test_restart_rehydrates_cache_without_duplicate_ledger_row(tmp_path: Path) -
     )
     assert restored is not None
     assert restored.details["event_first_observed_at"] == first.indicator_snapshots[0].details["event_first_observed_at"]
+
+
+def test_legacy_checkpoint_rehydration_without_provenance_remains_readable(
+    tmp_path: Path,
+) -> None:
+    cache = ContextStateCache()
+    details = {
+        "canonical_award_id": "CONT_AWD_1",
+        "event_first_observed_at": "2026-06-20T16:00:00Z",
+        "forward_outcome_anchor_time": "2026-06-20T16:00:00Z",
+    }
+    collector = _collector(
+        tmp_path,
+        _single_award_client(),
+        cache=cache,
+        writer=FakeWriter(),
+    )
+    update = collector._rehydrate_cache_if_needed(  # type: ignore[attr-defined]
+        {
+            "cache_entry_name": cache_entry_name("TST", "CONT_AWD_1"),
+            "ticker": "TST",
+            "event_classification": "NEW_AWARD_DISCOVERED",
+            "event_first_observed_at": "2026-06-20T16:00:00Z",
+            "source_event_time": "2026-06-20T00:00:00Z",
+            "details": details,
+        },
+        CHECKED_AT + timedelta(minutes=1),
+    )
+
+    assert update is not None
+    entry = cache.get_ticker("TST", cache_entry_name("TST", "CONT_AWD_1"), now=CHECKED_AT)
+    assert entry is not None
+    assert "provenance" not in entry.details
 
 
 def test_classification_does_not_drift_from_new_to_late(tmp_path: Path) -> None:

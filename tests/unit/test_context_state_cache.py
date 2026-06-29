@@ -8,6 +8,10 @@ import json
 import pytest
 
 from market_relay_engine.common.serialization import to_json_string
+from market_relay_engine.context.provenance import (
+    attach_provenance,
+    is_active_in_time_window,
+)
 from market_relay_engine.context import state_cache
 from market_relay_engine.context.state_cache import (
     ContextScope,
@@ -417,6 +421,128 @@ def test_same_timestamp_semantic_field_changes_replace_trace_id_does_not() -> No
         trace_id="trace_3",
     )
     assert cache.update(trace_only_after_replacement).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+
+
+def test_provenance_audit_only_changes_are_duplicate_semantic_changes_replace() -> None:
+    source_event_time = BASE_TIME - timedelta(minutes=5)
+    valid_until = BASE_TIME + timedelta(minutes=5)
+
+    def details(
+        *,
+        collected_at: datetime,
+        freshness_seconds: float,
+        collector_observed_at: datetime,
+        source_record_id: str = "record-1",
+    ) -> dict[str, object]:
+        return attach_provenance(
+            {
+                "freshness_seconds": freshness_seconds,
+                "collector_observed_at": collector_observed_at.isoformat().replace("+00:00", "Z"),
+                "semantic": "kept",
+            },
+            {
+                "source_event_time": source_event_time,
+                "source_observed_at": None,
+                "available_at": BASE_TIME - timedelta(minutes=1),
+                "collected_at": collected_at,
+                "effective_from": source_event_time,
+                "valid_until": valid_until,
+                "availability_basis": "fixture",
+                "research_asof_eligible": True,
+                "revision_id": None,
+                "vintage_id": None,
+                "source_record_id": source_record_id,
+            },
+        )
+
+    cache = ContextStateCache()
+    first = make_global_context_entry(
+        name="provenance_metric",
+        value=1.0,
+        updated_at=source_event_time,
+        source_event_time=source_event_time,
+        valid_until=valid_until,
+        details=details(
+            collected_at=BASE_TIME,
+            freshness_seconds=10.0,
+            collector_observed_at=BASE_TIME,
+        ),
+    )
+    assert cache.update(first).status is ContextStateUpdateStatus.WRITTEN
+
+    duplicate = make_global_context_entry(
+        name="provenance_metric",
+        value=1.0,
+        updated_at=source_event_time,
+        source_event_time=source_event_time,
+        valid_until=valid_until,
+        details=details(
+            collected_at=BASE_TIME + timedelta(minutes=1),
+            freshness_seconds=99.0,
+            collector_observed_at=BASE_TIME + timedelta(minutes=1),
+        ),
+    )
+    assert cache.update(duplicate).status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    stored = cache.get_global("provenance_metric", now=BASE_TIME, include_expired=True)
+    assert stored is not None
+    assert stored.details["provenance"]["collected_at"] == "2026-01-02T14:30:00Z"  # type: ignore[index]
+    assert stored.details["freshness_seconds"] == 10.0
+
+    semantic_change = make_global_context_entry(
+        name="provenance_metric",
+        value=1.0,
+        updated_at=source_event_time,
+        source_event_time=source_event_time,
+        valid_until=valid_until,
+        details=details(
+            collected_at=BASE_TIME + timedelta(minutes=2),
+            freshness_seconds=10.0,
+            collector_observed_at=BASE_TIME + timedelta(minutes=2),
+            source_record_id="record-2",
+        ),
+    )
+    assert cache.update(semantic_change).status is ContextStateUpdateStatus.REPLACED
+
+
+def test_provenance_active_window_matches_inclusive_cache_expiry() -> None:
+    source_event_time = BASE_TIME - timedelta(minutes=5)
+    valid_until = BASE_TIME
+    details = attach_provenance(
+        {},
+        {
+            "source_event_time": source_event_time,
+            "source_observed_at": None,
+            "available_at": None,
+            "collected_at": BASE_TIME - timedelta(minutes=1),
+            "effective_from": source_event_time,
+            "valid_until": valid_until,
+            "availability_basis": "fixture",
+            "research_asof_eligible": False,
+            "revision_id": None,
+            "vintage_id": None,
+            "source_record_id": "record-window",
+        },
+    )
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="windowed",
+            value=1,
+            updated_at=source_event_time,
+            source_event_time=source_event_time,
+            valid_until=valid_until,
+            details=details,
+        )
+    )
+
+    entry = cache.get_global("windowed", now=valid_until)
+    assert entry is not None
+    assert is_active_in_time_window(entry.details, valid_until)
+    assert cache.get_global("windowed", now=valid_until + timedelta(microseconds=1)) is None
+    assert is_active_in_time_window(
+        entry.details,
+        valid_until + timedelta(microseconds=1),
+    ) is False
 
 
 def test_same_timestamp_severity_change_replaces_and_updates_risk_level() -> None:

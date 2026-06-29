@@ -53,6 +53,11 @@ class ContextIndicatorSnapshot:
         if not isinstance(copied_details, dict):
             raise TypeError("details must be a dictionary")
         object.__setattr__(self, "details", copied_details)
+        from market_relay_engine.context.provenance import (
+            validate_snapshot_provenance_alignment,
+        )
+
+        validate_snapshot_provenance_alignment(self)
 
 
 @dataclass(frozen=True, kw_only=True)

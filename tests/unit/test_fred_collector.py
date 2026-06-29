@@ -247,6 +247,14 @@ def test_provenance_uses_midnight_convention_without_realtime_fields() -> None:
         assert snapshot.details["availability_basis"] == "collector_observed"
         assert snapshot.details["research_asof_eligible"] is False
         assert snapshot.details["vintage_tracking_mode"] == "current_fred_unpinned_v1"
+        provenance = snapshot.details["provenance"]
+        assert provenance["source_event_time"] == "2026-06-19T00:00:00Z"
+        assert provenance["available_at"] is None
+        assert provenance["availability_basis"] == "collector_observed"
+        assert provenance["research_asof_eligible"] is False
+        assert provenance["revision_id"] is None
+        assert provenance["vintage_id"] is None
+        assert provenance["source_record_id"]
         encoded = json.dumps(snapshot.details)
         assert "realtime_start" not in encoded
         assert "realtime_end" not in encoded

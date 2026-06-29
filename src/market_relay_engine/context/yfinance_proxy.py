@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta
 from enum import Enum
 import hashlib
@@ -14,6 +14,7 @@ from typing import Any, Protocol
 import pandas as pd
 
 from market_relay_engine.common.time import ensure_timezone_aware_utc, to_utc_iso, utc_now
+from market_relay_engine.context.provenance import attach_provenance
 from market_relay_engine.context.state_cache import (
     ContextScope,
     ContextStateCache,
@@ -309,6 +310,10 @@ class YFinanceProxyCollector:
             snapshot = build.snapshot
             result = self.cache.update(self._cache_entry_for(build, collected_at))
             cache_results.append(result)
+            if result.status is ContextStateUpdateStatus.IGNORED_DUPLICATE:
+                existing = self._existing_cache_entry_for(snapshot, collected_at)
+                if existing is not None:
+                    snapshot = replace(snapshot, details=existing.details)
             snapshots.append(snapshot)
             successful_symbols.add(snapshot.ticker_or_sector)
             should_write_ledger = (
@@ -448,6 +453,39 @@ class YFinanceProxyCollector:
     def _indicator_build(self, symbol: str, indicator_name: str, window: str, value: float, latest_start: pd.Timestamp, latest_end: datetime, freshness_seconds: float, target_start: datetime | None, target_close: float | None, *, latest_close: float | None = None, collected_at: datetime) -> _IndicatorBuild:
         source_event_time = ensure_timezone_aware_utc(latest_end)
         indicator_id = deterministic_context_indicator_id(SOURCE_NAME, symbol, indicator_name, window, source_event_time)
+        valid_until = source_event_time + timedelta(seconds=self.config.max_staleness_seconds)
+        effective_from = source_event_time + timedelta(seconds=self.config.bar_completion_grace_seconds)
+        details: dict[str, object] = {
+            "context_indicator_id": indicator_id,
+            "symbol": symbol,
+            "indicator_name": indicator_name,
+            "window": window,
+            "units": "price" if indicator_name == "latest_close" else "return",
+            "bar_start": to_utc_iso(latest_start.to_pydatetime()),
+            "bar_end": to_utc_iso(source_event_time),
+            "freshness_seconds": freshness_seconds,
+            "source": SOURCE_NAME,
+            "price_basis": "raw",
+            "interval": SUPPORTED_INTERVAL,
+        }
+        if target_start is not None:
+            details.update({"target_bar_start": to_utc_iso(target_start), "latest_close": latest_close, "target_close": target_close, "exact_timestamp_match": True})
+        details = attach_provenance(
+            details,
+            {
+                "source_event_time": source_event_time,
+                "source_observed_at": None,
+                "available_at": None,
+                "collected_at": collected_at,
+                "effective_from": effective_from,
+                "valid_until": valid_until,
+                "availability_basis": "policy_completion_grace_unverified",
+                "research_asof_eligible": False,
+                "revision_id": None,
+                "vintage_id": None,
+                "source_record_id": f"{SOURCE_NAME}:{symbol}:{SUPPORTED_INTERVAL}:{indicator_name}:{window}:{to_utc_iso(source_event_time)}",
+            },
+        )
         snapshot = ContextIndicatorSnapshot(
             snapshot_time=collected_at,
             source=SOURCE_NAME,
@@ -459,22 +497,8 @@ class YFinanceProxyCollector:
             units="price" if indicator_name == "latest_close" else "return",
             freshness_seconds=freshness_seconds,
             source_event_time=source_event_time,
+            details=details,
         )
-        details: dict[str, object] = {
-            "context_indicator_id": indicator_id,
-            "symbol": symbol,
-            "indicator_name": indicator_name,
-            "window": window,
-            "units": snapshot.units or "",
-            "bar_start": to_utc_iso(latest_start.to_pydatetime()),
-            "bar_end": to_utc_iso(source_event_time),
-            "freshness_seconds": freshness_seconds,
-            "source": SOURCE_NAME,
-            "price_basis": "raw",
-            "interval": SUPPORTED_INTERVAL,
-        }
-        if target_start is not None:
-            details.update({"target_bar_start": to_utc_iso(target_start), "latest_close": latest_close, "target_close": target_close, "exact_timestamp_match": True})
         return _IndicatorBuild(snapshot=snapshot, bar_start=latest_start.to_pydatetime(), bar_end=source_event_time, details=details)
 
     def _cache_entry_for(self, build: _IndicatorBuild, collected_at: datetime) -> Any:
@@ -482,10 +506,30 @@ class YFinanceProxyCollector:
         registration = self.registry[snapshot.ticker_or_sector]
         name = cache_indicator_name(snapshot.ticker_or_sector, snapshot.indicator_name, snapshot.window or "")
         valid_until = (snapshot.source_event_time or build.bar_end) + timedelta(seconds=self.config.max_staleness_seconds)
-        kwargs = dict(name=name, value=float(snapshot.value), severity="INFO", source=SOURCE_NAME, updated_at=collected_at, source_event_time=snapshot.source_event_time, valid_until=valid_until, details=build.details)
+        kwargs = dict(name=name, value=float(snapshot.value), severity="INFO", source=SOURCE_NAME, updated_at=snapshot.source_event_time or build.bar_end, source_event_time=snapshot.source_event_time, valid_until=valid_until, details=build.details)
         if registration.scope is ContextScope.GLOBAL:
             return make_global_context_entry(**kwargs)
         return make_sector_context_entry(sector=registration.sector or "", **kwargs)
+
+    def _existing_cache_entry_for(
+        self,
+        snapshot: ContextIndicatorSnapshot,
+        now: datetime,
+    ) -> Any:
+        registration = self.registry[snapshot.ticker_or_sector]
+        name = cache_indicator_name(
+            snapshot.ticker_or_sector,
+            snapshot.indicator_name,
+            snapshot.window or "",
+        )
+        if registration.scope is ContextScope.GLOBAL:
+            return self.cache.get_global(name, now=now, include_expired=True)
+        return self.cache.get_sector(
+            registration.sector or "",
+            name,
+            now=now,
+            include_expired=True,
+        )
 
     def _failed_result(self, started_at: datetime, issues: tuple[YFinanceProxyIssue, ...]) -> YFinanceProxyCollectionResult:
         if self.config.required:

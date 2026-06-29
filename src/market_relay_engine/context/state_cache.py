@@ -16,6 +16,10 @@ from market_relay_engine.common.time import (
     to_utc_iso,
     utc_now,
 )
+from market_relay_engine.context.provenance import (
+    semantic_details_for_comparison,
+    validate_provenance_entry_alignment,
+)
 from market_relay_engine.contracts.context import ContextStateSnapshot
 
 ContextStateValue = str | int | float | bool
@@ -126,6 +130,7 @@ class ContextStateEntry:
         confidence = _normalize_confidence(self.confidence)
         trace_id = _optional_string(self.trace_id, "trace_id")
         details = _json_safe_details_copy(self.details)
+        validate_provenance_entry_alignment(details, source_event_time, valid_until)
 
         object.__setattr__(self, "value", value)
         object.__setattr__(self, "severity", severity)
@@ -648,7 +653,8 @@ def _same_content(left: ContextStateEntry, right: ContextStateEntry) -> bool:
         and left.source_event_time == right.source_event_time
         and left.valid_until == right.valid_until
         and left.confidence == right.confidence
-        and left.details == right.details
+        and semantic_details_for_comparison(left.details)
+        == semantic_details_for_comparison(right.details)
     )
 
 
