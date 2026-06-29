@@ -9,7 +9,6 @@ from enum import Enum
 import hashlib
 import json
 from pathlib import Path
-import re
 from typing import Any, Protocol
 
 import yaml
@@ -23,7 +22,6 @@ from market_relay_engine.common.time import (
 from market_relay_engine.context.provenance import attach_provenance
 from market_relay_engine.context.state_cache import (
     ContextStateCache,
-    ContextStateEntry,
     ContextStateUpdateResult,
     ContextStateUpdateStatus,
     make_global_context_entry,
@@ -58,7 +56,6 @@ SCHEDULE_STATUSES: frozenset[str] = ACTIVE_STATUSES | INACTIVE_STATUSES
 RESEARCH_TIERS: frozenset[str] = frozenset({"TIER_1", "TIER_2", "TIER_3"})
 FORBIDDEN_EVENT_MARKERS: tuple[str, ...] = ("EIA", "PETROLEUM")
 FORBIDDEN_OUTPUT_MARKER = "event_window"
-LOGICAL_OCCURRENCE_TIMESTAMP_PATTERN = re.compile(r"\d{8}t\d{6}z")
 REQUIRED_TOP_LEVEL_FIELDS: tuple[str, ...] = (
     "schema_version",
     "calendar_version",
@@ -324,9 +321,10 @@ def events_between(
     end_utc = ensure_timezone_aware_utc(end)
     if end_utc < start_utc:
         raise MacroCalendarError("end must be greater than or equal to start")
+    latest = _resolve_latest_revisions(normalized)
     return tuple(
         event
-        for event in sorted(normalized.events, key=_event_sort_key)
+        for event in sorted(latest.values(), key=_event_sort_key)
         if start_utc <= event.scheduled_at < end_utc
     )
 
@@ -344,9 +342,10 @@ def upcoming_events(
     if limit is not None and limit < 0:
         raise MacroCalendarError("limit must be non-negative")
     end = None if within is None else now + within
+    latest = _resolve_latest_revisions(normalized)
     events = [
         event
-        for event in sorted(normalized.events, key=_event_sort_key)
+        for event in sorted(latest.values(), key=_event_sort_key)
         if event.can_be_active
         and event.scheduled_at > now
         and (end is None or event.scheduled_at <= end)
@@ -363,8 +362,9 @@ def active_events_at(
     """Return active macro events using inclusive window semantics."""
     normalized = validate_macro_calendar(calendar)
     now = ensure_timezone_aware_utc(evaluation_time)
+    latest = _resolve_latest_revisions(normalized)
     active: list[MacroCalendarEvent] = []
-    for event in normalized.events:
+    for event in latest.values():
         if not event.can_be_active:
             continue
         profile = normalized.profile_for(event)
@@ -420,9 +420,9 @@ class MacroCalendarCollector:
             self.config.artifact_path,
             base_dir=self.base_dir,
         )
+        latest = _resolve_latest_revisions(calendar)
         active = active_events_at(calendar, now)
-        currently_active_ids = {event.logical_occurrence_id for event in active}
-        inactive_revisions = _inactive_revision_by_logical_id(calendar.events)
+        active_by_id = {event.logical_occurrence_id: event for event in active}
         upcoming = upcoming_events(
             calendar,
             now,
@@ -456,10 +456,14 @@ class MacroCalendarCollector:
                 session_id=session_id,
             )
 
-        for logical_occurrence_id, event in sorted(inactive_revisions.items()):
-            if logical_occurrence_id in currently_active_ids:
+        for logical_occurrence_id, event in sorted(latest.items()):
+            if logical_occurrence_id in active_by_id:
                 continue
-            update = self._revoke_inactive_revision(event, now)
+            update = self._revoke_inactive_revision(
+                event,
+                now,
+                only_if_older_revision=event.can_be_active,
+            )
             if update is not None:
                 cache_results.append(update)
 
@@ -529,6 +533,8 @@ class MacroCalendarCollector:
         self,
         event: MacroCalendarEvent,
         now: datetime,
+        *,
+        only_if_older_revision: bool = False,
     ) -> ContextStateUpdateResult | None:
         existing = self.cache.get_global(
             cache_key_for_event(event),
@@ -536,6 +542,11 @@ class MacroCalendarCollector:
             include_expired=True,
         )
         if existing is None or existing.value is not True:
+            return None
+        if (
+            only_if_older_revision
+            and existing.details.get("schedule_revision_id") == event.schedule_revision_id
+        ):
             return None
         details = inactive_event_details(event)
         return self.cache.update(
@@ -840,9 +851,6 @@ def _parse_event(
     )
     _validate_logical_occurrence_id(
         logical_occurrence_id,
-        event_type=event_type,
-        scheduled_at=scheduled_at,
-        source_record_id=source_record_id,
     )
     expected_event_id = deterministic_calendar_event_id(
         calendar_version=calendar_version,
@@ -894,19 +902,12 @@ def _parse_event(
 
 def _validate_normalized_calendar(calendar: MacroCalendar) -> None:
     event_ids: set[str] = set()
-    active_logical_ids: set[str] = set()
     if not calendar.events:
         raise MacroCalendarError("events must not be empty")
     for event in calendar.events:
         if event.calendar_event_id in event_ids:
             raise MacroCalendarError(f"duplicate calendar_event_id {event.calendar_event_id}")
         event_ids.add(event.calendar_event_id)
-        if event.can_be_active:
-            if event.logical_occurrence_id in active_logical_ids:
-                raise MacroCalendarError(
-                    f"duplicate active logical_occurrence_id {event.logical_occurrence_id}"
-                )
-            active_logical_ids.add(event.logical_occurrence_id)
         profile = calendar.profile_for(event)
         if event.effective_from(profile) > event.valid_until(profile):
             raise MacroCalendarError(f"invalid window for {event.logical_occurrence_id}")
@@ -916,26 +917,11 @@ def _validate_normalized_calendar(calendar: MacroCalendar) -> None:
             "research_window_kind": RESEARCH_WINDOW_KIND,
         }
         _reject_forbidden_output(details)
+    _resolve_latest_revisions(calendar)
 
 
-def _validate_logical_occurrence_id(
-    value: str,
-    *,
-    event_type: str,
-    scheduled_at: datetime,
-    source_record_id: str,
-) -> None:
-    text = value.lower()
-    provider, _, remainder = value.partition(":")
-    if not provider or not remainder:
-        raise MacroCalendarError("logical_occurrence_id must include provider and event identity")
-    if event_type.lower() not in text:
-        raise MacroCalendarError("logical_occurrence_id must include event type")
-    if LOGICAL_OCCURRENCE_TIMESTAMP_PATTERN.search(text) is None:
-        raise MacroCalendarError("logical_occurrence_id must include a scheduled UTC time")
-    canonical_record = _slug(source_record_id)
-    if canonical_record and canonical_record not in text:
-        raise MacroCalendarError("logical_occurrence_id must include source record identity")
+def _validate_logical_occurrence_id(value: str) -> None:
+    _required_string(value, "logical_occurrence_id")
 
 
 def _parse_required_utc(value: object, field_name: str) -> datetime:
@@ -1019,14 +1005,6 @@ def _deterministic_id(prefix: str, payload: Mapping[str, object]) -> str:
     return f"{prefix}_{digest}"
 
 
-def _compact_utc(value: datetime) -> str:
-    return to_utc_iso(value).replace("-", "").replace(":", "").replace(".000000", "")
-
-
-def _slug(value: str) -> str:
-    return "".join(character.lower() for character in value if character.isalnum())
-
-
 def _reject_forbidden_event_text(value: str, field_name: str) -> None:
     normalized = value.upper()
     for marker in FORBIDDEN_EVENT_MARKERS:
@@ -1044,25 +1022,40 @@ def _event_sort_key(event: MacroCalendarEvent) -> tuple[datetime, str]:
     return (event.scheduled_at, event.logical_occurrence_id)
 
 
-def _inactive_revision_by_logical_id(
-    events: Sequence[MacroCalendarEvent],
+def _resolve_latest_revisions(
+    calendar: MacroCalendar,
 ) -> dict[str, MacroCalendarEvent]:
-    revisions: dict[str, MacroCalendarEvent] = {}
-    for event in events:
-        if not event.is_inactive_revision:
-            continue
-        existing = revisions.get(event.logical_occurrence_id)
-        if existing is None or (
-            event.schedule_captured_at,
-            event.schedule_revision_id,
-            event.calendar_event_id,
-        ) > (
-            existing.schedule_captured_at,
-            existing.schedule_revision_id,
-            existing.calendar_event_id,
-        ):
-            revisions[event.logical_occurrence_id] = event
-    return revisions
+    grouped: dict[str, list[MacroCalendarEvent]] = {}
+    for event in calendar.events:
+        grouped.setdefault(event.logical_occurrence_id, []).append(event)
+
+    latest: dict[str, MacroCalendarEvent] = {}
+    for logical_occurrence_id, events in grouped.items():
+        revision_ids = [event.schedule_revision_id for event in events]
+        if len(set(revision_ids)) != len(revision_ids):
+            raise MacroCalendarError(
+                f"duplicate schedule_revision_id for {logical_occurrence_id}"
+            )
+        captured_values = [event.schedule_captured_at for event in events]
+        if len(set(captured_values)) != len(captured_values):
+            raise MacroCalendarError(
+                f"duplicate schedule_captured_at for {logical_occurrence_id}"
+            )
+        event_types = {event.event_type for event in events}
+        if len(event_types) != 1:
+            raise MacroCalendarError(
+                f"revision chain event_type mismatch for {logical_occurrence_id}"
+            )
+        providers = {event.source_provider for event in events}
+        if len(providers) != 1:
+            raise MacroCalendarError(
+                f"revision chain source_provider mismatch for {logical_occurrence_id}"
+            )
+        latest[logical_occurrence_id] = max(
+            events,
+            key=lambda event: event.schedule_captured_at,
+        )
+    return latest
 
 
 __all__ = [

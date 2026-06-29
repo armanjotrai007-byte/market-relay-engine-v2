@@ -27,9 +27,15 @@ All timestamp fields are canonical offset-aware UTC ISO strings using `Z` or
 records are not included as active schedule records.
 
 Every event has a stable `logical_occurrence_id` for one real-world occurrence.
-It includes the provider, event type, UTC scheduled time, and source identity.
-`calendar_event_id` is deterministic from `calendar_version`,
+It is preserved across schedule revisions when the official occurrence is the
+same, even if the scheduled timestamp changes. `calendar_event_id` is
+revision-specific and deterministic from `calendar_version`,
 `logical_occurrence_id`, and `schedule_revision_id`.
+
+Rows sharing a `logical_occurrence_id` form one revision chain. Within that
+chain, `schedule_captured_at` defines precedence: only the latest captured
+revision is operationally active for runtime helpers and collection. Older rows
+remain in the raw artifact for audit history.
 
 The global cache key is exactly:
 
@@ -62,11 +68,16 @@ For range listing only, `events_between(start, end)` uses `[start, end)` on
 
 ## Runtime Output
 
-The collector writes currently active records into `ContextStateCache` with
-`value=True`, `severity="INFO"`, and `source="macro_calendar_v1"`. It emits
-optional `ContextIndicatorSnapshot` rows only when a cache entry is written or
-replaced. Repeated calls for the same active event are duplicates and do not
-write another ledger row.
+The collector resolves each revision chain first, then writes currently active
+latest revisions into `ContextStateCache` with `value=True`, `severity="INFO"`,
+and `source="macro_calendar_v1"`. It emits optional `ContextIndicatorSnapshot`
+rows only when an active cache entry is written or replaced. Repeated calls for
+the same active event are duplicates and do not write another ledger row.
+
+If the latest revision is `CANCELLED` or `SUPERSEDED`, it revokes any stale
+active cache entry for that logical occurrence. If a latest confirmed/tentative
+revision is future-dated, it revokes stale cache state from an older revision
+while waiting for normal active-window timing.
 
 The details use:
 
@@ -92,10 +103,10 @@ historical decision could have known the schedule.
 
 Future schedule changes should be data-only PRs. If the same real-world event is
 rescheduled, preserve `logical_occurrence_id` only when it still clearly refers
-to the same official occurrence, update `schedule_revision_id`, mark the old
-record `SUPERSEDED`, and add the replacement record. `CANCELLED` and
-`SUPERSEDED` records never become active; they revoke stale active cache entries
-for the same logical occurrence.
+to the same official occurrence, update `schedule_revision_id`, advance
+`schedule_captured_at`, mark the old record `SUPERSEDED`, and add the
+replacement record. `CANCELLED` and `SUPERSEDED` latest revisions never become
+active; they revoke stale active cache entries for the same logical occurrence.
 
 Run:
 
