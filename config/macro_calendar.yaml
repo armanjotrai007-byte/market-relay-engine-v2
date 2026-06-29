@@ -61,8 +61,8 @@ source_manifest:
       coverage_note: "Reviewed local records only; not full-year coverage."
     ISM_MANUFACTURING_PMI:
       included_event_count: 1
-      first_scheduled_at: "2026-07-01T15:00:00Z"
-      last_scheduled_at: "2026-07-01T15:00:00Z"
+      first_scheduled_at: "2026-07-01T14:00:00Z"
+      last_scheduled_at: "2026-07-01T14:00:00Z"
       source_provider: Institute for Supply Management
       coverage_note: "Reviewed local records only; not full-year coverage."
     EMPLOYMENT_SITUATION:
@@ -73,8 +73,8 @@ source_manifest:
       coverage_note: "Reviewed local records only; not full-year coverage."
     ISM_SERVICES_PMI:
       included_event_count: 1
-      first_scheduled_at: "2026-07-06T15:00:00Z"
-      last_scheduled_at: "2026-07-06T15:00:00Z"
+      first_scheduled_at: "2026-07-06T14:00:00Z"
+      last_scheduled_at: "2026-07-06T14:00:00Z"
       source_provider: Institute for Supply Management
       coverage_note: "Reviewed local records only; not full-year coverage."
     CPI:
@@ -203,11 +203,11 @@ events:
     official_schedule_published_at: null
     research_tier: TIER_2
     window_profile_id: TIER_2
-  - calendar_event_id: macro_calendar_event_42ff843203677f825fd1bb2b11a453e7
-    logical_occurrence_id: ism:ism_manufacturing_pmi:20260701T150000Z:ismreportcalendarmanufacturingjune2026
+  - calendar_event_id: macro_calendar_event_1546b43905c698b505810fe376c9c001
+    logical_occurrence_id: ism:ism_manufacturing_pmi:20260701T140000Z:ismreportcalendarmanufacturingjune2026
     event_type: ISM_MANUFACTURING_PMI
-    scheduled_at: "2026-07-01T15:00:00Z"
-    source_time_text: "10:00 a.m. (EST)"
+    scheduled_at: "2026-07-01T14:00:00Z"
+    source_time_text: "10:00 a.m. Eastern Time"
     schedule_status: CONFIRMED
     source_provider: Institute for Supply Management
     source_record_id: ism_report_calendar_manufacturing_june_2026
@@ -231,11 +231,11 @@ events:
     official_schedule_published_at: null
     research_tier: TIER_1
     window_profile_id: TIER_1
-  - calendar_event_id: macro_calendar_event_c44416bf44ccced1abc7c84d285ae9bf
-    logical_occurrence_id: ism:ism_services_pmi:20260706T150000Z:ismreportcalendarservicesjune2026
+  - calendar_event_id: macro_calendar_event_1e1ee09739fd18ccda34bdb552f94742
+    logical_occurrence_id: ism:ism_services_pmi:20260706T140000Z:ismreportcalendarservicesjune2026
     event_type: ISM_SERVICES_PMI
-    scheduled_at: "2026-07-06T15:00:00Z"
-    source_time_text: "10:00 a.m. (EST)"
+    scheduled_at: "2026-07-06T14:00:00Z"
+    source_time_text: "10:00 a.m. Eastern Time"
     schedule_status: CONFIRMED
     source_provider: Institute for Supply Management
     source_record_id: ism_report_calendar_services_june_2026

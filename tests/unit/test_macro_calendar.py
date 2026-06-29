@@ -150,6 +150,56 @@ def test_dst_sensitive_source_text_with_utc_scheduled_at_does_not_drift() -> Non
     assert employment.scheduled_at == datetime(2026, 7, 2, 12, 30, tzinfo=UTC)
 
 
+def test_july_ism_manufacturing_uses_daylight_saving_utc_timestamp() -> None:
+    calendar = load_macro_calendar(ARTIFACT_PATH)
+    event = next(event for event in calendar.events if event.event_type == "ISM_MANUFACTURING_PMI")
+    profile = calendar.profile_for(event)
+
+    assert event.scheduled_at == datetime(2026, 7, 1, 14, 0, tzinfo=UTC)
+    assert event.source_time_text == "10:00 a.m. Eastern Time"
+    assert event in active_events_at(calendar, datetime(2026, 7, 1, 13, 55, tzinfo=UTC))
+    assert event not in active_events_at(calendar, datetime(2026, 7, 1, 14, 55, tzinfo=UTC))
+    assert event.effective_from(profile) == datetime(2026, 7, 1, 13, 55, tzinfo=UTC)
+    assert event.valid_until(profile) == datetime(2026, 7, 1, 14, 10, tzinfo=UTC)
+
+
+def test_july_ism_services_uses_daylight_saving_utc_timestamp() -> None:
+    calendar = load_macro_calendar(ARTIFACT_PATH)
+    event = next(event for event in calendar.events if event.event_type == "ISM_SERVICES_PMI")
+    profile = calendar.profile_for(event)
+
+    assert event.scheduled_at == datetime(2026, 7, 6, 14, 0, tzinfo=UTC)
+    assert event.source_time_text == "10:00 a.m. Eastern Time"
+    assert event in active_events_at(calendar, datetime(2026, 7, 6, 13, 55, tzinfo=UTC))
+    assert event not in active_events_at(calendar, datetime(2026, 7, 6, 14, 55, tzinfo=UTC))
+    assert event.effective_from(profile) == datetime(2026, 7, 6, 13, 55, tzinfo=UTC)
+    assert event.valid_until(profile) == datetime(2026, 7, 6, 14, 10, tzinfo=UTC)
+
+
+def test_corrected_ism_identities_match_daylight_saving_timestamps() -> None:
+    calendar = load_macro_calendar(ARTIFACT_PATH)
+    ids = set()
+    logical_ids = set()
+    for event_type, expected_time_text in {
+        "ISM_MANUFACTURING_PMI": "20260701T140000Z",
+        "ISM_SERVICES_PMI": "20260706T140000Z",
+    }.items():
+        event = next(event for event in calendar.events if event.event_type == event_type)
+
+        assert expected_time_text in event.logical_occurrence_id
+        assert "150000Z" not in event.logical_occurrence_id
+        assert event.calendar_event_id == deterministic_calendar_event_id(
+            calendar_version=calendar.calendar_version,
+            logical_occurrence_id=event.logical_occurrence_id,
+            schedule_revision_id=event.schedule_revision_id,
+        )
+        ids.add(event.calendar_event_id)
+        logical_ids.add(event.logical_occurrence_id)
+
+    assert len(ids) == 2
+    assert len(logical_ids) == 2
+
+
 def test_every_supported_event_type_maps_to_valid_tier_and_window_profile() -> None:
     calendar = load_macro_calendar(ARTIFACT_PATH)
 
