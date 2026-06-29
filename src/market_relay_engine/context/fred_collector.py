@@ -17,6 +17,10 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import requests
 
 from market_relay_engine.common.time import ensure_timezone_aware_utc, to_utc_iso, utc_now
+from market_relay_engine.context.provenance import (
+    attach_provenance,
+    semantic_details_for_comparison,
+)
 from market_relay_engine.context.state_cache import (
     ContextStateCache,
     ContextStateEntry,
@@ -364,6 +368,7 @@ class _Fact:
     identity_payload: Mapping[str, object]
     details: Mapping[str, object]
     required_raw_indicators: tuple[str, ...]
+    source_record_id: str
 
 
 class FREDCollector:
@@ -673,6 +678,15 @@ class FREDCollector:
             "context_indicator_id": context_indicator_id,
             "valid_until": to_utc_iso(fact.valid_until),
         }
+        canonical_details = attach_provenance(
+            canonical_details,
+            _provenance(
+                source_event_time=fact.source_event_time,
+                collected_at=checked_at,
+                valid_until=fact.valid_until,
+                source_record_id=fact.source_record_id,
+            ),
+        )
         existing = self.cache.get_global(
             cache_name,
             now=checked_at,
@@ -800,6 +814,7 @@ def _raw_fact(spec: FREDSeriesSpec, observation: FREDObservation, max_age: int) 
         identity_payload=_raw_identity_payload(spec, observation),
         details=details,
         required_raw_indicators=(spec.indicator_name,),
+        source_record_id=f"{SOURCE_NAME}:{spec.series_id}:{observation.observation_date.isoformat()}",
     )
 
 
@@ -846,6 +861,16 @@ def _change_fact(
         },
         details=details,
         required_raw_indicators=(spec.indicator_name,),
+        source_record_id=_source_record_id(
+            {
+                "source": SOURCE_NAME,
+                "indicator_name": indicator_name,
+                "series_id": spec.series_id,
+                "current_observation_date": current.observation_date.isoformat(),
+                "prior_observation_date": previous.observation_date.isoformat(),
+                "derivation_version": CHANGE_DERIVATION_VERSION,
+            }
+        ),
     )
 
 
@@ -899,6 +924,15 @@ def _spread_fact(
         },
         details=details,
         required_raw_indicators=component_names,
+        source_record_id=_source_record_id(
+            {
+                "source": SOURCE_NAME,
+                "indicator_name": indicator_name,
+                "component_series_ids": component_ids,
+                "component_observation_dates": component_dates,
+                "derivation_version": SPREAD_DERIVATION_VERSION,
+            }
+        ),
     )
 
 
@@ -974,6 +1008,15 @@ def _regime_fact(results: Sequence[FREDSeriesResult], max_age: int) -> _Fact:
         },
         details=details,
         required_raw_indicators=tuple(item.indicator_name for item in results),
+        source_record_id=_source_record_id(
+            {
+                "source": SOURCE_NAME,
+                "indicator_name": "rate_curve_regime_v1",
+                "component_series_ids": component_ids,
+                "component_observation_dates": component_dates,
+                "derivation_version": REGIME_DERIVATION_VERSION,
+            }
+        ),
     )
 
 
@@ -1000,6 +1043,28 @@ def _base_details(*, units: str, value_kind: str, observation_date: date) -> dic
         "availability_basis": AVAILABILITY_BASIS,
         "research_asof_eligible": False,
         "vintage_tracking_mode": VINTAGE_TRACKING_MODE,
+    }
+
+
+def _provenance(
+    *,
+    source_event_time: datetime,
+    collected_at: datetime,
+    valid_until: datetime,
+    source_record_id: str,
+) -> dict[str, object]:
+    return {
+        "source_event_time": source_event_time,
+        "source_observed_at": None,
+        "available_at": None,
+        "collected_at": collected_at,
+        "effective_from": None,
+        "valid_until": valid_until,
+        "availability_basis": AVAILABILITY_BASIS,
+        "research_asof_eligible": False,
+        "revision_id": None,
+        "vintage_id": None,
+        "source_record_id": source_record_id,
     }
 
 
@@ -1060,7 +1125,11 @@ def _same_semantic_fact(
         return False
     existing_details = dict(existing.details)
     existing_details.pop("first_collected_at", None)
-    return existing_details == dict(canonical_details)
+    canonical = dict(canonical_details)
+    canonical.pop("first_collected_at", None)
+    return semantic_details_for_comparison(existing_details) == semantic_details_for_comparison(
+        canonical
+    )
 
 
 def _detail_datetime(details: Mapping[str, object], name: str) -> datetime:
@@ -1134,6 +1203,12 @@ def _deterministic_id(payload: Mapping[str, object]) -> str:
     encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:32]
     return f"context_indicator_{digest}"
+
+
+def _source_record_id(payload: Mapping[str, object]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+    digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:32]
+    return f"fred_source_record_{digest}"
 
 
 def _collection_result(

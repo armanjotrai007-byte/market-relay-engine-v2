@@ -23,6 +23,10 @@ from market_relay_engine.context.eia_wpsr import (
     UTILIZATION_ROUTE,
     plan_eia_wpsr_action,
 )
+from market_relay_engine.context.provenance import (
+    is_active_in_time_window,
+    is_research_asof_eligible_at,
+)
 from market_relay_engine.context.state_cache import ContextStateCache, ContextStateUpdateStatus
 from market_relay_engine.contracts.context import ContextIndicatorSnapshot
 from market_relay_engine.market_data.cost_model import estimate_cost_from_expected_move
@@ -475,6 +479,72 @@ def test_full_collection_publishes_exactly_ten_sector_records() -> None:
     ticker_entries = cache.latest_for_ticker("XOM", now=RELEASE_AT + timedelta(seconds=30))
     assert ticker_entries
     assert all("inventory" not in entry.key.name and "utilization" not in entry.key.name for entry in ticker_entries)
+
+
+def test_release_window_and_numeric_snapshots_emit_provenance_policy() -> None:
+    cache = ContextStateCache()
+    release = _release()
+    window_result = EIAWPSRCollector(cache=cache, config=_config(), client=FakeClient()).collect(
+        evaluation_time=release.window_start,
+    )
+    cached_flag = cache.get_ticker(
+        "XOM",
+        f"eia_wpsr_v1:event_window_active:{release.release_id}",
+        now=release.window_start,
+    )
+    assert cached_flag is not None
+    flag_provenance = cached_flag.details["provenance"]
+    assert flag_provenance["available_at"] == "2026-06-17T14:30:00Z"
+    assert flag_provenance["availability_basis"] == "official_release_timestamp"
+    assert flag_provenance["research_asof_eligible"] is True
+    assert flag_provenance["effective_from"] == "2026-06-17T14:25:00Z"
+    assert flag_provenance["valid_until"] == "2026-06-17T14:45:00Z"
+    assert is_active_in_time_window(cached_flag.details, release.window_start)
+    assert is_research_asof_eligible_at(cached_flag.details, release.release_at)
+    assert window_result.context_flags
+
+    numeric_result = EIAWPSRCollector(cache=cache, config=_config(), client=FakeClient()).collect(
+        evaluation_time=release.initial_fetch_at,
+    )
+    snapshot = next(
+        item
+        for item in numeric_result.indicator_snapshots
+        if item.indicator_name == "commercial_crude_inventory"
+    )
+    provenance = snapshot.details["provenance"]
+    assert provenance["source_event_time"] == "2026-06-17T14:30:00Z"
+    assert provenance["available_at"] == "2026-06-17T14:30:00Z"
+    assert provenance["effective_from"] == "2026-06-17T14:30:00Z"
+    assert provenance["valid_until"] == "2026-06-24T14:30:00Z"
+    assert provenance["research_asof_eligible"] is True
+    assert provenance["source_record_id"].startswith("eia_wpsr_v1:eia_wpsr_2026_06_17:")
+
+
+def test_eia_numeric_retry_does_not_replace_only_for_collection_audit_time() -> None:
+    cache = ContextStateCache()
+    writer = FakeWriter()
+    collector = EIAWPSRCollector(cache=cache, config=_config(), client=FakeClient(), ledger_writer=writer)
+    first = collector.collect(evaluation_time=RELEASE_AT + timedelta(seconds=30), write_questdb=True)
+    second = collector.collect(evaluation_time=RELEASE_AT + timedelta(seconds=90), write_questdb=True)
+
+    first_snapshot = next(
+        item
+        for item in first.indicator_snapshots
+        if item.indicator_name == "commercial_crude_inventory"
+    )
+    second_snapshot = next(
+        item
+        for item in second.indicator_snapshots
+        if item.indicator_name == "commercial_crude_inventory"
+    )
+    update = next(
+        item
+        for item in second.cache_update_results
+        if item.key.name == "eia_wpsr_v1:commercial_crude_inventory:weekly"
+    )
+    assert update.status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    assert first_snapshot.details["provenance"]["collected_at"] == second_snapshot.details["provenance"]["collected_at"]
+    assert len(writer.indicators) == 10
 
 
 def test_sector_entries_appear_in_existing_context_snapshot() -> None:

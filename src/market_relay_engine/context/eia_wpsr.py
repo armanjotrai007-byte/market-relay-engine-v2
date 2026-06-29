@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from enum import Enum
 import hashlib
@@ -20,6 +20,7 @@ from market_relay_engine.common.time import (
     to_utc_iso,
     utc_now,
 )
+from market_relay_engine.context.provenance import attach_provenance
 from market_relay_engine.context.state_cache import (
     ContextStateCache,
     ContextStateUpdateResult,
@@ -466,6 +467,19 @@ class EIAWPSRCollector:
                         "severity": flag.severity,
                         "sector": SECTOR,
                     }
+                    details = attach_provenance(
+                        details,
+                        _provenance(
+                            source_event_time=release.release_at,
+                            available_at=release.release_at,
+                            collected_at=now,
+                            effective_from=release.window_start,
+                            valid_until=release.window_end,
+                            availability_basis="official_release_timestamp",
+                            research_asof_eligible=True,
+                            source_record_id=f"{SOURCE_NAME}:{release.release_id}:event_window:{ticker}",
+                        ),
+                    )
                     update = self.cache.update(make_ticker_context_entry(ticker=ticker, name=f"{SOURCE_NAME}:event_window_active:{release.release_id}", value=True, updated_at=flag.event_time, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=release.window_end, details=details))
                     cache_results.append(update)
                     self._write_if_changed(flag, update, ledger_results, issues, write_questdb, questdb_required, run_id, session_id)
@@ -511,8 +525,18 @@ class EIAWPSRCollector:
             builds, metric_issues = _normalize_metric(spec, records_by_route.get(spec.route, []), release, valid_until, now)
             issues.extend(metric_issues)
             for snapshot, details in builds:
-                update = self.cache.update(make_sector_context_entry(sector=SECTOR, name=f"{SOURCE_NAME}:{snapshot.indicator_name}:weekly", value=snapshot.value, updated_at=now, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=valid_until, details=details))
+                cache_name = f"{SOURCE_NAME}:{snapshot.indicator_name}:weekly"
+                update = self.cache.update(make_sector_context_entry(sector=SECTOR, name=cache_name, value=snapshot.value, updated_at=release.release_at, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=valid_until, details=details))
                 cache_results.append(update)
+                if update.status is ContextStateUpdateStatus.IGNORED_DUPLICATE:
+                    existing = self.cache.get_sector(
+                        SECTOR,
+                        cache_name,
+                        now=now,
+                        include_expired=True,
+                    )
+                    if existing is not None:
+                        snapshot = replace(snapshot, details=existing.details)
                 snapshots.append(snapshot)
                 self._write_if_changed(snapshot, update, ledger_results, issues, write_questdb, questdb_required, run_id, session_id)
 
@@ -602,6 +626,19 @@ def _normalize_metric(spec: EIAMetricSpec, records: Sequence[Mapping[str, object
     expected_prior = release.report_period - timedelta(days=7)
     prior, prior_issue = _select_record(by_period.get(expected_prior, []), spec, "EXPECTED_PRIOR_PERIOD_MISSING")
     details: dict[str, object] = {"release_id": release.release_id, "release_at": to_utc_iso(release.release_at), "report_period": release.report_period.isoformat(), "expected_prior_period": expected_prior.isoformat(), "actual_prior_period": None if prior is None else expected_prior.isoformat(), "route": f"/v2/{spec.route}/data/", "series_id": spec.series_id, "facets": dict(spec.facets), "source_units": spec.units, "collection_verification_status": "CURRENT_VERIFIED" if prior is None else "CURRENT_AND_PRIOR_VERIFIED", "valid_until": to_utc_iso(valid_until)}
+    details = attach_provenance(
+        details,
+        _provenance(
+            source_event_time=release.release_at,
+            available_at=release.release_at,
+            collected_at=collected_at,
+            effective_from=release.release_at,
+            valid_until=valid_until,
+            availability_basis="official_release_timestamp",
+            research_asof_eligible=True,
+            source_record_id=f"{SOURCE_NAME}:{release.release_id}:{spec.series_id}:{spec.indicator_name}:{release.report_period.isoformat()}",
+        ),
+    )
     level = ContextIndicatorSnapshot(snapshot_time=collected_at, source=SOURCE_NAME, ticker_or_sector=SECTOR, indicator_name=spec.indicator_name, value=current_value, context_indicator_id=deterministic_context_indicator_id(release, spec, spec.indicator_name), window="weekly", units=spec.units, freshness_seconds=max(0.0, (collected_at - release.release_at).total_seconds()), source_event_time=release.release_at, details=details)
     builds = [(level, details)]
     if prior_issue:
@@ -610,7 +647,19 @@ def _normalize_metric(spec: EIAMetricSpec, records: Sequence[Mapping[str, object
     assert prior is not None
     prior_value = _numeric_value(prior.get("value"))
     change_name = f"{spec.indicator_name}_change_wow"
-    change_details = dict(details)
+    change_details = attach_provenance(
+        dict(details),
+        _provenance(
+            source_event_time=release.release_at,
+            available_at=release.release_at,
+            collected_at=collected_at,
+            effective_from=release.release_at,
+            valid_until=valid_until,
+            availability_basis="official_release_timestamp",
+            research_asof_eligible=True,
+            source_record_id=f"{SOURCE_NAME}:{release.release_id}:{spec.series_id}:{change_name}:{release.report_period.isoformat()}:{expected_prior.isoformat()}",
+        ),
+    )
     change = ContextIndicatorSnapshot(snapshot_time=collected_at, source=SOURCE_NAME, ticker_or_sector=SECTOR, indicator_name=change_name, value=current_value - prior_value, context_indicator_id=deterministic_context_indicator_id(release, spec, change_name), window="weekly", units=spec.change_units, freshness_seconds=max(0.0, (collected_at - release.release_at).total_seconds()), source_event_time=release.release_at, details=change_details)
     builds.append((change, change_details))
     return builds, issues
@@ -638,6 +687,32 @@ def _select_record(records: Sequence[Mapping[str, object]], spec: EIAMetricSpec,
 
 def _build_release_flag(release: EIARelease, ticker: str) -> ContextFlag:
     return ContextFlag(event_time=release.window_start, source=SOURCE_NAME, flag_type=FLAG_TYPE, severity="NORMAL", context_flag_id=deterministic_context_flag_id(release, ticker), ticker=ticker, sector=SECTOR, valid_until=release.window_end)
+
+
+def _provenance(
+    *,
+    source_event_time: datetime,
+    available_at: datetime | None,
+    collected_at: datetime,
+    effective_from: datetime | None,
+    valid_until: datetime | None,
+    availability_basis: str,
+    research_asof_eligible: bool,
+    source_record_id: str,
+) -> dict[str, object]:
+    return {
+        "source_event_time": source_event_time,
+        "source_observed_at": None,
+        "available_at": available_at,
+        "collected_at": collected_at,
+        "effective_from": effective_from,
+        "valid_until": valid_until,
+        "availability_basis": availability_basis,
+        "research_asof_eligible": research_asof_eligible,
+        "revision_id": None,
+        "vintage_id": None,
+        "source_record_id": source_record_id,
+    }
 
 
 def _result(status: EIAWPSRCollectionStatus, plan: EIAWPSRActionPlan, last_seen: date | None, flags: list[ContextFlag], snapshots: list[ContextIndicatorSnapshot], cache_results: list[ContextStateUpdateResult], ledger_results: list[object], issues: list[EIAWPSRIssue]) -> EIAWPSRCollectionResult:

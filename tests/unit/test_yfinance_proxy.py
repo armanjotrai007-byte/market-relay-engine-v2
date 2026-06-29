@@ -7,10 +7,12 @@ import pandas as pd
 import pytest
 
 import scripts.check_yfinance_proxy as check_yfinance_proxy
+from market_relay_engine.context.provenance import is_active_in_time_window
 from market_relay_engine.context.state_cache import (
     ContextScope,
     ContextStateCache,
     ContextStateCacheError,
+    ContextStateUpdateStatus,
     make_global_context_entry,
     make_sector_context_entry,
 )
@@ -180,6 +182,19 @@ def test_grace_staleness_validation_and_no_boundary_blackout() -> None:
     latest = next(snapshot for snapshot in result.indicator_snapshots if snapshot.indicator_name == "latest_close")
     assert latest.source_event_time == datetime(2026, 1, 2, 15, 5, tzinfo=UTC)
     assert latest.value == 112.0
+    provenance = latest.details["provenance"]
+    assert provenance["source_event_time"] == "2026-01-02T15:05:00Z"
+    assert provenance["available_at"] is None
+    assert provenance["effective_from"] == "2026-01-02T15:05:30Z"
+    assert provenance["availability_basis"] == "policy_completion_grace_unverified"
+    assert provenance["research_asof_eligible"] is False
+    assert provenance["source_record_id"] == (
+        "yfinance_dev_raw_v1:XLE:5m:latest_close:5m:2026-01-02T15:05:00Z"
+    )
+    assert is_active_in_time_window(
+        latest.details,
+        datetime(2026, 1, 2, 15, 5, 30, tzinfo=UTC),
+    )
 
 
 def test_scalar_cache_values_are_json_safe_without_truthiness_rejection() -> None:
@@ -328,6 +343,61 @@ def test_valid_zero_return_is_cached_successfully() -> None:
     cache_entry = collector.cache.get_sector("OIL", cache_indicator_name("XLE", "return_5m", "5m"), now=BASE_TIME)
     assert cache_entry is not None
     assert cache_entry.value == 0.0
+
+
+def test_same_completed_bar_polling_time_is_duplicate_new_bar_replaces() -> None:
+    cache = ContextStateCache()
+    config = _config("XLE")
+    writer = _RecordingWriter()
+
+    def first_download(**_: object) -> pd.DataFrame:
+        return _frame([100.0 for _ in range(13)])
+
+    first_collector = YFinanceProxyCollector(
+        cache=cache,
+        config=config,
+        download=first_download,
+        clock=lambda: BASE_TIME,
+        ledger_writer=writer,
+    )
+    first = first_collector.collect(write_questdb=True)
+    second_collector = YFinanceProxyCollector(
+        cache=cache,
+        config=config,
+        download=first_download,
+        clock=lambda: BASE_TIME + timedelta(seconds=20),
+        ledger_writer=writer,
+    )
+    second = second_collector.collect(write_questdb=True)
+
+    second_update = next(
+        item
+        for item in second.cache_update_results
+        if item.key.name == cache_indicator_name("XLE", "latest_close", "5m")
+    )
+    assert second_update.status is ContextStateUpdateStatus.IGNORED_DUPLICATE
+    assert (
+        first.indicator_snapshots[0].details["provenance"]["collected_at"]
+        == second.indicator_snapshots[0].details["provenance"]["collected_at"]
+    )
+    assert len(writer.snapshots) == len(first.indicator_snapshots)
+
+    def newer_download(**_: object) -> pd.DataFrame:
+        return _frame([100.0 for _ in range(14)])
+
+    newer = YFinanceProxyCollector(
+        cache=cache,
+        config=config,
+        download=newer_download,
+        clock=lambda: BASE_TIME + timedelta(minutes=5, seconds=20),
+        ledger_writer=writer,
+    ).collect(write_questdb=True)
+    newer_update = next(
+        item
+        for item in newer.cache_update_results
+        if item.key.name == cache_indicator_name("XLE", "latest_close", "5m")
+    )
+    assert newer_update.status is ContextStateUpdateStatus.REPLACED
 
 
 def test_invalid_latest_completed_close_uses_previous_valid_bar_without_crashing() -> None:
