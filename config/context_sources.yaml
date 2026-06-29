@@ -50,6 +50,19 @@ structured_sources:
     recipient_map_path: "config/usaspending_recipient_ticker_map.yaml"
     contract_awards_only: true
 
+  macro_calendar:
+    enabled: false
+    purpose: "Reviewed local U.S. macro calendar context for research-only event-window analysis."
+    artifact_path: "config/macro_calendar.yaml"
+    feeds_memory_cache: true
+    writes_questdb_ledger: true
+    used_in_per_tick_loop: false
+    offline_local_artifact: true
+    runtime_network_access: false
+    live_scraper: false
+    direct_trade_authority: false
+    upcoming_lookahead_days: 14
+
   yfinance_dev_only:
     enabled: false
     development_only: true

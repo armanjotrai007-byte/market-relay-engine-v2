@@ -1,0 +1,345 @@
+schema_version: 1
+calendar_version: macro_calendar_v1_2026_06_29
+calendar_captured_at: "2026-06-29T20:00:00Z"
+source_manifest:
+  reviewed_at: "2026-06-29T20:00:00Z"
+  coverage_policy: "Only official records with explicit date and release time are included; no recurring-rule synthesis."
+  official_sources:
+    - source_provider: Federal Reserve
+      source_reference: https://www.federalreserve.gov/newsevents/calendar.htm
+      event_types:
+        - FOMC_DECISION
+    - source_provider: Bureau of Labor Statistics
+      source_reference: https://www.bls.gov/schedule/2026/home.htm
+      event_types:
+        - CPI
+        - PPI
+        - EMPLOYMENT_SITUATION
+        - JOLTS
+    - source_provider: Bureau of Economic Analysis
+      source_reference: https://www.bea.gov/news/schedule/full
+      event_types:
+        - PERSONAL_INCOME_AND_OUTLAYS
+        - GDP
+    - source_provider: U.S. Census Bureau
+      source_reference: https://www.census.gov/economic-indicators/calendar-listview.html
+      event_types:
+        - RETAIL_SALES
+    - source_provider: Institute for Supply Management
+      source_reference: https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/
+      event_types:
+        - ISM_MANUFACTURING_PMI
+        - ISM_SERVICES_PMI
+    - source_provider: U.S. Department of Labor
+      source_reference: https://oui.doleta.gov/unemploy/claims_arch.asp
+      event_types:
+        - INITIAL_JOBLESS_CLAIMS
+  excluded_categories:
+    - EIA petroleum releases
+    - earnings
+    - guidance
+    - investor days
+    - exchange holidays
+    - early closes
+    - Fed speeches
+    - political events
+    - geopolitical events
+    - FDA events
+    - M&A events
+  coverage:
+    FOMC_DECISION:
+      included_event_count: 2
+      first_scheduled_at: "2026-07-29T18:00:00Z"
+      last_scheduled_at: "2026-09-16T18:00:00Z"
+      source_provider: Federal Reserve
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    JOLTS:
+      included_event_count: 1
+      first_scheduled_at: "2026-06-30T14:00:00Z"
+      last_scheduled_at: "2026-06-30T14:00:00Z"
+      source_provider: Bureau of Labor Statistics
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    ISM_MANUFACTURING_PMI:
+      included_event_count: 1
+      first_scheduled_at: "2026-07-01T15:00:00Z"
+      last_scheduled_at: "2026-07-01T15:00:00Z"
+      source_provider: Institute for Supply Management
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    EMPLOYMENT_SITUATION:
+      included_event_count: 1
+      first_scheduled_at: "2026-07-02T12:30:00Z"
+      last_scheduled_at: "2026-07-02T12:30:00Z"
+      source_provider: Bureau of Labor Statistics
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    ISM_SERVICES_PMI:
+      included_event_count: 1
+      first_scheduled_at: "2026-07-06T15:00:00Z"
+      last_scheduled_at: "2026-07-06T15:00:00Z"
+      source_provider: Institute for Supply Management
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    CPI:
+      included_event_count: 2
+      first_scheduled_at: "2026-07-14T12:30:00Z"
+      last_scheduled_at: "2026-08-12T12:30:00Z"
+      source_provider: Bureau of Labor Statistics
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    PPI:
+      included_event_count: 1
+      first_scheduled_at: "2026-07-15T12:30:00Z"
+      last_scheduled_at: "2026-07-15T12:30:00Z"
+      source_provider: Bureau of Labor Statistics
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    RETAIL_SALES:
+      included_event_count: 1
+      first_scheduled_at: "2026-07-16T12:30:00Z"
+      last_scheduled_at: "2026-07-16T12:30:00Z"
+      source_provider: U.S. Census Bureau
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    GDP:
+      included_event_count: 1
+      first_scheduled_at: "2026-07-30T12:30:00Z"
+      last_scheduled_at: "2026-07-30T12:30:00Z"
+      source_provider: Bureau of Economic Analysis
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    PERSONAL_INCOME_AND_OUTLAYS:
+      included_event_count: 1
+      first_scheduled_at: "2026-07-30T12:30:00Z"
+      last_scheduled_at: "2026-07-30T12:30:00Z"
+      source_provider: Bureau of Economic Analysis
+      coverage_note: "Reviewed local records only; not full-year coverage."
+    INITIAL_JOBLESS_CLAIMS:
+      included_event_count: 1
+      first_scheduled_at: "2026-11-25T13:30:00Z"
+      last_scheduled_at: "2026-11-25T13:30:00Z"
+      source_provider: U.S. Department of Labor
+      coverage_note: "Reviewed local records only; not full-year coverage."
+  coverage_limitations:
+    INITIAL_JOBLESS_CLAIMS: "DOL page states weekly publication practice and one explicit 2026 Thanksgiving exception; only the explicit dated exception is included."
+    official_schedule_published_at: "Set to null unless the official source provides a verified timestamp, not just a page last-modified date."
+window_profiles:
+  TIER_1:
+    pre_event_minutes: 10
+    post_event_minutes: 15
+  TIER_2:
+    pre_event_minutes: 5
+    post_event_minutes: 10
+  TIER_3:
+    pre_event_minutes: 2
+    post_event_minutes: 5
+event_type_policies:
+  FOMC_DECISION:
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  CPI:
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  EMPLOYMENT_SITUATION:
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  PERSONAL_INCOME_AND_OUTLAYS:
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  PPI:
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  GDP:
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  RETAIL_SALES:
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  ISM_MANUFACTURING_PMI:
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  ISM_SERVICES_PMI:
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  JOLTS:
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  INITIAL_JOBLESS_CLAIMS:
+    research_tier: TIER_3
+    window_profile_id: TIER_3
+events:
+  - calendar_event_id: macro_calendar_event_53b85d9e40f2f530146fb7768751c917
+    logical_occurrence_id: fed:fomc_decision:20260729T180000Z:fedcalendarfomcmeeting20260729
+    event_type: FOMC_DECISION
+    scheduled_at: "2026-07-29T18:00:00Z"
+    source_time_text: "2:00 p.m."
+    schedule_status: CONFIRMED
+    source_provider: Federal Reserve
+    source_record_id: fed_calendar_fomc_meeting_2026_07_29
+    source_reference: https://www.federalreserve.gov/newsevents/2026-july.htm
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  - calendar_event_id: macro_calendar_event_c56906fcc590cddb6e887acbd5d02f51
+    logical_occurrence_id: fed:fomc_decision:20260916T180000Z:fedcalendarfomcmeeting20260916
+    event_type: FOMC_DECISION
+    scheduled_at: "2026-09-16T18:00:00Z"
+    source_time_text: "2:00 p.m."
+    schedule_status: CONFIRMED
+    source_provider: Federal Reserve
+    source_record_id: fed_calendar_fomc_meeting_2026_09_16
+    source_reference: https://www.federalreserve.gov/newsevents/2026-september.htm
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  - calendar_event_id: macro_calendar_event_abd1194e6e1f0b9884df44dae2bc3452
+    logical_occurrence_id: bls:jolts:20260630T140000Z:blsschedulejolts20260630may2026
+    event_type: JOLTS
+    scheduled_at: "2026-06-30T14:00:00Z"
+    source_time_text: "10:00 AM Eastern Time"
+    schedule_status: CONFIRMED
+    source_provider: Bureau of Labor Statistics
+    source_record_id: bls_schedule_jolts_2026_06_30_may_2026
+    source_reference: https://www.bls.gov/schedule/2026/home.htm
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  - calendar_event_id: macro_calendar_event_42ff843203677f825fd1bb2b11a453e7
+    logical_occurrence_id: ism:ism_manufacturing_pmi:20260701T150000Z:ismreportcalendarmanufacturingjune2026
+    event_type: ISM_MANUFACTURING_PMI
+    scheduled_at: "2026-07-01T15:00:00Z"
+    source_time_text: "10:00 a.m. (EST)"
+    schedule_status: CONFIRMED
+    source_provider: Institute for Supply Management
+    source_record_id: ism_report_calendar_manufacturing_june_2026
+    source_reference: https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  - calendar_event_id: macro_calendar_event_c44b5e8c51fa0890d317dc0b0e508124
+    logical_occurrence_id: bls:employment_situation:20260702T123000Z:blsscheduleemploymentsituation20260702june2026
+    event_type: EMPLOYMENT_SITUATION
+    scheduled_at: "2026-07-02T12:30:00Z"
+    source_time_text: "08:30 AM Eastern Time"
+    schedule_status: CONFIRMED
+    source_provider: Bureau of Labor Statistics
+    source_record_id: bls_schedule_employment_situation_2026_07_02_june_2026
+    source_reference: https://www.bls.gov/schedule/2026/home.htm
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  - calendar_event_id: macro_calendar_event_c44416bf44ccced1abc7c84d285ae9bf
+    logical_occurrence_id: ism:ism_services_pmi:20260706T150000Z:ismreportcalendarservicesjune2026
+    event_type: ISM_SERVICES_PMI
+    scheduled_at: "2026-07-06T15:00:00Z"
+    source_time_text: "10:00 a.m. (EST)"
+    schedule_status: CONFIRMED
+    source_provider: Institute for Supply Management
+    source_record_id: ism_report_calendar_services_june_2026
+    source_reference: https://www.ismworld.org/supply-management-news-and-reports/reports/rob-report-calendar/
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  - calendar_event_id: macro_calendar_event_7cb137c5e97105a8685803cbc7e62245
+    logical_occurrence_id: bls:cpi:20260714T123000Z:blsschedulecpi20260714june2026
+    event_type: CPI
+    scheduled_at: "2026-07-14T12:30:00Z"
+    source_time_text: "08:30 AM Eastern Time"
+    schedule_status: CONFIRMED
+    source_provider: Bureau of Labor Statistics
+    source_record_id: bls_schedule_cpi_2026_07_14_june_2026
+    source_reference: https://www.bls.gov/schedule/2026/home.htm
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  - calendar_event_id: macro_calendar_event_84e444439e01890842ade3fcbb71ca13
+    logical_occurrence_id: bls:ppi:20260715T123000Z:blsscheduleppi20260715june2026
+    event_type: PPI
+    scheduled_at: "2026-07-15T12:30:00Z"
+    source_time_text: "08:30 AM Eastern Time"
+    schedule_status: CONFIRMED
+    source_provider: Bureau of Labor Statistics
+    source_record_id: bls_schedule_ppi_2026_07_15_june_2026
+    source_reference: https://www.bls.gov/schedule/2026/home.htm
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  - calendar_event_id: macro_calendar_event_b92d25299d3187e2e8a49635da559fd7
+    logical_occurrence_id: census:retail_sales:20260716T123000Z:censusadvancemonthlysalesretailfoodservicesa202607160830a202606
+    event_type: RETAIL_SALES
+    scheduled_at: "2026-07-16T12:30:00Z"
+    source_time_text: "8:30 AM"
+    schedule_status: CONFIRMED
+    source_provider: U.S. Census Bureau
+    source_record_id: census_advance_monthly_sales_retail_food_services_A202607160830_A202606
+    source_reference: https://www.census.gov/economic-indicators/calendar-listview.html
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  - calendar_event_id: macro_calendar_event_5a77e2d1fb6441404b43568a6ec42867
+    logical_occurrence_id: bea:gdp:20260730T123000Z:beareleaseschedulegdpadvanceestimate2026q2
+    event_type: GDP
+    scheduled_at: "2026-07-30T12:30:00Z"
+    source_time_text: "8:30 AM"
+    schedule_status: CONFIRMED
+    source_provider: Bureau of Economic Analysis
+    source_record_id: bea_release_schedule_gdp_advance_estimate_2026_q2
+    source_reference: https://www.bea.gov/news/schedule/full
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_2
+    window_profile_id: TIER_2
+  - calendar_event_id: macro_calendar_event_3f0b40dd6c6cc530efe1d489b8490c8e
+    logical_occurrence_id: bea:personal_income_and_outlays:20260730T123000Z:beareleaseschedulepersonalincomeoutlaysjune2026
+    event_type: PERSONAL_INCOME_AND_OUTLAYS
+    scheduled_at: "2026-07-30T12:30:00Z"
+    source_time_text: "8:30 AM"
+    schedule_status: CONFIRMED
+    source_provider: Bureau of Economic Analysis
+    source_record_id: bea_release_schedule_personal_income_outlays_june_2026
+    source_reference: https://www.bea.gov/news/schedule/full
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  - calendar_event_id: macro_calendar_event_af103d71b572f0b4c0bfc42b089ce41d
+    logical_occurrence_id: bls:cpi:20260812T123000Z:blsschedulecpi20260812july2026
+    event_type: CPI
+    scheduled_at: "2026-08-12T12:30:00Z"
+    source_time_text: "08:30 AM Eastern Time"
+    schedule_status: CONFIRMED
+    source_provider: Bureau of Labor Statistics
+    source_record_id: bls_schedule_cpi_2026_08_12_july_2026
+    source_reference: https://www.bls.gov/schedule/2026/home.htm
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_1
+    window_profile_id: TIER_1
+  - calendar_event_id: macro_calendar_event_c47d800896a9b128e1d83f185ed9301e
+    logical_occurrence_id: dol:initial_jobless_claims:20261125T133000Z:doluiclaimsexceptionthanksgiving20261125
+    event_type: INITIAL_JOBLESS_CLAIMS
+    scheduled_at: "2026-11-25T13:30:00Z"
+    source_time_text: "8:30 AM EST"
+    schedule_status: CONFIRMED
+    source_provider: U.S. Department of Labor
+    source_record_id: dol_ui_claims_exception_thanksgiving_2026_11_25
+    source_reference: https://oui.doleta.gov/unemploy/claims_arch.asp
+    schedule_revision_id: schedule_rev_2026_06_29_001
+    schedule_captured_at: "2026-06-29T20:00:00Z"
+    official_schedule_published_at: null
+    research_tier: TIER_3
+    window_profile_id: TIER_3
