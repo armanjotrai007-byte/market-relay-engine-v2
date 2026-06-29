@@ -63,6 +63,23 @@ def _recompute_event_id(raw: dict[str, Any], event: dict[str, Any]) -> None:
     )
 
 
+def _event_revision(
+    raw: dict[str, Any],
+    source_event: dict[str, Any],
+    *,
+    schedule_status: str,
+    schedule_revision_id: str,
+    scheduled_at: str | None = None,
+) -> dict[str, Any]:
+    revision = deepcopy(source_event)
+    revision["schedule_status"] = schedule_status
+    revision["schedule_revision_id"] = schedule_revision_id
+    if scheduled_at is not None:
+        revision["scheduled_at"] = scheduled_at
+    _recompute_event_id(raw, revision)
+    return revision
+
+
 def _single_event_calendar(event_type: str = "CPI") -> dict[str, Any]:
     raw = _raw_artifact()
     selected = deepcopy(_event(raw, event_type))
@@ -311,6 +328,151 @@ def test_superseded_events_revoke_existing_active_cache_entry() -> None:
     assert result.cache_update_results[-1].status is ContextStateUpdateStatus.REPLACED
     assert stored is not None
     assert stored.value is False
+
+
+def test_current_revision_survives_old_inactive_revision_after_it() -> None:
+    raw = _single_event_calendar()
+    base = raw["events"][0]
+    current = _event_revision(
+        raw,
+        base,
+        schedule_status="CONFIRMED",
+        schedule_revision_id="schedule_rev_current",
+    )
+    prior = _event_revision(
+        raw,
+        base,
+        schedule_status="SUPERSEDED",
+        schedule_revision_id="schedule_rev_prior",
+    )
+    raw["events"] = [current, prior]
+    cache = ContextStateCache()
+    writer = FakeWriter()
+
+    result = _collector(raw, cache=cache, writer=writer).collect_once(
+        datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+        write_questdb=True,
+    )
+    entry = cache.get_global(
+        f"macro_calendar:active:{current['logical_occurrence_id']}",
+        now=datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+    )
+
+    assert entry is not None
+    assert entry.value is True
+    assert entry.details["schedule_revision_id"] == "schedule_rev_current"
+    assert entry.details["calendar_event_id"] == current["calendar_event_id"]
+    assert [update.status for update in result.cache_update_results] == [
+        ContextStateUpdateStatus.WRITTEN
+    ]
+    assert len(writer.snapshots) == 1
+
+
+def test_current_revision_collection_is_order_independent() -> None:
+    raw = _single_event_calendar()
+    base = raw["events"][0]
+    current = _event_revision(
+        raw,
+        base,
+        schedule_status="CONFIRMED",
+        schedule_revision_id="schedule_rev_current",
+    )
+    prior = _event_revision(
+        raw,
+        base,
+        schedule_status="SUPERSEDED",
+        schedule_revision_id="schedule_rev_prior",
+    )
+    states: list[tuple[bool, str, int]] = []
+    for ordered_events in ([current, prior], [prior, current]):
+        candidate = deepcopy(raw)
+        candidate["events"] = deepcopy(ordered_events)
+        cache = ContextStateCache()
+        writer = FakeWriter()
+        _collector(candidate, cache=cache, writer=writer).collect_once(
+            datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+            write_questdb=True,
+        )
+        entry = cache.get_global(
+            f"macro_calendar:active:{current['logical_occurrence_id']}",
+            now=datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+        )
+        assert entry is not None
+        states.append(
+            (
+                entry.value,
+                str(entry.details["schedule_revision_id"]),
+                len(writer.snapshots),
+            )
+        )
+
+    assert states == [(True, "schedule_rev_current", 1), (True, "schedule_rev_current", 1)]
+
+
+def test_future_replacement_revokes_stale_old_active_state_without_ledger_write() -> None:
+    cache = ContextStateCache()
+    old_calendar = _single_event_calendar()
+    old_result = _collector(old_calendar, cache=cache).collect_once(
+        datetime(2026, 7, 14, 12, 30, tzinfo=UTC)
+    )
+    old_event = old_result.active_events[0]
+    assert cache.get_global(cache_key_for_event(old_event), now=old_event.scheduled_at) is not None
+
+    updated = _single_event_calendar()
+    base = updated["events"][0]
+    old_superseded = _event_revision(
+        updated,
+        base,
+        schedule_status="SUPERSEDED",
+        schedule_revision_id="schedule_rev_old_superseded",
+    )
+    future_confirmed = _event_revision(
+        updated,
+        base,
+        schedule_status="CONFIRMED",
+        schedule_revision_id="schedule_rev_future_confirmed",
+        scheduled_at="2026-07-14T13:30:00Z",
+    )
+    updated["events"] = [old_superseded, future_confirmed]
+    writer = FakeWriter()
+
+    result = _collector(updated, cache=cache, writer=writer).collect_once(
+        datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+        write_questdb=True,
+    )
+
+    assert result.active_events == ()
+    assert cache.get_global(cache_key_for_event(old_event), now=old_event.scheduled_at) is None
+    revoked = cache.get_global(
+        cache_key_for_event(old_event),
+        now=old_event.scheduled_at,
+        include_expired=True,
+    )
+    assert revoked is not None
+    assert revoked.value is False
+    assert result.indicator_snapshots == ()
+    assert writer.snapshots == []
+
+
+def test_ambiguous_active_revisions_for_same_logical_occurrence_are_invalid() -> None:
+    raw = _single_event_calendar()
+    base = raw["events"][0]
+    confirmed = _event_revision(
+        raw,
+        base,
+        schedule_status="CONFIRMED",
+        schedule_revision_id="schedule_rev_confirmed",
+    )
+    tentative = _event_revision(
+        raw,
+        base,
+        schedule_status="TENTATIVE",
+        schedule_revision_id="schedule_rev_tentative",
+    )
+    raw["events"] = [confirmed, tentative]
+
+    with pytest.raises(MacroCalendarError, match="duplicate active logical_occurrence_id"):
+        validate_macro_calendar(raw)
 
 
 def test_provenance_exists_and_aligns_with_cache_entry_and_snapshot() -> None:

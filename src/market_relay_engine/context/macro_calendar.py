@@ -9,6 +9,7 @@ from enum import Enum
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Any, Protocol
 
 import yaml
@@ -57,6 +58,7 @@ SCHEDULE_STATUSES: frozenset[str] = ACTIVE_STATUSES | INACTIVE_STATUSES
 RESEARCH_TIERS: frozenset[str] = frozenset({"TIER_1", "TIER_2", "TIER_3"})
 FORBIDDEN_EVENT_MARKERS: tuple[str, ...] = ("EIA", "PETROLEUM")
 FORBIDDEN_OUTPUT_MARKER = "event_window"
+LOGICAL_OCCURRENCE_TIMESTAMP_PATTERN = re.compile(r"\d{8}t\d{6}z")
 REQUIRED_TOP_LEVEL_FIELDS: tuple[str, ...] = (
     "schema_version",
     "calendar_version",
@@ -419,6 +421,8 @@ class MacroCalendarCollector:
             base_dir=self.base_dir,
         )
         active = active_events_at(calendar, now)
+        currently_active_ids = {event.logical_occurrence_id for event in active}
+        inactive_revisions = _inactive_revision_by_logical_id(calendar.events)
         upcoming = upcoming_events(
             calendar,
             now,
@@ -452,11 +456,12 @@ class MacroCalendarCollector:
                 session_id=session_id,
             )
 
-        for event in sorted(calendar.events, key=_event_sort_key):
-            if event.is_inactive_revision:
-                update = self._revoke_inactive_revision(event, now)
-                if update is not None:
-                    cache_results.append(update)
+        for logical_occurrence_id, event in sorted(inactive_revisions.items()):
+            if logical_occurrence_id in currently_active_ids:
+                continue
+            update = self._revoke_inactive_revision(event, now)
+            if update is not None:
+                cache_results.append(update)
 
         status = (
             MacroCalendarCollectionStatus.SUCCESS
@@ -920,15 +925,14 @@ def _validate_logical_occurrence_id(
     scheduled_at: datetime,
     source_record_id: str,
 ) -> None:
-    compact_timestamp = _compact_utc(scheduled_at)
     text = value.lower()
     provider, _, remainder = value.partition(":")
     if not provider or not remainder:
         raise MacroCalendarError("logical_occurrence_id must include provider and event identity")
     if event_type.lower() not in text:
         raise MacroCalendarError("logical_occurrence_id must include event type")
-    if compact_timestamp.lower() not in text:
-        raise MacroCalendarError("logical_occurrence_id must include scheduled UTC time")
+    if LOGICAL_OCCURRENCE_TIMESTAMP_PATTERN.search(text) is None:
+        raise MacroCalendarError("logical_occurrence_id must include a scheduled UTC time")
     canonical_record = _slug(source_record_id)
     if canonical_record and canonical_record not in text:
         raise MacroCalendarError("logical_occurrence_id must include source record identity")
@@ -1038,6 +1042,27 @@ def _reject_forbidden_output(details: Mapping[str, object]) -> None:
 
 def _event_sort_key(event: MacroCalendarEvent) -> tuple[datetime, str]:
     return (event.scheduled_at, event.logical_occurrence_id)
+
+
+def _inactive_revision_by_logical_id(
+    events: Sequence[MacroCalendarEvent],
+) -> dict[str, MacroCalendarEvent]:
+    revisions: dict[str, MacroCalendarEvent] = {}
+    for event in events:
+        if not event.is_inactive_revision:
+            continue
+        existing = revisions.get(event.logical_occurrence_id)
+        if existing is None or (
+            event.schedule_captured_at,
+            event.schedule_revision_id,
+            event.calendar_event_id,
+        ) > (
+            existing.schedule_captured_at,
+            existing.schedule_revision_id,
+            existing.calendar_event_id,
+        ):
+            revisions[event.logical_occurrence_id] = event
+    return revisions
 
 
 __all__ = [
