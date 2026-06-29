@@ -519,7 +519,7 @@ class MacroCalendarCollector:
             make_global_context_entry(
                 name=cache_key_for_event(event),
                 value=True,
-                updated_at=effective_from,
+                updated_at=event.schedule_captured_at,
                 severity="INFO",
                 source=SOURCE_NAME,
                 source_event_time=event.scheduled_at,
@@ -553,7 +553,7 @@ class MacroCalendarCollector:
             make_global_context_entry(
                 name=cache_key_for_event(event),
                 value=False,
-                updated_at=existing.updated_at,
+                updated_at=event.schedule_captured_at,
                 severity="INFO",
                 source=SOURCE_NAME,
                 source_event_time=event.scheduled_at,

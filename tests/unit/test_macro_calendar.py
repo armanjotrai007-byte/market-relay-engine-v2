@@ -121,6 +121,28 @@ def _seed_active_cpi_cache(cache: ContextStateCache) -> object:
     return result.active_events[0]
 
 
+def _cache_ordering_revisions() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    raw = _single_event_calendar()
+    base = raw["events"][0]
+    old_confirmed = _event_revision(
+        raw,
+        base,
+        schedule_status="CONFIRMED",
+        schedule_revision_id="schedule_rev_old_confirmed",
+        schedule_captured_at="2026-07-14T13:00:00Z",
+        scheduled_at="2026-07-14T13:40:00Z",
+    )
+    new_confirmed = _event_revision(
+        raw,
+        base,
+        schedule_status="CONFIRMED",
+        schedule_revision_id="schedule_rev_new_confirmed",
+        schedule_captured_at="2026-07-14T13:35:00Z",
+        scheduled_at="2026-07-14T13:35:00Z",
+    )
+    return raw, old_confirmed, new_confirmed
+
+
 def test_valid_artifact_loads() -> None:
     calendar = load_macro_calendar(ARTIFACT_PATH)
 
@@ -365,7 +387,7 @@ def test_superseded_events_revoke_existing_active_cache_entry() -> None:
         make_global_context_entry(
             name=cache_key_for_event(superseded),
             value=True,
-            updated_at=datetime(2026, 7, 14, 12, 20, tzinfo=UTC),
+            updated_at=superseded.schedule_captured_at - timedelta(minutes=1),
             severity="INFO",
             source="macro_calendar_v1",
             source_event_time=superseded.scheduled_at,
@@ -388,6 +410,105 @@ def test_superseded_events_revoke_existing_active_cache_entry() -> None:
     assert result.cache_update_results[-1].status is ContextStateUpdateStatus.REPLACED
     assert stored is not None
     assert stored.value is False
+    assert stored.updated_at == superseded.schedule_captured_at
+
+
+def test_newer_revision_moved_earlier_replaces_cached_state() -> None:
+    raw, old_confirmed, new_confirmed = _cache_ordering_revisions()
+    cache = ContextStateCache()
+    old_calendar = {**deepcopy(raw), "events": [old_confirmed]}
+    old_result = _collector(old_calendar, cache=cache).collect_once(
+        datetime(2026, 7, 14, 13, 35, tzinfo=UTC)
+    )
+    old_event = old_result.active_events[0]
+    old_entry = cache.get_global(cache_key_for_event(old_event), now=old_event.scheduled_at)
+    assert old_entry is not None
+    assert old_entry.updated_at == datetime(2026, 7, 14, 13, 0, tzinfo=UTC)
+
+    writer = FakeWriter()
+    updated = deepcopy(raw)
+    updated["events"] = [old_confirmed, new_confirmed]
+    result = _collector(updated, cache=cache, writer=writer).collect_once(
+        datetime(2026, 7, 14, 13, 35, tzinfo=UTC),
+        write_questdb=True,
+    )
+    new_event = result.active_events[0]
+    stored = cache.get_global(cache_key_for_event(new_event), now=new_event.scheduled_at)
+
+    assert result.cache_update_results[0].status is ContextStateUpdateStatus.REPLACED
+    assert stored is not None
+    assert stored.details["schedule_revision_id"] == "schedule_rev_new_confirmed"
+    assert stored.valid_until == datetime(2026, 7, 14, 13, 50, tzinfo=UTC)
+    assert stored.updated_at == datetime(2026, 7, 14, 13, 35, tzinfo=UTC)
+    assert len(writer.snapshots) == 1
+
+
+def test_older_revision_cannot_overwrite_newer_cached_state() -> None:
+    raw, old_confirmed, new_confirmed = _cache_ordering_revisions()
+    cache = ContextStateCache()
+    new_calendar = {**deepcopy(raw), "events": [new_confirmed]}
+    new_result = _collector(new_calendar, cache=cache).collect_once(
+        datetime(2026, 7, 14, 13, 35, tzinfo=UTC)
+    )
+    new_event = new_result.active_events[0]
+
+    writer = FakeWriter()
+    old_calendar = {**deepcopy(raw), "events": [old_confirmed]}
+    result = _collector(old_calendar, cache=cache, writer=writer).collect_once(
+        datetime(2026, 7, 14, 13, 35, tzinfo=UTC),
+        write_questdb=True,
+    )
+    stored = cache.get_global(cache_key_for_event(new_event), now=new_event.scheduled_at)
+
+    assert result.cache_update_results[0].status is ContextStateUpdateStatus.IGNORED_STALE
+    assert stored is not None
+    assert stored.details["schedule_revision_id"] == "schedule_rev_new_confirmed"
+    assert stored.valid_until == datetime(2026, 7, 14, 13, 50, tzinfo=UTC)
+    assert stored.updated_at == datetime(2026, 7, 14, 13, 35, tzinfo=UTC)
+    assert writer.snapshots == []
+
+
+def test_newer_cancellation_revokes_old_active_state_despite_window_ordering() -> None:
+    raw, old_confirmed, _new_confirmed = _cache_ordering_revisions()
+    new_cancelled = _event_revision(
+        raw,
+        old_confirmed,
+        schedule_status="CANCELLED",
+        schedule_revision_id="schedule_rev_new_cancelled",
+        schedule_captured_at="2026-07-14T13:35:00Z",
+        scheduled_at="2026-07-14T13:20:00Z",
+    )
+    cache = ContextStateCache()
+    old_calendar = {**deepcopy(raw), "events": [old_confirmed]}
+    old_event = _collector(old_calendar, cache=cache).collect_once(
+        datetime(2026, 7, 14, 13, 35, tzinfo=UTC)
+    ).active_events[0]
+    writer = FakeWriter()
+    updated = deepcopy(raw)
+    updated["events"] = [old_confirmed, new_cancelled]
+
+    result = _collector(updated, cache=cache, writer=writer).collect_once(
+        datetime(2026, 7, 14, 13, 35, tzinfo=UTC),
+        write_questdb=True,
+    )
+    stored = cache.get_global(
+        cache_key_for_event(old_event),
+        now=datetime(2026, 7, 14, 13, 35, tzinfo=UTC),
+        include_expired=True,
+    )
+
+    assert result.active_events == ()
+    assert result.cache_update_results[-1].status is ContextStateUpdateStatus.REPLACED
+    assert stored is not None
+    assert stored.value is False
+    assert stored.updated_at == datetime(2026, 7, 14, 13, 35, tzinfo=UTC)
+    assert stored.details["schedule_revision_id"] == "schedule_rev_new_cancelled"
+    assert cache.get_global(
+        cache_key_for_event(old_event),
+        now=datetime(2026, 7, 14, 13, 35, 0, 1, tzinfo=UTC),
+    ) is None
+    assert result.indicator_snapshots == ()
+    assert writer.snapshots == []
 
 
 def test_newer_cancelled_revision_overrides_old_confirmed_revision() -> None:
@@ -740,11 +861,18 @@ def test_research_asof_eligible_only_when_confirmed_with_verified_publication_ti
 
 
 def test_collected_at_uses_schedule_capture_not_runtime_evaluation_time() -> None:
-    result = _collector(_single_event_calendar()).collect_once(
-        datetime(2026, 7, 14, 12, 31, tzinfo=UTC)
+    cache = ContextStateCache()
+    evaluation_time = datetime(2026, 7, 14, 12, 31, tzinfo=UTC)
+    result = _collector(_single_event_calendar(), cache=cache).collect_once(
+        evaluation_time
     )
+    event = result.active_events[0]
+    entry = cache.get_global(cache_key_for_event(event), now=evaluation_time)
 
     assert result.indicator_snapshots[0].details["provenance"]["collected_at"] == "2026-06-29T20:00:00Z"
+    assert entry is not None
+    assert entry.updated_at == event.schedule_captured_at
+    assert entry.updated_at != evaluation_time
 
 
 def test_no_output_details_contain_forbidden_event_window_marker() -> None:
