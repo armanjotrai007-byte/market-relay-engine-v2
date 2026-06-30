@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -43,6 +44,36 @@ class FakeWriter:
     def write_context_indicator_snapshot(self, snapshot: object, **kwargs: object) -> str:
         self.snapshots.append(snapshot)
         return "written"
+
+
+class FailingWriter:
+    def write_context_indicator_snapshot(self, snapshot: object, **kwargs: object) -> str:
+        raise RuntimeError("questdb unavailable")
+
+
+class RecordingFallback:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.result = SimpleNamespace(
+            path=Path("data/emergency_ledger/20260714.jsonl"),
+            record_id="",
+            bytes_written=123,
+            written_at=datetime(2026, 7, 14, 13, 56, tzinfo=UTC),
+        )
+
+    def append_record(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        self.result.record_id = str(kwargs["record_id"])
+        return self.result
+
+
+class FailingFallback:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def append_record(self, **kwargs: object) -> object:
+        self.calls.append(dict(kwargs))
+        raise OSError("fallback full")
 
 
 def _raw_artifact() -> dict[str, Any]:
@@ -103,12 +134,15 @@ def _collector(
     *,
     cache: ContextStateCache | None = None,
     writer: FakeWriter | None = None,
+    fallback: object | None = None,
+    config: MacroCalendarConfig | None = None,
 ) -> MacroCalendarCollector:
     return MacroCalendarCollector(
         cache=cache or ContextStateCache(),
-        config=MacroCalendarConfig(enabled=True),
+        config=config or MacroCalendarConfig(enabled=True),
         calendar=validate_macro_calendar(raw),
         ledger_writer=writer,
+        emergency_ledger_fallback=fallback,  # type: ignore[arg-type]
         base_dir=REPO_ROOT,
     )
 
@@ -141,6 +175,14 @@ def _cache_ordering_revisions() -> tuple[dict[str, Any], dict[str, Any], dict[st
         scheduled_at="2026-07-14T13:35:00Z",
     )
     return raw, old_confirmed, new_confirmed
+
+
+def _snapshot_time_calendar() -> dict[str, Any]:
+    raw = _single_event_calendar()
+    event = raw["events"][0]
+    event["scheduled_at"] = "2026-07-14T13:55:00Z"
+    event["schedule_captured_at"] = "2026-07-14T13:00:00Z"
+    return raw
 
 
 def test_valid_artifact_loads() -> None:
@@ -338,6 +380,172 @@ def test_repeated_collect_once_ignores_duplicate_and_writes_no_second_ledger_row
     assert first.cache_update_results[0].status is ContextStateUpdateStatus.WRITTEN
     assert second.cache_update_results[0].status is ContextStateUpdateStatus.IGNORED_DUPLICATE
     assert len(writer.snapshots) == 1
+
+
+def test_snapshot_time_uses_collection_time_not_effective_from() -> None:
+    cache = ContextStateCache()
+    evaluation_time = datetime(2026, 7, 14, 13, 55, tzinfo=UTC)
+    result = _collector(_snapshot_time_calendar(), cache=cache).collect_once(evaluation_time)
+    event = result.active_events[0]
+    snapshot = result.indicator_snapshots[0]
+    entry = cache.get_global(cache_key_for_event(event), now=evaluation_time)
+
+    assert snapshot.snapshot_time == evaluation_time
+    assert snapshot.source_event_time == event.scheduled_at
+    assert snapshot.details["effective_from"] == "2026-07-14T13:45:00Z"
+    assert snapshot.details["provenance"]["effective_from"] == "2026-07-14T13:45:00Z"
+    assert entry is not None
+    assert entry.updated_at == datetime(2026, 7, 14, 13, 0, tzinfo=UTC)
+    assert entry.updated_at != evaluation_time
+
+
+def test_writer_failure_uses_emergency_fallback_for_optional_questdb_write() -> None:
+    cache = ContextStateCache()
+    fallback = RecordingFallback()
+    result = _collector(
+        _single_event_calendar(),
+        cache=cache,
+        writer=FailingWriter(),  # type: ignore[arg-type]
+        fallback=fallback,
+    ).collect_once(
+        datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+        write_questdb=True,
+        run_id="run_1",
+        session_id="session_1",
+    )
+    snapshot = result.indicator_snapshots[0]
+    event = result.active_events[0]
+    call = fallback.calls[0]
+    entry = cache.get_global(cache_key_for_event(event), now=event.scheduled_at)
+
+    assert result.status is MacroCalendarCollectionStatus.PARTIAL
+    assert len(fallback.calls) == 1
+    assert call["event_time"] == snapshot.snapshot_time
+    assert call["primary_write_failure"] == {
+        "failure_code": "QUESTDB_CONTEXT_INDICATOR_WRITE_FAILED",
+        "failure_type": "RuntimeError",
+        "target_table": "context_indicator_snapshots",
+    }
+    assert call["payload"]["context_indicator_snapshot"] is snapshot
+    assert call["payload"]["write_request"] == {
+        "run_id": "run_1",
+        "session_id": "session_1",
+        "questdb_required": False,
+    }
+    assert result.ledger_write_results == (fallback.result,)
+    assert any(issue.issue_type == "LEDGER_WRITE_FAILED" for issue in result.issues)
+    assert any(
+        issue.issue_type == "EMERGENCY_LEDGER_FALLBACK_WRITTEN"
+        for issue in result.issues
+    )
+    assert entry is not None
+    assert entry.value is True
+
+
+def test_missing_writer_uses_emergency_fallback_for_optional_questdb_write() -> None:
+    fallback = RecordingFallback()
+    result = _collector(
+        _single_event_calendar(),
+        fallback=fallback,
+    ).collect_once(
+        datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+        write_questdb=True,
+    )
+    call = fallback.calls[0]
+
+    assert result.status is MacroCalendarCollectionStatus.PARTIAL
+    assert len(fallback.calls) == 1
+    assert call["primary_write_failure"]["failure_code"] == (
+        "QUESTDB_CONTEXT_INDICATOR_WRITER_UNAVAILABLE"
+    )
+    assert call["primary_write_failure"]["failure_type"] is None
+    assert result.ledger_write_results == (fallback.result,)
+    assert any(
+        issue.issue_type == "LEDGER_WRITER_UNAVAILABLE" for issue in result.issues
+    )
+
+
+def test_required_writer_failure_falls_back_before_raising() -> None:
+    fallback = RecordingFallback()
+    with pytest.raises(MacroCalendarError, match="QuestDB context indicator write failed"):
+        _collector(
+            _single_event_calendar(),
+            writer=FailingWriter(),  # type: ignore[arg-type]
+            fallback=fallback,
+        ).collect_once(
+            datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+            write_questdb=True,
+            questdb_required=True,
+        )
+
+    assert len(fallback.calls) == 1
+    assert fallback.calls[0]["primary_write_failure"]["failure_code"] == (
+        "QUESTDB_CONTEXT_INDICATOR_WRITE_FAILED"
+    )
+
+
+def test_optional_writer_and_fallback_failure_records_partial_without_raising() -> None:
+    fallback = FailingFallback()
+    result = _collector(
+        _single_event_calendar(),
+        writer=FailingWriter(),  # type: ignore[arg-type]
+        fallback=fallback,
+    ).collect_once(
+        datetime(2026, 7, 14, 12, 30, tzinfo=UTC),
+        write_questdb=True,
+    )
+
+    assert result.status is MacroCalendarCollectionStatus.PARTIAL
+    assert result.ledger_write_results == ()
+    assert len(fallback.calls) == 1
+    assert any(issue.issue_type == "LEDGER_WRITE_FAILED" for issue in result.issues)
+    assert any(
+        issue.issue_type == "EMERGENCY_LEDGER_FALLBACK_FAILED"
+        for issue in result.issues
+    )
+
+
+def test_fallback_is_not_called_when_ledger_write_is_not_required() -> None:
+    fallback = RecordingFallback()
+    _collector(
+        _single_event_calendar(),
+        writer=FailingWriter(),  # type: ignore[arg-type]
+        fallback=fallback,
+    ).collect_once(datetime(2026, 7, 14, 12, 30, tzinfo=UTC))
+    assert fallback.calls == []
+
+    disabled_fallback = RecordingFallback()
+    disabled_config = MacroCalendarConfig(enabled=True, writes_questdb_ledger=False)
+    _collector(
+        _single_event_calendar(),
+        writer=FailingWriter(),  # type: ignore[arg-type]
+        fallback=disabled_fallback,
+        config=disabled_config,
+    ).collect_once(datetime(2026, 7, 14, 12, 30, tzinfo=UTC), write_questdb=True)
+    assert disabled_fallback.calls == []
+
+    duplicate_cache = ContextStateCache()
+    duplicate_fallback = RecordingFallback()
+    _collector(_single_event_calendar(), cache=duplicate_cache).collect_once(
+        datetime(2026, 7, 14, 12, 30, tzinfo=UTC)
+    )
+    _collector(
+        _single_event_calendar(),
+        cache=duplicate_cache,
+        writer=FailingWriter(),  # type: ignore[arg-type]
+        fallback=duplicate_fallback,
+    ).collect_once(datetime(2026, 7, 14, 12, 31, tzinfo=UTC), write_questdb=True)
+    assert duplicate_fallback.calls == []
+
+    success_fallback = RecordingFallback()
+    success_writer = FakeWriter()
+    _collector(
+        _single_event_calendar(),
+        writer=success_writer,
+        fallback=success_fallback,
+    ).collect_once(datetime(2026, 7, 14, 12, 30, tzinfo=UTC), write_questdb=True)
+    assert success_fallback.calls == []
+    assert len(success_writer.snapshots) == 1
 
 
 def test_future_events_do_not_create_cache_or_ledger_writes() -> None:

@@ -27,6 +27,7 @@ from market_relay_engine.context.state_cache import (
     make_global_context_entry,
 )
 from market_relay_engine.contracts.context import ContextIndicatorSnapshot
+from market_relay_engine.questdb.jsonl_fallback import EmergencyJSONLLedgerFallback
 
 
 SOURCE_NAME = "macro_calendar_v1"
@@ -383,12 +384,14 @@ class MacroCalendarCollector:
         config: MacroCalendarConfig | None = None,
         calendar: MacroCalendar | None = None,
         ledger_writer: MacroCalendarLedgerWriter | None = None,
+        emergency_ledger_fallback: EmergencyJSONLLedgerFallback | None = None,
         base_dir: str | Path | None = None,
     ) -> None:
         self.cache = cache
         self.config = config or MacroCalendarConfig()
         self.calendar = calendar
         self.ledger_writer = ledger_writer
+        self.emergency_ledger_fallback = emergency_ledger_fallback
         self.base_dir = base_dir
 
     def collect_once(
@@ -403,8 +406,6 @@ class MacroCalendarCollector:
         if evaluation_time is None:
             raise MacroCalendarError("evaluation_time is required")
         now = ensure_timezone_aware_utc(evaluation_time)
-        if write_questdb and questdb_required and self.ledger_writer is None:
-            raise MacroCalendarError("QuestDB writes are required but no writer was provided")
         if not self.config.enabled:
             return MacroCalendarCollectionResult(
                 status=MacroCalendarCollectionStatus.DISABLED,
@@ -434,7 +435,7 @@ class MacroCalendarCollector:
         issues: list[MacroCalendarIssue] = []
 
         for event in active:
-            snapshot, update = self._publish_active_event(event, calendar)
+            snapshot, update = self._publish_active_event(event, calendar, now)
             cache_results.append(update)
             if update.status is ContextStateUpdateStatus.IGNORED_DUPLICATE:
                 existing = self.cache.get_global(
@@ -489,6 +490,7 @@ class MacroCalendarCollector:
         self,
         event: MacroCalendarEvent,
         calendar: MacroCalendar,
+        evaluation_time: datetime,
     ) -> tuple[ContextIndicatorSnapshot, ContextStateUpdateResult]:
         profile = calendar.profile_for(event)
         effective_from = event.effective_from(profile)
@@ -503,7 +505,7 @@ class MacroCalendarCollector:
         )
         indicator_name = indicator_name_for_event(event)
         snapshot = ContextIndicatorSnapshot(
-            snapshot_time=effective_from,
+            snapshot_time=evaluation_time,
             source=SOURCE_NAME,
             ticker_or_sector="GLOBAL",
             indicator_name=indicator_name,
@@ -577,10 +579,38 @@ class MacroCalendarCollector:
         if (
             not write_questdb
             or not self.config.writes_questdb_ledger
-            or self.ledger_writer is None
             or update.status
             not in {ContextStateUpdateStatus.WRITTEN, ContextStateUpdateStatus.REPLACED}
         ):
+            return
+        if self.ledger_writer is None:
+            fallback_succeeded = self._append_emergency_ledger_fallback(
+                snapshot=snapshot,
+                failure_code="QUESTDB_CONTEXT_INDICATOR_WRITER_UNAVAILABLE",
+                failure_type=None,
+                run_id=run_id,
+                session_id=session_id,
+                questdb_required=required,
+                issues=issues,
+                ledger_results=ledger_results,
+            )
+            issues.append(
+                MacroCalendarIssue(
+                    issue_type="LEDGER_WRITER_UNAVAILABLE",
+                    message="QuestDB context indicator write was requested but no writer was provided",
+                    details={
+                        "failure_code": "QUESTDB_CONTEXT_INDICATOR_WRITER_UNAVAILABLE",
+                        "emergency_fallback_status": "WRITTEN"
+                        if fallback_succeeded
+                        else "FAILED",
+                    },
+                )
+            )
+            if required:
+                suffix = "" if fallback_succeeded else "; emergency JSONL fallback failed"
+                raise MacroCalendarError(
+                    f"QuestDB writes are required but no writer was provided{suffix}"
+                )
             return
         try:
             result = self.ledger_writer.write_context_indicator_snapshot(
@@ -591,15 +621,104 @@ class MacroCalendarCollector:
             if result is not None:
                 ledger_results.append(result)
         except Exception as exc:  # noqa: BLE001 - writer protocol boundary.
+            fallback_succeeded = self._append_emergency_ledger_fallback(
+                snapshot=snapshot,
+                failure_code="QUESTDB_CONTEXT_INDICATOR_WRITE_FAILED",
+                failure_type=type(exc).__name__,
+                run_id=run_id,
+                session_id=session_id,
+                questdb_required=required,
+                issues=issues,
+                ledger_results=ledger_results,
+            )
             issues.append(
                 MacroCalendarIssue(
                     issue_type="LEDGER_WRITE_FAILED",
                     message="QuestDB context indicator write failed",
-                    details={"error_type": type(exc).__name__},
+                    details={
+                        "error_type": type(exc).__name__,
+                        "failure_code": "QUESTDB_CONTEXT_INDICATOR_WRITE_FAILED",
+                        "emergency_fallback_status": "WRITTEN"
+                        if fallback_succeeded
+                        else "FAILED",
+                    },
                 )
             )
             if required:
-                raise MacroCalendarError("QuestDB context indicator write failed") from exc
+                suffix = "" if fallback_succeeded else "; emergency JSONL fallback failed"
+                raise MacroCalendarError(
+                    f"QuestDB context indicator write failed{suffix}"
+                ) from None
+
+    def _append_emergency_ledger_fallback(
+        self,
+        *,
+        snapshot: ContextIndicatorSnapshot,
+        failure_code: str,
+        failure_type: str | None,
+        run_id: str | None,
+        session_id: str | None,
+        questdb_required: bool,
+        issues: list[MacroCalendarIssue],
+        ledger_results: list[object],
+    ) -> bool:
+        fallback = self.emergency_ledger_fallback
+        if fallback is None:
+            fallback = EmergencyJSONLLedgerFallback()
+            self.emergency_ledger_fallback = fallback
+        try:
+            result = fallback.append_record(
+                record_type="context_indicator_snapshot",
+                target_table="context_indicator_snapshots",
+                record_id=snapshot.context_indicator_id,
+                event_time=snapshot.snapshot_time,
+                source=snapshot.source,
+                ticker_or_sector=snapshot.ticker_or_sector,
+                primary_write_failure={
+                    "failure_code": failure_code,
+                    "failure_type": failure_type,
+                    "target_table": "context_indicator_snapshots",
+                },
+                payload={
+                    "context_indicator_snapshot": snapshot,
+                    "write_request": {
+                        "run_id": run_id,
+                        "session_id": session_id,
+                        "questdb_required": questdb_required,
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - fallback protocol boundary.
+            issues.append(
+                MacroCalendarIssue(
+                    issue_type="EMERGENCY_LEDGER_FALLBACK_FAILED",
+                    message="emergency JSONL ledger fallback write failed",
+                    details={
+                        "error_type": type(exc).__name__,
+                        "failure_code": "EMERGENCY_JSONL_FALLBACK_WRITE_FAILED",
+                    },
+                )
+            )
+            return False
+        ledger_results.append(result)
+        issues.append(
+            MacroCalendarIssue(
+                issue_type="EMERGENCY_LEDGER_FALLBACK_WRITTEN",
+                message=(
+                    "QuestDB context indicator write did not complete; event was "
+                    "appended to emergency JSONL fallback"
+                ),
+                details={
+                    "path": str(getattr(result, "path", "")),
+                    "record_id": str(
+                        getattr(result, "record_id", snapshot.context_indicator_id)
+                    ),
+                    "bytes_written": getattr(result, "bytes_written", None),
+                    "fallback_written_at": to_utc_iso(getattr(result, "written_at")),
+                },
+            )
+        )
+        return True
 
 
 def cache_key_for_event(event: MacroCalendarEvent) -> str:
