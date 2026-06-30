@@ -236,6 +236,7 @@ class YFinanceProxyCollector:
     def collect(
         self,
         *,
+        evaluation_time: datetime | None = None,
         write_questdb: bool = False,
         questdb_required: bool = False,
         run_id: str | None = None,
@@ -243,7 +244,8 @@ class YFinanceProxyCollector:
     ) -> YFinanceProxyCollectionResult:
         if write_questdb and questdb_required and self.ledger_writer is None:
             raise YFinanceProxyError("QuestDB writes are required but no ledger writer was provided")
-        started_at = ensure_timezone_aware_utc(self.clock())
+        explicit_time = None if evaluation_time is None else ensure_timezone_aware_utc(evaluation_time)
+        started_at = explicit_time or ensure_timezone_aware_utc(self.clock())
         if not self.config.enabled:
             return YFinanceProxyCollectionResult(
                 status=YFinanceProxyCollectionStatus.DISABLED,
@@ -264,7 +266,7 @@ class YFinanceProxyCollector:
         try:
             batch = self._download(tuple(self.config.requested_symbols))
         except Exception as exc:  # noqa: BLE001 - download adapter boundary only.
-            return self._failed_result(started_at, (YFinanceProxyIssue(issue_type="DOWNLOAD_FAILED", message=str(exc)),))
+            return self._failed_result(started_at, (YFinanceProxyIssue(issue_type="DOWNLOAD_FAILED", message=str(exc)),), completed_at=explicit_time)
 
         batch_symbols, fallback_symbols = self._normalize_batch(batch, tuple(self.config.requested_symbols), issues)
         normalized.update(batch_symbols)
@@ -282,7 +284,7 @@ class YFinanceProxyCollector:
         stale_symbols: set[str] = set()
         failed_symbols: set[str] = set()
         no_fresh_only = True
-        collected_at = ensure_timezone_aware_utc(self.clock())
+        collected_at = explicit_time or ensure_timezone_aware_utc(self.clock())
         for symbol in self.config.requested_symbols:
             frame = normalized.get(symbol)
             if frame is None:
@@ -333,7 +335,7 @@ class YFinanceProxyCollector:
                     if questdb_required:
                         raise YFinanceProxyError(issue.message) from exc
 
-        completed_at = ensure_timezone_aware_utc(self.clock())
+        completed_at = explicit_time or ensure_timezone_aware_utc(self.clock())
         if snapshots:
             status = YFinanceProxyCollectionStatus.PARTIAL if issues or failed_symbols or stale_symbols or len(successful_symbols) < len(self.config.requested_symbols) else YFinanceProxyCollectionStatus.SUCCESS
         elif no_fresh_only and issues and all(issue.issue_type in {"NO_COMPLETED_BARS", "STALE_SOURCE_DATA", "NO_VALID_COMPLETED_CLOSE", "MISSING_EXACT_LOOKBACK"} for issue in issues):
@@ -531,10 +533,10 @@ class YFinanceProxyCollector:
             include_expired=True,
         )
 
-    def _failed_result(self, started_at: datetime, issues: tuple[YFinanceProxyIssue, ...]) -> YFinanceProxyCollectionResult:
+    def _failed_result(self, started_at: datetime, issues: tuple[YFinanceProxyIssue, ...], *, completed_at: datetime | None = None) -> YFinanceProxyCollectionResult:
         if self.config.required:
             raise YFinanceProxyError(issues[0].message if issues else "yfinance proxy collection failed")
-        completed_at = ensure_timezone_aware_utc(self.clock())
+        completed_at = completed_at or ensure_timezone_aware_utc(self.clock())
         return YFinanceProxyCollectionResult(status=YFinanceProxyCollectionStatus.FAILED, started_at=started_at, completed_at=completed_at, requested_symbols=tuple(sorted(self.config.requested_symbols)), successful_symbols=(), failed_symbols=tuple(sorted(self.config.requested_symbols)), stale_symbols=(), issues=issues, indicator_snapshots=(), cache_update_results=(), ledger_write_results=())
 
 

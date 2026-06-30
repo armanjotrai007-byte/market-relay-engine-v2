@@ -15,6 +15,7 @@ EXPECTED_CONFIG_FILES: tuple[str, ...] = (
     "model_config.yaml",
     "calendar_events.yaml",
     "execution.yaml",
+    "context_refresh.yaml",
 )
 
 REQUIRED_TOP_LEVEL_SECTIONS: dict[str, tuple[str, ...]] = {
@@ -59,6 +60,7 @@ REQUIRED_TOP_LEVEL_SECTIONS: dict[str, tuple[str, ...]] = {
         "required_execution_metrics",
         "safety",
     ),
+    "context_refresh.yaml": ("schema_version", "source_order", "sources"),
 }
 
 
