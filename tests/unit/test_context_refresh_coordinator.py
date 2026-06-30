@@ -16,6 +16,8 @@ from market_relay_engine.context.eia_wpsr import (
     EIAWPSRActionPlan,
     EIAWPSRCollectionResult,
     EIAWPSRCollectionStatus,
+    EIAWPSRCollector,
+    EIAWPSRConfig,
     EIAWPSRDataStatus,
 )
 from market_relay_engine.context.macro_calendar import (
@@ -514,14 +516,69 @@ def test_checked_in_config_loads_and_checker_passes() -> None:
 @dataclass
 class FakeEIACollector:
     result: EIAWPSRCollectionResult
+    config: object | None = None
 
     def __post_init__(self) -> None:
-        self.config = SimpleNamespace(event_windows_enabled=True, numeric_source_enabled=True)
+        if self.config is None:
+            self.config = SimpleNamespace(
+                event_windows_enabled=True,
+                numeric_source_enabled=True,
+                releases=(),
+            )
         self.calls: list[dict[str, object]] = []
 
     def collect(self, **kwargs: object) -> EIAWPSRCollectionResult:
         self.calls.append(kwargs)
         return self.result
+
+
+class RecordingEIAClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[str], int]] = []
+
+    def fetch_weekly_records(
+        self,
+        route: str,
+        series_ids: list[str],
+        *,
+        observations_per_series: int,
+    ) -> list[dict[str, object]]:
+        self.calls.append((route, list(series_ids), observations_per_series))
+        return []
+
+
+class RecordingEIACollector(EIAWPSRCollector):
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.collect_calls: list[dict[str, object]] = []
+
+    def collect(self, **kwargs: object) -> EIAWPSRCollectionResult:
+        self.collect_calls.append(kwargs)
+        return super().collect(**kwargs)
+
+
+def _eia_release_pair() -> tuple[EIARelease, EIARelease]:
+    return (
+        EIARelease(
+            release_id="eia_1",
+            release_at=BASE_TIME,
+            report_period=date(2026, 1, 2),
+        ),
+        EIARelease(
+            release_id="eia_2",
+            release_at=BASE_TIME + timedelta(days=7),
+            report_period=date(2026, 1, 9),
+        ),
+    )
+
+
+def _eia_config(*, numeric_source_enabled: bool) -> EIAWPSRConfig:
+    return EIAWPSRConfig(
+        event_windows_enabled=True,
+        numeric_source_enabled=numeric_source_enabled,
+        releases=_eia_release_pair(),
+        oil_tickers=("XOM",),
+    )
 
 
 def _eia_plan(
@@ -630,6 +687,126 @@ def test_eia_continuation_state_preserves_numeric_attempt_and_successful_period(
     assert collector.calls[0]["last_successful_report_period"] == date(2025, 12, 26)
     assert result.adapter_state["last_numeric_attempt_at"] == "2026-01-02T12:00:00Z"
     assert result.adapter_state["last_successful_report_period"] == "2026-01-02"
+
+
+def test_eia_disabled_numeric_source_does_not_record_numeric_attempt() -> None:
+    evaluation_time = BASE_TIME + timedelta(minutes=1)
+    client = RecordingEIAClient()
+    collector = EIAWPSRCollector(
+        cache=ContextStateCache(),
+        config=_eia_config(numeric_source_enabled=False),
+        client=client,
+    )
+    adapter = EIAWPSRRefreshAdapter(collector)
+
+    empty_result = adapter.run_once(
+        evaluation_time,
+        ContextRefreshSourceState(),
+        write_questdb=False,
+        questdb_required=False,
+        run_id=None,
+        session_id=None,
+    )
+    existing_result = adapter.run_once(
+        evaluation_time,
+        ContextRefreshSourceState(
+            adapter_state={"last_numeric_attempt_at": "2026-01-02T10:00:00Z"}
+        ),
+        write_questdb=False,
+        questdb_required=False,
+        run_id=None,
+        session_id=None,
+    )
+
+    assert "last_numeric_attempt_at" not in empty_result.adapter_state
+    assert existing_result.adapter_state["last_numeric_attempt_at"] == "2026-01-02T10:00:00Z"
+    assert client.calls == []
+
+
+def test_eia_disabled_numeric_source_uses_next_release_window_not_retry_loop() -> None:
+    evaluation_time = BASE_TIME + timedelta(minutes=1)
+    numeric_retry_at = evaluation_time + timedelta(seconds=60)
+    next_release_window = _eia_release_pair()[1].window_start
+    collector = EIAWPSRCollector(
+        cache=ContextStateCache(),
+        config=_eia_config(numeric_source_enabled=False),
+        client=RecordingEIAClient(),
+    )
+    adapter = EIAWPSRRefreshAdapter(collector)
+    coordinator = _coordinator(adapter)
+
+    first = coordinator.run_due_once(evaluation_time, None)
+    second = coordinator.run_due_once(
+        evaluation_time + timedelta(seconds=60),
+        first.updated_runtime_state,
+    )
+
+    assert first.updated_runtime_state.sources["eia_wpsr"].next_due_at == next_release_window
+    assert first.updated_runtime_state.sources["eia_wpsr"].next_due_at != numeric_retry_at
+    assert second.updated_runtime_state.sources["eia_wpsr"].last_status is ContextRefreshStatus.SKIPPED_NOT_DUE
+
+
+def test_eia_enabled_numeric_source_still_records_attempt_and_native_retry() -> None:
+    retry_at = BASE_TIME + timedelta(seconds=60)
+    collector = FakeEIACollector(
+        _eia_result(
+            status=EIAWPSRCollectionStatus.NO_FRESH_DATA,
+            action_kind=EIAWPSRActionKind.FETCH_NUMERIC_REPORT,
+            next_retry_at=retry_at,
+            data_status=EIAWPSRDataStatus.WAITING_FOR_DATA,
+        ),
+        config=SimpleNamespace(
+            event_windows_enabled=True,
+            numeric_source_enabled=True,
+            releases=_eia_release_pair(),
+        ),
+    )
+    adapter = EIAWPSRRefreshAdapter(collector)
+
+    result = _coordinator(adapter).run_due_once(BASE_TIME, None)
+    state = result.updated_runtime_state.sources["eia_wpsr"]
+
+    assert state.adapter_state["last_numeric_attempt_at"] == "2026-01-02T12:00:00Z"
+    assert state.next_due_at == retry_at
+
+
+def test_eia_enabling_numeric_later_uses_no_fabricated_prior_attempt() -> None:
+    evaluation_time = BASE_TIME + timedelta(minutes=1)
+    disabled_collector = EIAWPSRCollector(
+        cache=ContextStateCache(),
+        config=_eia_config(numeric_source_enabled=False),
+        client=RecordingEIAClient(),
+    )
+    disabled_adapter = EIAWPSRRefreshAdapter(disabled_collector)
+    disabled_result = disabled_adapter.run_once(
+        evaluation_time,
+        ContextRefreshSourceState(),
+        write_questdb=False,
+        questdb_required=False,
+        run_id=None,
+        session_id=None,
+    )
+    enabled_client = RecordingEIAClient()
+    enabled_collector = RecordingEIACollector(
+        cache=ContextStateCache(),
+        config=_eia_config(numeric_source_enabled=True),
+        client=enabled_client,
+    )
+    enabled_adapter = EIAWPSRRefreshAdapter(enabled_collector)
+
+    enabled_result = enabled_adapter.run_once(
+        evaluation_time,
+        ContextRefreshSourceState(adapter_state=disabled_result.adapter_state),
+        write_questdb=False,
+        questdb_required=False,
+        run_id=None,
+        session_id=None,
+    )
+
+    assert "last_numeric_attempt_at" not in disabled_result.adapter_state
+    assert enabled_collector.collect_calls[0]["last_numeric_attempt_at"] is None
+    assert enabled_client.calls
+    assert enabled_result.adapter_state["last_numeric_attempt_at"] == "2026-01-02T12:01:00Z"
 
 
 def test_failed_eia_fetch_preserves_native_retry_timing() -> None:

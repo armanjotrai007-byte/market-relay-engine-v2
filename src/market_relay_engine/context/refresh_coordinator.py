@@ -668,13 +668,22 @@ class EIAWPSRRefreshAdapter:
                 "FAILED": ContextRefreshStatus.FAILED,
             },
         )
-        next_due = result.next_retry_at or result.action_plan.next_action_at
+        config = self.collector.config
+        numeric_source_enabled = config.numeric_source_enabled is True
+        if numeric_source_enabled:
+            next_due = result.next_retry_at or result.action_plan.next_action_at
+        else:
+            next_due = _next_eia_release_window_start(
+                getattr(config, "releases", ()),
+                evaluation_time,
+            )
         next_state: dict[str, object] = dict(adapter_state)
         action_kind = getattr(result.action_plan.action_kind, "value", result.action_plan.action_kind)
-        if action_kind in {
+        numeric_attempt_was_permitted = numeric_source_enabled and action_kind in {
             "FETCH_NUMERIC_REPORT",
             "RETRY_NUMERIC_REPORT",
-        }:
+        }
+        if numeric_attempt_was_permitted:
             next_state["last_numeric_attempt_at"] = to_utc_iso(evaluation_time)
         if (
             getattr(result.data_status, "value", result.data_status) == "CURRENT"
@@ -1067,6 +1076,24 @@ def _next_macro_transition(calendar: MacroCalendar, evaluation_time: datetime) -
     if not transitions:
         return None
     return min(transitions)
+
+
+def _next_eia_release_window_start(
+    releases: Sequence[object],
+    evaluation_time: datetime,
+) -> datetime | None:
+    now = ensure_timezone_aware_utc(evaluation_time)
+    candidates: list[datetime] = []
+    for release in releases:
+        window_start = getattr(release, "window_start", None)
+        if window_start is None:
+            continue
+        normalized = ensure_timezone_aware_utc(window_start)
+        if normalized > now:
+            candidates.append(normalized)
+    if not candidates:
+        return None
+    return min(candidates)
 
 
 def _map_native_status(
