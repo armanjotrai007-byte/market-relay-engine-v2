@@ -144,6 +144,8 @@ def _check_state_serialization() -> CheckResult:
     state = ContextRefreshRuntimeState(
         sources={
             "macro_calendar": ContextRefreshSourceState(
+                last_status=ContextRefreshStatus.SUCCESS,
+                last_status_observed_at=datetime(2026, 1, 2, 12, 0, tzinfo=UTC),
                 adapter_state={"last_numeric_attempt_at": "2026-01-02T12:00:00Z"}
             )
         }
@@ -152,10 +154,8 @@ def _check_state_serialization() -> CheckResult:
         encoded = json.dumps(state.to_json_dict(), allow_nan=False, sort_keys=True)
     except (TypeError, ValueError) as exc:
         return CheckResult(False, f"runtime state JSON projection failed: {exc}")
-    return CheckResult(
-        "native_result" not in encoded,
-        "runtime state projection is JSON-safe and omits native_result",
-    )
+    ok = "native_result" not in encoded and "last_status_observed_at" in encoded
+    return CheckResult(ok, "runtime state projection is JSON-safe and includes status anchor")
 
 
 def _check_package_imports() -> CheckResult:

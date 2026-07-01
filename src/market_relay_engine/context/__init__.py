@@ -12,6 +12,15 @@ from market_relay_engine.context.state_cache import (
     make_sector_context_entry,
     make_ticker_context_entry,
 )
+from market_relay_engine.context.decision_context import (
+    DecisionContext,
+    DecisionContextAssembler,
+    DecisionContextAuditPayload,
+    DecisionContextEntry,
+    DecisionContextError,
+    DecisionContextPolicy,
+    SourceReadiness,
+)
 from market_relay_engine.context.refresh_coordinator import (
     ContextRefreshAdapter,
     ContextRefreshAdapterResult,
@@ -52,6 +61,13 @@ from market_relay_engine.context.yfinance_proxy import (
 
 __all__ = [
     "ContextIndicatorWriter",
+    "DecisionContext",
+    "DecisionContextAssembler",
+    "DecisionContextAuditPayload",
+    "DecisionContextEntry",
+    "DecisionContextError",
+    "DecisionContextPolicy",
+    "SourceReadiness",
     "ContextRefreshAdapter",
     "ContextRefreshAdapterResult",
     "ContextRefreshCoordinator",
