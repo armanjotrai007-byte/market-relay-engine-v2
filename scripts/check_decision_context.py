@@ -133,6 +133,44 @@ def _check_default_policy() -> CheckResult:
     return CheckResult(ok, "default policy is deny-all")
 
 
+def _check_development_only_is_not_approvable() -> CheckResult:
+    try:
+        DecisionContextPolicy(
+            policy_version="unsafe_policy",
+            approved_entry_rules=(
+                {
+                    "source": "yfinance_dev_raw_v1",
+                    "cache_scope": "GLOBAL",
+                    "cache_name": "yfinance_dev",
+                },
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 - checker reports policy behavior directly.
+        rejected = "development-only source cannot be approved" in str(exc)
+    else:
+        rejected = False
+
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="yfinance_dev",
+            value="visible",
+            source="yfinance_dev_raw_v1",
+            updated_at=datetime(2026, 1, 2, 12, 0, tzinfo=UTC),
+        )
+    )
+    context = DecisionContextAssembler(cache=cache).build_for_decision(
+        "XOM",
+        datetime(2026, 1, 2, 12, 5, tzinfo=UTC),
+        "trace_check",
+        None,
+        ticker_sector=None,
+    )
+    entry = context.all_structured_context[0]
+    ok = rejected and entry.authority_class == "DEVELOPMENT_ONLY" and context.approved_risk_context == ()
+    return CheckResult(ok, "development-only context remains visible but unapproved")
+
+
 def _check_deterministic_fingerprint() -> CheckResult:
     first = _fixture_context()
     second = _fixture_context()
@@ -209,6 +247,7 @@ def run_checks() -> list[CheckResult]:
         _check_forbidden_imports(),
         _check_source_mapping(),
         _check_default_policy(),
+        _check_development_only_is_not_approvable(),
         _check_deterministic_fingerprint(),
         _check_json_audit_payload(),
         _check_no_fixture_external_io(),

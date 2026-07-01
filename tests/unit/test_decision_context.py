@@ -184,6 +184,11 @@ class SnapshotOnlyCache(ContextStateCache):
         return json.loads(json.dumps(self._snapshot, allow_nan=False, sort_keys=True))
 
 
+class UnsafeApprovingPolicy(DecisionContextPolicy):
+    def approves(self, *, source: str, cache_scope: str, cache_name: str) -> bool:
+        return source == "yfinance_dev_raw_v1" and cache_scope == "GLOBAL" and cache_name == "yfinance_dev"
+
+
 def _snapshot_entry(
     *,
     scope: str = "GLOBAL",
@@ -245,6 +250,19 @@ def _runtime_state(*, status: ContextRefreshStatus = ContextRefreshStatus.SUCCES
             for source_id in SUPPORTED_REFRESH_SOURCE_IDS
         }
     )
+
+
+def _cache_with_yfinance_dev_entry() -> ContextStateCache:
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="yfinance_dev",
+            value=101.25,
+            source="yfinance_dev_raw_v1",
+            updated_at=BASE_TIME,
+        )
+    )
+    return cache
 
 
 def _future_runtime_state(
@@ -502,6 +520,53 @@ def test_known_sources_classify_correctly_and_yfinance_is_development_only() -> 
     assert by_source["yfinance_dev_raw_v1"].resource_family == "YFINANCE_DEV"
     assert by_source["yfinance_dev_raw_v1"].source_mode == "DEVELOPMENT_ONLY"
     assert by_source["yfinance_dev_raw_v1"].authority_class == "DEVELOPMENT_ONLY"
+
+
+def test_yfinance_dev_context_is_visible_but_not_risk_approved_by_default() -> None:
+    context = _assemble(_cache_with_yfinance_dev_entry())
+    entry = context.all_structured_context[0]
+
+    assert entry.source == "yfinance_dev_raw_v1"
+    assert entry.source_mode == "DEVELOPMENT_ONLY"
+    assert entry.authority_class == "DEVELOPMENT_ONLY"
+    assert context.approved_risk_context == ()
+
+
+def test_development_only_policy_rule_is_rejected() -> None:
+    with pytest.raises(DecisionContextError, match="development-only source cannot be approved"):
+        DecisionContextPolicy(
+            policy_version="unsafe_policy",
+            approved_entry_rules=(
+                {
+                    "source": "yfinance_dev_raw_v1",
+                    "cache_scope": "GLOBAL",
+                    "cache_name": "yfinance_dev",
+                },
+            ),
+        )
+
+
+def test_unsafe_policy_cannot_promote_yfinance_dev_context() -> None:
+    context = _assemble(_cache_with_yfinance_dev_entry(), policy=UnsafeApprovingPolicy())
+    entry = context.all_structured_context[0]
+
+    assert entry.authority_class == "DEVELOPMENT_ONLY"
+    assert context.approved_risk_context == ()
+
+
+def test_yfinance_development_only_label_is_preserved_in_audit_and_fingerprint() -> None:
+    default_context = _assemble(_cache_with_yfinance_dev_entry())
+    unsafe_context = _assemble(_cache_with_yfinance_dev_entry(), policy=UnsafeApprovingPolicy())
+    audit_json = json.dumps(
+        default_context.to_audit_payload().to_json_dict(),
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert default_context.context_fingerprint == unsafe_context.context_fingerprint
+    assert '"authority_class":"DEVELOPMENT_ONLY"' in audit_json
+    assert '"source_mode":"DEVELOPMENT_ONLY"' in audit_json
 
 
 def test_unknown_source_remains_visible_with_unknown_labels() -> None:

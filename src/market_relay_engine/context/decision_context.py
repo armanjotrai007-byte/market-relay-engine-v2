@@ -263,9 +263,13 @@ class DecisionContextPolicy:
             expected = {"source", "cache_scope", "cache_name"}
             if set(rule) != expected:
                 raise DecisionContextError("approval rules must contain source, cache_scope, and cache_name")
+            source = _required_string(rule["source"], "approval.source")
+            classification = _classify_source(source)
+            if not _is_risk_approval_eligible(classification):
+                raise DecisionContextError("development-only source cannot be approved for risk context")
             rules.append(
                 {
-                    "source": _required_string(rule["source"], "approval.source"),
+                    "source": source,
                     "cache_scope": _required_string(rule["cache_scope"], "approval.cache_scope"),
                     "cache_name": _required_string(rule["cache_name"], "approval.cache_name"),
                 }
@@ -479,7 +483,11 @@ def _select_entries(
         else:
             refresh_status = readiness_by_source[refresh_source_id].refresh_status
         authority_class = classification["authority_class"]
-        if policy.approves(source=source, cache_scope=cache_scope, cache_name=cache_name):
+        if _is_risk_approval_eligible(classification) and policy.approves(
+            source=source,
+            cache_scope=cache_scope,
+            cache_name=cache_name,
+        ):
             authority_class = "APPROVED_RISK_CONTEXT"
         selected.append(
             DecisionContextEntry(
@@ -661,6 +669,13 @@ def _classify_source(source: str) -> dict[str, str]:
             "authority_class": "RESEARCH_ONLY",
         }
     return dict(classification)
+
+
+def _is_risk_approval_eligible(classification: Mapping[str, str]) -> bool:
+    return (
+        classification.get("source_mode") != "DEVELOPMENT_ONLY"
+        and classification.get("authority_class") != "DEVELOPMENT_ONLY"
+    )
 
 
 def _provenance_state(details: Mapping[str, object], evaluation_time: datetime) -> str:

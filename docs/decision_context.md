@@ -87,6 +87,8 @@ decision evaluation time. Otherwise source readiness degrades to canonical
 `DecisionContextPolicy` is default-deny. `all_structured_context` always contains
 all selected visible cache entries. `approved_risk_context` is empty unless an
 injected policy exactly matches `source`, `cache_scope`, and `cache_name`.
+Development-only context remains visible for research and audit purposes, but is
+permanently ineligible for approved risk context regardless of policy.
 
 Approval is never inferred from severity, source-name substrings, event tiers,
 flag types, or provenance state. Approved entries are labelled
