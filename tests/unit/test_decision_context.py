@@ -246,6 +246,28 @@ def _runtime_state(*, status: ContextRefreshStatus = ContextRefreshStatus.SUCCES
     )
 
 
+def _future_runtime_state(
+    *,
+    status: ContextRefreshStatus | None = ContextRefreshStatus.FAILED,
+) -> ContextRefreshRuntimeState:
+    return ContextRefreshRuntimeState(
+        sources={
+            "macro_calendar": ContextRefreshSourceState(
+                last_status=status,
+                last_attempted_at=BASE_TIME + timedelta(minutes=1),
+                last_completed_at=BASE_TIME + timedelta(minutes=2),
+                last_usable_at=BASE_TIME + timedelta(minutes=3),
+                last_full_success_at=BASE_TIME + timedelta(minutes=4),
+                next_due_at=BASE_TIME + timedelta(hours=1),
+                consecutive_failure_count=7,
+                consecutive_non_usable_count=8,
+                last_error_type="AdapterFailed",
+                last_error_message="future native error",
+            )
+        }
+    )
+
+
 def test_naive_evaluation_time_is_rejected() -> None:
     with pytest.raises(DecisionContextError, match="timezone-aware"):
         _assemble(_cache_with_basic_entries(), evaluation_time=datetime(2026, 1, 2, 14, 30))
@@ -321,6 +343,101 @@ def test_future_updated_entry_is_excluded_from_context_and_audit() -> None:
     encoded = to_json_string(audit)
     assert "after_eval_entry" not in encoded
     assert "not_yet_available" not in encoded
+
+
+def test_unrelated_future_ticker_entry_does_not_increase_exclusion_count() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="future_other_ticker",
+            value=True,
+            updated_at=BASE_TIME + timedelta(minutes=1),
+        )
+    )
+
+    context = _assemble(cache)
+
+    assert context.all_structured_context == ()
+    assert context.future_entry_exclusion_count == 0
+
+
+def test_unrelated_future_sector_entry_does_not_increase_exclusion_count() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_sector_context_entry(
+            sector="TECH",
+            name="future_other_sector",
+            value=True,
+            updated_at=BASE_TIME + timedelta(minutes=1),
+        )
+    )
+
+    context = _assemble(cache)
+
+    assert context.all_structured_context == ()
+    assert context.future_entry_exclusion_count == 0
+
+
+def test_unrelated_future_entries_do_not_change_context_identity() -> None:
+    base_cache = _cache_with_basic_entries()
+    expanded_cache = _cache_with_basic_entries()
+    expanded_cache.update(
+        make_ticker_context_entry(
+            ticker="AAPL",
+            name="future_other_ticker",
+            value=True,
+            updated_at=BASE_TIME + timedelta(minutes=1),
+        )
+    )
+    expanded_cache.update(
+        make_sector_context_entry(
+            sector="TECH",
+            name="future_other_sector",
+            value=True,
+            updated_at=BASE_TIME + timedelta(minutes=1),
+        )
+    )
+
+    base = _assemble(base_cache, state=_runtime_state())
+    expanded = _assemble(expanded_cache, state=_runtime_state())
+
+    assert [entry.to_json_dict() for entry in expanded.all_structured_context] == [
+        entry.to_json_dict() for entry in base.all_structured_context
+    ]
+    assert expanded.future_entry_exclusion_count == base.future_entry_exclusion_count
+    assert expanded.context_fingerprint == base.context_fingerprint
+    assert expanded.context_snapshot_id == base.context_snapshot_id
+
+
+def test_relevant_future_entries_increase_exclusion_count() -> None:
+    cases = (
+        make_global_context_entry(
+            name="future_global",
+            value=True,
+            updated_at=BASE_TIME + timedelta(minutes=1),
+        ),
+        make_ticker_context_entry(
+            ticker="XOM",
+            name="future_ticker",
+            value=True,
+            updated_at=BASE_TIME + timedelta(minutes=1),
+        ),
+        make_sector_context_entry(
+            sector="OIL",
+            name="future_sector",
+            value=True,
+            updated_at=BASE_TIME + timedelta(minutes=1),
+        ),
+    )
+    for entry in cases:
+        cache = ContextStateCache()
+        cache.update(entry)
+
+        context = _assemble(cache)
+
+        assert context.all_structured_context == ()
+        assert context.future_entry_exclusion_count == 1
 
 
 def test_assembly_uses_one_snapshot_and_no_getters() -> None:
@@ -444,23 +561,101 @@ def test_pr31_refresh_statuses_remain_distinct(status: ContextRefreshStatus) -> 
 
 
 def test_future_dated_refresh_state_is_masked() -> None:
+    readiness = _assemble(_cache_with_basic_entries(), state=_future_runtime_state()).source_readiness[0]
+    encoded = json.dumps(readiness.to_json_dict(), allow_nan=False, sort_keys=True)
+
+    assert readiness.source_id == "macro_calendar"
+    assert readiness.refresh_status == "UNKNOWN_FUTURE_STATE"
+    assert readiness.last_attempted_at is None
+    assert readiness.last_completed_at is None
+    assert readiness.last_usable_at is None
+    assert readiness.last_full_success_at is None
+    assert readiness.next_due_at is None
+    assert readiness.state_observed_at is None
+    assert readiness.consecutive_failure_count is None
+    assert readiness.consecutive_non_usable_count is None
+    assert readiness.readiness_age_seconds is None
+    assert "AdapterFailed" not in encoded
+    assert "future native error" not in encoded
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        ContextRefreshStatus.FAILED,
+        ContextRefreshStatus.PARTIAL,
+        ContextRefreshStatus.DISABLED,
+    ],
+)
+def test_future_refresh_state_does_not_expose_native_status(status: ContextRefreshStatus) -> None:
+    readiness = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=status)).source_readiness[0]
+    encoded = json.dumps(readiness.to_json_dict(), allow_nan=False, sort_keys=True)
+
+    assert readiness.refresh_status == "UNKNOWN_FUTURE_STATE"
+    assert status.value not in encoded
+
+
+def test_unanchored_refresh_state_does_not_expose_last_status() -> None:
     state = ContextRefreshRuntimeState(
         sources={
             "macro_calendar": ContextRefreshSourceState(
-                last_status=ContextRefreshStatus.SUCCESS,
-                last_completed_at=BASE_TIME + timedelta(minutes=1),
+                last_status=ContextRefreshStatus.FAILED,
                 next_due_at=BASE_TIME + timedelta(hours=1),
-                consecutive_failure_count=7,
+                consecutive_failure_count=3,
             )
         }
     )
 
     readiness = _assemble(_cache_with_basic_entries(), state=state).source_readiness[0]
 
-    assert readiness.source_id == "macro_calendar"
-    assert readiness.refresh_status == "UNKNOWN_FUTURE_STATE"
-    assert readiness.last_completed_at is None
-    assert readiness.consecutive_failure_count == 0
+    assert readiness.refresh_status == "UNKNOWN_NOT_REFRESHED"
+    assert readiness.last_attempted_at is None
+    assert readiness.state_observed_at is None
+    assert readiness.consecutive_failure_count is None
+
+
+def test_asof_anchored_refresh_state_preserves_real_status_and_fields() -> None:
+    state = ContextRefreshRuntimeState(
+        sources={
+            "macro_calendar": ContextRefreshSourceState(
+                last_status=ContextRefreshStatus.FAILED,
+                last_attempted_at=BASE_TIME - timedelta(minutes=4),
+                last_completed_at=BASE_TIME - timedelta(minutes=3),
+                last_usable_at=BASE_TIME - timedelta(minutes=2),
+                last_full_success_at=BASE_TIME - timedelta(minutes=1),
+                next_due_at=BASE_TIME + timedelta(hours=1),
+                consecutive_failure_count=3,
+                consecutive_non_usable_count=4,
+            )
+        }
+    )
+
+    readiness = _assemble(_cache_with_basic_entries(), state=state).source_readiness[0]
+
+    assert readiness.refresh_status == ContextRefreshStatus.FAILED.value
+    assert readiness.state_observed_at == BASE_TIME - timedelta(minutes=1)
+    assert readiness.last_attempted_at == BASE_TIME - timedelta(minutes=4)
+    assert readiness.last_completed_at == BASE_TIME - timedelta(minutes=3)
+    assert readiness.next_due_at == BASE_TIME + timedelta(hours=1)
+    assert readiness.consecutive_failure_count == 3
+    assert readiness.consecutive_non_usable_count == 4
+
+
+def test_later_future_status_updates_do_not_change_historical_context_identity() -> None:
+    failed = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=ContextRefreshStatus.FAILED))
+    disabled = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=ContextRefreshStatus.DISABLED))
+
+    assert failed.source_readiness == disabled.source_readiness
+    assert failed.context_fingerprint == disabled.context_fingerprint
+    assert failed.context_snapshot_id == disabled.context_snapshot_id
+
+
+def test_future_refresh_state_matches_equivalent_unobserved_future_state() -> None:
+    future_failed = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=ContextRefreshStatus.FAILED))
+    future_unobserved = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=None))
+
+    assert future_failed.source_readiness == future_unobserved.source_readiness
+    assert future_failed.context_fingerprint == future_unobserved.context_fingerprint
 
 
 def test_readiness_age_uses_only_asof_compatible_completion_time() -> None:

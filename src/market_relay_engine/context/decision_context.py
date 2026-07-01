@@ -183,8 +183,9 @@ class SourceReadiness:
     last_usable_at: datetime | None = None
     last_full_success_at: datetime | None = None
     next_due_at: datetime | None = None
-    consecutive_failure_count: int = 0
-    consecutive_non_usable_count: int = 0
+    state_observed_at: datetime | None = None
+    consecutive_failure_count: int | None = None
+    consecutive_non_usable_count: int | None = None
     readiness_age_seconds: float | None = None
 
     def __post_init__(self) -> None:
@@ -220,13 +221,21 @@ class SourceReadiness:
         )
         object.__setattr__(
             self,
+            "state_observed_at",
+            _optional_aware_datetime(self.state_observed_at, "state_observed_at"),
+        )
+        object.__setattr__(
+            self,
             "consecutive_failure_count",
-            _non_negative_int(self.consecutive_failure_count, "consecutive_failure_count"),
+            _optional_non_negative_int(self.consecutive_failure_count, "consecutive_failure_count"),
         )
         object.__setattr__(
             self,
             "consecutive_non_usable_count",
-            _non_negative_int(self.consecutive_non_usable_count, "consecutive_non_usable_count"),
+            _optional_non_negative_int(
+                self.consecutive_non_usable_count,
+                "consecutive_non_usable_count",
+            ),
         )
         object.__setattr__(
             self,
@@ -453,13 +462,13 @@ def _select_entries(
 
     for raw_entry in _iter_snapshot_entries(snapshot):
         parsed = _parse_snapshot_entry(raw_entry)
+        selection_scope = _selection_scope(parsed, ticker=ticker, sector=sector)
+        if selection_scope is None:
+            continue
         if parsed["expired"] is True:
             raise DecisionContextError("snapshot entries must not be expired")
         if parsed["updated_at"] > evaluation_time:
             future_exclusion_count += 1
-            continue
-        selection_scope = _selection_scope(parsed, ticker=ticker, sector=sector)
-        if selection_scope is None:
             continue
         source = parsed["source"]
         cache_scope = parsed["cache_scope"]
@@ -603,7 +612,9 @@ def _source_readiness_from_state(
     usable = _state_datetime(state, "last_usable_at")
     full_success = _state_datetime(state, "last_full_success_at")
     anchor = _max_datetime(attempted, completed, usable, full_success)
-    if anchor is not None and anchor > evaluation_time:
+    if anchor is None:
+        return _unknown_readiness(source_id)
+    if anchor > evaluation_time:
         return SourceReadiness(
             source_id=source_id,
             refresh_status=UNKNOWN_FUTURE_STATE,
@@ -623,6 +634,7 @@ def _source_readiness_from_state(
         last_usable_at=usable,
         last_full_success_at=full_success,
         next_due_at=next_due,
+        state_observed_at=anchor,
         consecutive_failure_count=_state_count(state, "consecutive_failure_count"),
         consecutive_non_usable_count=_state_count(state, "consecutive_non_usable_count"),
         readiness_age_seconds=age,
@@ -637,8 +649,8 @@ def _state_datetime(state: object, field_name: str) -> datetime | None:
     return _optional_aware_datetime(getattr(state, field_name, None), field_name)
 
 
-def _state_count(state: object, field_name: str) -> int:
-    return _non_negative_int(getattr(state, field_name, 0), field_name)
+def _state_count(state: object, field_name: str) -> int | None:
+    return _optional_non_negative_int(getattr(state, field_name, None), field_name)
 
 
 def _max_datetime(*values: datetime | None) -> datetime | None:
@@ -900,6 +912,12 @@ def _non_negative_int(value: object, field_name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise DecisionContextError(f"{field_name} must be a non-negative integer")
     return value
+
+
+def _optional_non_negative_int(value: object, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(value, field_name)
 
 
 def _json_safe_mapping(value: object, field_name: str) -> dict[str, object]:
