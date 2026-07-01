@@ -24,7 +24,6 @@ if TYPE_CHECKING:
 CONTEXT_SCHEMA_VERSION = "decision_context_v1"
 DEFAULT_POLICY_VERSION = "decision_context_policy_v1_default_deny"
 UNKNOWN_NOT_REFRESHED = "UNKNOWN_NOT_REFRESHED"
-UNKNOWN_FUTURE_STATE = "UNKNOWN_FUTURE_STATE"
 
 SUPPORTED_REFRESH_SOURCE_IDS: tuple[str, ...] = (
     "macro_calendar",
@@ -183,7 +182,7 @@ class SourceReadiness:
     last_usable_at: datetime | None = None
     last_full_success_at: datetime | None = None
     next_due_at: datetime | None = None
-    state_observed_at: datetime | None = None
+    last_status_observed_at: datetime | None = None
     consecutive_failure_count: int | None = None
     consecutive_non_usable_count: int | None = None
     readiness_age_seconds: float | None = None
@@ -221,8 +220,8 @@ class SourceReadiness:
         )
         object.__setattr__(
             self,
-            "state_observed_at",
-            _optional_aware_datetime(self.state_observed_at, "state_observed_at"),
+            "last_status_observed_at",
+            _optional_aware_datetime(self.last_status_observed_at, "last_status_observed_at"),
         )
         object.__setattr__(
             self,
@@ -607,21 +606,21 @@ def _source_readiness_from_state(
     state: object,
     evaluation_time: datetime,
 ) -> SourceReadiness:
+    status = getattr(state, "last_status", None)
+    if status is None:
+        return _unknown_readiness(source_id)
+    status_observed_at = _state_datetime(state, "last_status_observed_at")
+    if status_observed_at is None or status_observed_at > evaluation_time:
+        return _unknown_readiness(source_id)
+
     attempted = _state_datetime(state, "last_attempted_at")
     completed = _state_datetime(state, "last_completed_at")
     usable = _state_datetime(state, "last_usable_at")
     full_success = _state_datetime(state, "last_full_success_at")
-    anchor = _max_datetime(attempted, completed, usable, full_success)
-    if anchor is None:
-        return _unknown_readiness(source_id)
-    if anchor > evaluation_time:
-        return SourceReadiness(
-            source_id=source_id,
-            refresh_status=UNKNOWN_FUTURE_STATE,
-        )
-    status = getattr(state, "last_status", None)
     status_value = getattr(status, "value", status)
-    refresh_status = status_value if isinstance(status_value, str) else UNKNOWN_NOT_REFRESHED
+    if not isinstance(status_value, str):
+        return _unknown_readiness(source_id)
+    refresh_status = status_value
     next_due = _state_datetime(state, "next_due_at")
     age = None
     if completed is not None and completed <= evaluation_time:
@@ -634,7 +633,7 @@ def _source_readiness_from_state(
         last_usable_at=usable,
         last_full_success_at=full_success,
         next_due_at=next_due,
-        state_observed_at=anchor,
+        last_status_observed_at=status_observed_at,
         consecutive_failure_count=_state_count(state, "consecutive_failure_count"),
         consecutive_non_usable_count=_state_count(state, "consecutive_non_usable_count"),
         readiness_age_seconds=age,
@@ -651,13 +650,6 @@ def _state_datetime(state: object, field_name: str) -> datetime | None:
 
 def _state_count(state: object, field_name: str) -> int | None:
     return _optional_non_negative_int(getattr(state, field_name, None), field_name)
-
-
-def _max_datetime(*values: datetime | None) -> datetime | None:
-    present = [value for value in values if value is not None]
-    if not present:
-        return None
-    return max(present)
 
 
 def _classify_source(source: str) -> dict[str, str]:
@@ -964,6 +956,5 @@ __all__ = [
     "DecisionContextError",
     "DecisionContextPolicy",
     "SourceReadiness",
-    "UNKNOWN_FUTURE_STATE",
     "UNKNOWN_NOT_REFRESHED",
 ]

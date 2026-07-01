@@ -185,6 +185,7 @@ def test_first_call_is_due_and_runs_once() -> None:
 
 def test_before_next_due_is_skipped() -> None:
     adapter = FakeAdapter("macro_calendar")
+    evaluation_time = BASE_TIME + timedelta(minutes=1)
     state = _state_for(
         "macro_calendar",
         ContextRefreshSourceState(
@@ -193,10 +194,13 @@ def test_before_next_due_is_skipped() -> None:
         ),
     )
 
-    result = _coordinator(adapter).run_due_once(BASE_TIME + timedelta(minutes=1), state)
+    result = _coordinator(adapter).run_due_once(evaluation_time, state)
 
     assert adapter.calls == []
     assert result.sources_skipped_not_due == ("macro_calendar",)
+    skipped_state = result.updated_runtime_state.sources["macro_calendar"]
+    assert skipped_state.last_status is ContextRefreshStatus.SKIPPED_NOT_DUE
+    assert skipped_state.last_status_observed_at == evaluation_time
 
 
 def test_exact_next_due_is_due() -> None:
@@ -222,6 +226,9 @@ def test_disabled_adapter_is_never_called() -> None:
     assert adapter.calls == []
     assert result.sources_disabled == ("macro_calendar",)
     assert result.source_outcomes[0].status is ContextRefreshStatus.DISABLED
+    disabled_state = result.updated_runtime_state.sources["macro_calendar"]
+    assert disabled_state.last_status is ContextRefreshStatus.DISABLED
+    assert disabled_state.last_status_observed_at == BASE_TIME
 
 
 def test_valid_adapter_next_due_hint_overrides_fallback() -> None:
@@ -267,6 +274,7 @@ def test_adapter_exception_becomes_failed_and_later_source_still_runs() -> None:
 
     macro = result.updated_runtime_state.sources["macro_calendar"]
     assert macro.last_status is ContextRefreshStatus.FAILED
+    assert macro.last_status_observed_at == BASE_TIME
     assert macro.consecutive_failure_count == 1
     assert macro.consecutive_non_usable_count == 1
     assert len(later.calls) == 1
@@ -330,6 +338,30 @@ def test_native_result_is_not_stored_in_runtime_state_json_projection() -> None:
     assert "native_result_summary" in encoded_run
 
 
+def test_status_observation_timestamp_round_trips_in_runtime_state_projection() -> None:
+    state = ContextRefreshRuntimeState(
+        sources={
+            "macro_calendar": ContextRefreshSourceState(
+                last_status=ContextRefreshStatus.SUCCESS,
+                last_status_observed_at=BASE_TIME,
+            )
+        }
+    )
+
+    encoded = json.dumps(state.to_json_dict(), allow_nan=False, sort_keys=True)
+    decoded = json.loads(encoded)
+
+    assert decoded["sources"]["macro_calendar"]["last_status"] == "SUCCESS"
+    assert decoded["sources"]["macro_calendar"]["last_status_observed_at"] == "2026-01-02T12:00:00Z"
+
+
+def test_source_state_construction_without_status_observed_at_remains_valid() -> None:
+    state = ContextRefreshSourceState(last_status=ContextRefreshStatus.SUCCESS)
+
+    assert state.last_status is ContextRefreshStatus.SUCCESS
+    assert state.last_status_observed_at is None
+
+
 @pytest.mark.parametrize(
     "status",
     [
@@ -347,6 +379,7 @@ def test_meaningful_statuses_remain_distinguishable(status: ContextRefreshStatus
 
     assert result.source_outcomes[0].status is status
     assert result.updated_runtime_state.sources["macro_calendar"].last_status is status
+    assert result.updated_runtime_state.sources["macro_calendar"].last_status_observed_at == BASE_TIME
 
 
 def test_productive_partial_updates_usable_but_not_full_success() -> None:
@@ -421,6 +454,8 @@ def test_failure_preserves_history_and_increments_failure_count() -> None:
     assert source_state.last_completed_at == prior_completed
     assert source_state.last_usable_at == prior_usable
     assert source_state.last_full_success_at == prior_success
+    assert source_state.last_status is ContextRefreshStatus.FAILED
+    assert source_state.last_status_observed_at == BASE_TIME
     assert source_state.consecutive_failure_count == 3
 
 

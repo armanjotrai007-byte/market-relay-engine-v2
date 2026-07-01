@@ -83,6 +83,7 @@ class ContextRefreshSourceState:
     last_usable_at: datetime | None = None
     last_full_success_at: datetime | None = None
     last_status: ContextRefreshStatus | None = None
+    last_status_observed_at: datetime | None = None
     next_due_at: datetime | None = None
     consecutive_failure_count: int = 0
     consecutive_non_usable_count: int = 0
@@ -113,6 +114,11 @@ class ContextRefreshSourceState:
         )
         status = None if self.last_status is None else ContextRefreshStatus(self.last_status)
         object.__setattr__(self, "last_status", status)
+        object.__setattr__(
+            self,
+            "last_status_observed_at",
+            _optional_aware_datetime(self.last_status_observed_at, "last_status_observed_at"),
+        )
         object.__setattr__(
             self,
             "next_due_at",
@@ -483,6 +489,7 @@ class ContextRefreshCoordinator:
                 updated_sources[source_id] = _copy_source_state(
                     previous,
                     last_status=ContextRefreshStatus.DISABLED,
+                    last_status_observed_at=now,
                 )
                 sources_disabled.append(source_id)
                 outcomes.append(
@@ -500,6 +507,7 @@ class ContextRefreshCoordinator:
                 updated_sources[source_id] = _copy_source_state(
                     previous,
                     last_status=ContextRefreshStatus.SKIPPED_NOT_DUE,
+                    last_status_observed_at=now,
                 )
                 sources_skipped_not_due.append(source_id)
                 outcomes.append(
@@ -531,6 +539,7 @@ class ContextRefreshCoordinator:
                     previous,
                     last_attempted_at=now,
                     last_status=ContextRefreshStatus.FAILED,
+                    last_status_observed_at=now,
                     next_due_at=next_due,
                     consecutive_failure_count=previous.consecutive_failure_count + 1,
                     consecutive_non_usable_count=previous.consecutive_non_usable_count + 1,
@@ -964,6 +973,7 @@ def _state_after_adapter_return(
             previous,
             last_attempted_at=attempted_at,
             last_status=ContextRefreshStatus.FAILED,
+            last_status_observed_at=attempted_at,
             next_due_at=next_due_at,
             consecutive_failure_count=previous.consecutive_failure_count + 1,
             consecutive_non_usable_count=previous.consecutive_non_usable_count + 1,
@@ -987,6 +997,7 @@ def _state_after_adapter_return(
         last_usable_at=last_usable_at,
         last_full_success_at=last_full_success_at,
         last_status=adapter_result.status,
+        last_status_observed_at=attempted_at,
         next_due_at=next_due_at,
         consecutive_failure_count=0,
         consecutive_non_usable_count=non_usable_count,
@@ -1006,6 +1017,7 @@ def _copy_source_state(
         "last_usable_at": state.last_usable_at,
         "last_full_success_at": state.last_full_success_at,
         "last_status": state.last_status,
+        "last_status_observed_at": state.last_status_observed_at,
         "next_due_at": state.next_due_at,
         "consecutive_failure_count": state.consecutive_failure_count,
         "consecutive_non_usable_count": state.consecutive_non_usable_count,
@@ -1013,6 +1025,8 @@ def _copy_source_state(
         "last_error_message": state.last_error_message,
         "adapter_state": state.adapter_state,
     }
+    if "last_status" in overrides and "last_status_observed_at" not in overrides:
+        raise ContextRefreshError("last_status_observed_at is required when last_status is updated")
     values.update(overrides)
     return ContextRefreshSourceState(**values)
 

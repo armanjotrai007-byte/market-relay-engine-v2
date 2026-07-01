@@ -237,6 +237,7 @@ def _runtime_state(*, status: ContextRefreshStatus = ContextRefreshStatus.SUCCES
                 last_completed_at=BASE_TIME - timedelta(minutes=2),
                 last_usable_at=BASE_TIME - timedelta(minutes=2),
                 last_full_success_at=BASE_TIME - timedelta(minutes=2),
+                last_status_observed_at=BASE_TIME - timedelta(minutes=2),
                 next_due_at=BASE_TIME + timedelta(minutes=5),
                 consecutive_failure_count=1 if status is ContextRefreshStatus.FAILED else 0,
                 consecutive_non_usable_count=0,
@@ -258,6 +259,7 @@ def _future_runtime_state(
                 last_completed_at=BASE_TIME + timedelta(minutes=2),
                 last_usable_at=BASE_TIME + timedelta(minutes=3),
                 last_full_success_at=BASE_TIME + timedelta(minutes=4),
+                last_status_observed_at=BASE_TIME + timedelta(minutes=5),
                 next_due_at=BASE_TIME + timedelta(hours=1),
                 consecutive_failure_count=7,
                 consecutive_non_usable_count=8,
@@ -565,13 +567,13 @@ def test_future_dated_refresh_state_is_masked() -> None:
     encoded = json.dumps(readiness.to_json_dict(), allow_nan=False, sort_keys=True)
 
     assert readiness.source_id == "macro_calendar"
-    assert readiness.refresh_status == "UNKNOWN_FUTURE_STATE"
+    assert readiness.refresh_status == "UNKNOWN_NOT_REFRESHED"
     assert readiness.last_attempted_at is None
     assert readiness.last_completed_at is None
     assert readiness.last_usable_at is None
     assert readiness.last_full_success_at is None
     assert readiness.next_due_at is None
-    assert readiness.state_observed_at is None
+    assert readiness.last_status_observed_at is None
     assert readiness.consecutive_failure_count is None
     assert readiness.consecutive_non_usable_count is None
     assert readiness.readiness_age_seconds is None
@@ -583,15 +585,15 @@ def test_future_dated_refresh_state_is_masked() -> None:
     "status",
     [
         ContextRefreshStatus.FAILED,
-        ContextRefreshStatus.PARTIAL,
         ContextRefreshStatus.DISABLED,
+        ContextRefreshStatus.SKIPPED_NOT_DUE,
     ],
 )
 def test_future_refresh_state_does_not_expose_native_status(status: ContextRefreshStatus) -> None:
     readiness = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=status)).source_readiness[0]
     encoded = json.dumps(readiness.to_json_dict(), allow_nan=False, sort_keys=True)
 
-    assert readiness.refresh_status == "UNKNOWN_FUTURE_STATE"
+    assert readiness.refresh_status == "UNKNOWN_NOT_REFRESHED"
     assert status.value not in encoded
 
 
@@ -610,7 +612,7 @@ def test_unanchored_refresh_state_does_not_expose_last_status() -> None:
 
     assert readiness.refresh_status == "UNKNOWN_NOT_REFRESHED"
     assert readiness.last_attempted_at is None
-    assert readiness.state_observed_at is None
+    assert readiness.last_status_observed_at is None
     assert readiness.consecutive_failure_count is None
 
 
@@ -623,6 +625,7 @@ def test_asof_anchored_refresh_state_preserves_real_status_and_fields() -> None:
                 last_completed_at=BASE_TIME - timedelta(minutes=3),
                 last_usable_at=BASE_TIME - timedelta(minutes=2),
                 last_full_success_at=BASE_TIME - timedelta(minutes=1),
+                last_status_observed_at=BASE_TIME - timedelta(minutes=1),
                 next_due_at=BASE_TIME + timedelta(hours=1),
                 consecutive_failure_count=3,
                 consecutive_non_usable_count=4,
@@ -633,7 +636,7 @@ def test_asof_anchored_refresh_state_preserves_real_status_and_fields() -> None:
     readiness = _assemble(_cache_with_basic_entries(), state=state).source_readiness[0]
 
     assert readiness.refresh_status == ContextRefreshStatus.FAILED.value
-    assert readiness.state_observed_at == BASE_TIME - timedelta(minutes=1)
+    assert readiness.last_status_observed_at == BASE_TIME - timedelta(minutes=1)
     assert readiness.last_attempted_at == BASE_TIME - timedelta(minutes=4)
     assert readiness.last_completed_at == BASE_TIME - timedelta(minutes=3)
     assert readiness.next_due_at == BASE_TIME + timedelta(hours=1)
@@ -644,10 +647,50 @@ def test_asof_anchored_refresh_state_preserves_real_status_and_fields() -> None:
 def test_later_future_status_updates_do_not_change_historical_context_identity() -> None:
     failed = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=ContextRefreshStatus.FAILED))
     disabled = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=ContextRefreshStatus.DISABLED))
+    skipped = _assemble(
+        _cache_with_basic_entries(),
+        state=_future_runtime_state(status=ContextRefreshStatus.SKIPPED_NOT_DUE),
+    )
+    legacy = _assemble(
+        _cache_with_basic_entries(),
+        state=ContextRefreshRuntimeState(
+            sources={
+                "macro_calendar": ContextRefreshSourceState(
+                    last_status=ContextRefreshStatus.FAILED,
+                    last_attempted_at=BASE_TIME - timedelta(minutes=4),
+                    last_completed_at=BASE_TIME - timedelta(minutes=3),
+                    next_due_at=BASE_TIME + timedelta(hours=1),
+                    consecutive_failure_count=9,
+                )
+            }
+        ),
+    )
+    missing = _assemble(_cache_with_basic_entries(), state=None)
 
     assert failed.source_readiness == disabled.source_readiness
-    assert failed.context_fingerprint == disabled.context_fingerprint
-    assert failed.context_snapshot_id == disabled.context_snapshot_id
+    assert failed.source_readiness == skipped.source_readiness
+    assert failed.source_readiness == legacy.source_readiness
+    assert failed.source_readiness == missing.source_readiness
+    fingerprints = {
+        failed.context_fingerprint,
+        disabled.context_fingerprint,
+        skipped.context_fingerprint,
+        legacy.context_fingerprint,
+        missing.context_fingerprint,
+    }
+    snapshot_ids = {
+        failed.context_snapshot_id,
+        disabled.context_snapshot_id,
+        skipped.context_snapshot_id,
+        legacy.context_snapshot_id,
+        missing.context_snapshot_id,
+    }
+    assert fingerprints == {
+        missing.context_fingerprint
+    }
+    assert snapshot_ids == {
+        missing.context_snapshot_id
+    }
 
 
 def test_future_refresh_state_matches_equivalent_unobserved_future_state() -> None:
@@ -658,6 +701,17 @@ def test_future_refresh_state_matches_equivalent_unobserved_future_state() -> No
     assert future_failed.context_fingerprint == future_unobserved.context_fingerprint
 
 
+def test_asof_status_observation_changes_fingerprint_through_readiness() -> None:
+    unknown = _assemble(_cache_with_basic_entries(), state=None)
+    observed = _assemble(_cache_with_basic_entries(), state=_runtime_state(status=ContextRefreshStatus.PARTIAL))
+
+    macro_readiness = observed.source_readiness[0]
+
+    assert macro_readiness.refresh_status == ContextRefreshStatus.PARTIAL.value
+    assert macro_readiness.last_status_observed_at == BASE_TIME - timedelta(minutes=2)
+    assert observed.context_fingerprint != unknown.context_fingerprint
+
+
 def test_readiness_age_uses_only_asof_compatible_completion_time() -> None:
     completed_at = BASE_TIME - timedelta(seconds=90)
     state = ContextRefreshRuntimeState(
@@ -665,6 +719,7 @@ def test_readiness_age_uses_only_asof_compatible_completion_time() -> None:
             "macro_calendar": ContextRefreshSourceState(
                 last_status=ContextRefreshStatus.SUCCESS,
                 last_completed_at=completed_at,
+                last_status_observed_at=completed_at,
                 next_due_at=BASE_TIME + timedelta(hours=1),
             )
         }

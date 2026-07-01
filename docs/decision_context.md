@@ -75,11 +75,10 @@ Source readiness emits one record for each PR31 source ID: `macro_calendar`,
 `eia_wpsr`, `fred`, `usaspending`, and `yfinance_dev_only`. Missing runtime
 state becomes `UNKNOWN_NOT_REFRESHED`.
 
-Readiness is protected against future-state leakage. The observation anchor is
-the maximum of `last_attempted_at`, `last_completed_at`, `last_usable_at`, and
-`last_full_success_at`; `next_due_at` is ignored because it is commonly in the
-future. If the anchor is after the evaluation time, readiness reports
-`UNKNOWN_FUTURE_STATE` and does not expose future timestamps as evidence.
+Readiness is protected against future-state leakage. Refresh statuses are exposed
+only when their explicit `last_status_observed_at` time is at or before the
+decision evaluation time. Otherwise source readiness degrades to canonical
+`UNKNOWN_NOT_REFRESHED` rather than leaking a later coordinator outcome.
 `readiness_age_seconds` is calculated only from an as-of-compatible
 `last_completed_at`.
 
