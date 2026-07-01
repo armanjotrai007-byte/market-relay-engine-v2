@@ -306,6 +306,45 @@ def _future_runtime_state(
     )
 
 
+def _runtime_state_with_macro(**overrides: object) -> ContextRefreshRuntimeState:
+    fields = {
+        "last_status": ContextRefreshStatus.SUCCESS,
+        "last_attempted_at": BASE_TIME - timedelta(minutes=4),
+        "last_completed_at": BASE_TIME - timedelta(minutes=3),
+        "last_usable_at": BASE_TIME - timedelta(minutes=2),
+        "last_full_success_at": BASE_TIME - timedelta(minutes=1),
+        "last_status_observed_at": BASE_TIME - timedelta(minutes=1),
+        "next_due_at": BASE_TIME + timedelta(hours=1),
+        "consecutive_failure_count": 7,
+        "consecutive_non_usable_count": 8,
+        "last_error_type": "AdapterFailed",
+        "last_error_message": "future native error",
+    }
+    fields.update(overrides)
+    return ContextRefreshRuntimeState(
+        sources={
+            "macro_calendar": ContextRefreshSourceState(**fields)
+        }
+    )
+
+
+def _assert_canonical_unknown_readiness(readiness: object) -> None:
+    encoded = json.dumps(readiness.to_json_dict(), allow_nan=False, sort_keys=True)  # type: ignore[attr-defined]
+    assert readiness.source_id == "macro_calendar"  # type: ignore[attr-defined]
+    assert readiness.refresh_status == "UNKNOWN_NOT_REFRESHED"  # type: ignore[attr-defined]
+    assert readiness.last_attempted_at is None  # type: ignore[attr-defined]
+    assert readiness.last_completed_at is None  # type: ignore[attr-defined]
+    assert readiness.last_usable_at is None  # type: ignore[attr-defined]
+    assert readiness.last_full_success_at is None  # type: ignore[attr-defined]
+    assert readiness.next_due_at is None  # type: ignore[attr-defined]
+    assert readiness.last_status_observed_at is None  # type: ignore[attr-defined]
+    assert readiness.consecutive_failure_count is None  # type: ignore[attr-defined]
+    assert readiness.consecutive_non_usable_count is None  # type: ignore[attr-defined]
+    assert readiness.readiness_age_seconds is None  # type: ignore[attr-defined]
+    assert "AdapterFailed" not in encoded
+    assert "future native error" not in encoded
+
+
 def test_naive_evaluation_time_is_rejected() -> None:
     with pytest.raises(DecisionContextError, match="timezone-aware"):
         _assemble(_cache_with_basic_entries(), evaluation_time=datetime(2026, 1, 2, 14, 30))
@@ -685,21 +724,25 @@ def test_pr31_refresh_statuses_remain_distinct(status: ContextRefreshStatus) -> 
 
 def test_future_dated_refresh_state_is_masked() -> None:
     readiness = _assemble(_cache_with_basic_entries(), state=_future_runtime_state()).source_readiness[0]
-    encoded = json.dumps(readiness.to_json_dict(), allow_nan=False, sort_keys=True)
 
-    assert readiness.source_id == "macro_calendar"
-    assert readiness.refresh_status == "UNKNOWN_NOT_REFRESHED"
-    assert readiness.last_attempted_at is None
-    assert readiness.last_completed_at is None
-    assert readiness.last_usable_at is None
-    assert readiness.last_full_success_at is None
-    assert readiness.next_due_at is None
-    assert readiness.last_status_observed_at is None
-    assert readiness.consecutive_failure_count is None
-    assert readiness.consecutive_non_usable_count is None
-    assert readiness.readiness_age_seconds is None
-    assert "AdapterFailed" not in encoded
-    assert "future native error" not in encoded
+    _assert_canonical_unknown_readiness(readiness)
+
+
+@pytest.mark.parametrize(
+    "future_field",
+    [
+        "last_attempted_at",
+        "last_completed_at",
+        "last_usable_at",
+        "last_full_success_at",
+    ],
+)
+def test_future_readiness_observation_timestamp_masks_whole_record(future_field: str) -> None:
+    state = _runtime_state_with_macro(**{future_field: BASE_TIME + timedelta(minutes=1)})
+
+    readiness = _assemble(_cache_with_basic_entries(), state=state).source_readiness[0]
+
+    _assert_canonical_unknown_readiness(readiness)
 
 
 @pytest.mark.parametrize(
@@ -731,27 +774,14 @@ def test_unanchored_refresh_state_does_not_expose_last_status() -> None:
 
     readiness = _assemble(_cache_with_basic_entries(), state=state).source_readiness[0]
 
-    assert readiness.refresh_status == "UNKNOWN_NOT_REFRESHED"
-    assert readiness.last_attempted_at is None
-    assert readiness.last_status_observed_at is None
-    assert readiness.consecutive_failure_count is None
+    _assert_canonical_unknown_readiness(readiness)
 
 
 def test_asof_anchored_refresh_state_preserves_real_status_and_fields() -> None:
-    state = ContextRefreshRuntimeState(
-        sources={
-            "macro_calendar": ContextRefreshSourceState(
-                last_status=ContextRefreshStatus.FAILED,
-                last_attempted_at=BASE_TIME - timedelta(minutes=4),
-                last_completed_at=BASE_TIME - timedelta(minutes=3),
-                last_usable_at=BASE_TIME - timedelta(minutes=2),
-                last_full_success_at=BASE_TIME - timedelta(minutes=1),
-                last_status_observed_at=BASE_TIME - timedelta(minutes=1),
-                next_due_at=BASE_TIME + timedelta(hours=1),
-                consecutive_failure_count=3,
-                consecutive_non_usable_count=4,
-            )
-        }
+    state = _runtime_state_with_macro(
+        last_status=ContextRefreshStatus.FAILED,
+        consecutive_failure_count=3,
+        consecutive_non_usable_count=4,
     )
 
     readiness = _assemble(_cache_with_basic_entries(), state=state).source_readiness[0]
@@ -765,53 +795,62 @@ def test_asof_anchored_refresh_state_preserves_real_status_and_fields() -> None:
     assert readiness.consecutive_non_usable_count == 4
 
 
-def test_later_future_status_updates_do_not_change_historical_context_identity() -> None:
-    failed = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=ContextRefreshStatus.FAILED))
-    disabled = _assemble(_cache_with_basic_entries(), state=_future_runtime_state(status=ContextRefreshStatus.DISABLED))
-    skipped = _assemble(
+def test_future_next_due_alone_does_not_mask_readiness() -> None:
+    readiness = _assemble(
         _cache_with_basic_entries(),
-        state=_future_runtime_state(status=ContextRefreshStatus.SKIPPED_NOT_DUE),
-    )
-    legacy = _assemble(
-        _cache_with_basic_entries(),
-        state=ContextRefreshRuntimeState(
-            sources={
-                "macro_calendar": ContextRefreshSourceState(
-                    last_status=ContextRefreshStatus.FAILED,
-                    last_attempted_at=BASE_TIME - timedelta(minutes=4),
-                    last_completed_at=BASE_TIME - timedelta(minutes=3),
-                    next_due_at=BASE_TIME + timedelta(hours=1),
-                    consecutive_failure_count=9,
-                )
-            }
-        ),
-    )
-    missing = _assemble(_cache_with_basic_entries(), state=None)
+        state=_runtime_state_with_macro(next_due_at=BASE_TIME + timedelta(days=1)),
+    ).source_readiness[0]
 
-    assert failed.source_readiness == disabled.source_readiness
-    assert failed.source_readiness == skipped.source_readiness
-    assert failed.source_readiness == legacy.source_readiness
-    assert failed.source_readiness == missing.source_readiness
-    fingerprints = {
-        failed.context_fingerprint,
-        disabled.context_fingerprint,
-        skipped.context_fingerprint,
-        legacy.context_fingerprint,
-        missing.context_fingerprint,
+    assert readiness.refresh_status == ContextRefreshStatus.SUCCESS.value
+    assert readiness.next_due_at == BASE_TIME + timedelta(days=1)
+    assert readiness.last_status_observed_at == BASE_TIME - timedelta(minutes=1)
+
+
+def test_future_readiness_variants_match_missing_state_identity() -> None:
+    contexts = {
+        "missing": _assemble(_cache_with_basic_entries(), state=None),
+        "legacy": _assemble(
+            _cache_with_basic_entries(),
+            state=ContextRefreshRuntimeState(
+                sources={
+                    "macro_calendar": ContextRefreshSourceState(
+                        last_status=ContextRefreshStatus.FAILED,
+                        last_attempted_at=BASE_TIME - timedelta(minutes=4),
+                        last_completed_at=BASE_TIME - timedelta(minutes=3),
+                        next_due_at=BASE_TIME + timedelta(hours=1),
+                        consecutive_failure_count=9,
+                    )
+                }
+            ),
+        ),
+        "future_status_observed": _assemble(
+            _cache_with_basic_entries(),
+            state=_runtime_state_with_macro(last_status_observed_at=BASE_TIME + timedelta(minutes=1)),
+        ),
+        "future_attempted": _assemble(
+            _cache_with_basic_entries(),
+            state=_runtime_state_with_macro(last_attempted_at=BASE_TIME + timedelta(minutes=1)),
+        ),
+        "future_completed": _assemble(
+            _cache_with_basic_entries(),
+            state=_runtime_state_with_macro(last_completed_at=BASE_TIME + timedelta(minutes=1)),
+        ),
+        "future_usable": _assemble(
+            _cache_with_basic_entries(),
+            state=_runtime_state_with_macro(last_usable_at=BASE_TIME + timedelta(minutes=1)),
+        ),
+        "future_full_success": _assemble(
+            _cache_with_basic_entries(),
+            state=_runtime_state_with_macro(last_full_success_at=BASE_TIME + timedelta(minutes=1)),
+        ),
     }
-    snapshot_ids = {
-        failed.context_snapshot_id,
-        disabled.context_snapshot_id,
-        skipped.context_snapshot_id,
-        legacy.context_snapshot_id,
-        missing.context_snapshot_id,
-    }
-    assert fingerprints == {
-        missing.context_fingerprint
-    }
-    assert snapshot_ids == {
-        missing.context_snapshot_id
-    }
+    expected = contexts["missing"]
+
+    for context in contexts.values():
+        assert context.source_readiness == expected.source_readiness
+        assert context.to_audit_payload().to_json_dict()["source_readiness"] == expected.to_audit_payload().to_json_dict()["source_readiness"]
+        assert context.context_fingerprint == expected.context_fingerprint
+        assert context.context_snapshot_id == expected.context_snapshot_id
 
 
 def test_future_refresh_state_matches_equivalent_unobserved_future_state() -> None:

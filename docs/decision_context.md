@@ -78,12 +78,13 @@ Source readiness emits one record for each PR31 source ID: `macro_calendar`,
 `eia_wpsr`, `fred`, `usaspending`, and `yfinance_dev_only`. Missing runtime
 state becomes `UNKNOWN_NOT_REFRESHED`.
 
-Readiness is protected against future-state leakage. Refresh statuses are exposed
-only when their explicit `last_status_observed_at` time is at or before the
-decision evaluation time. Otherwise source readiness degrades to canonical
-`UNKNOWN_NOT_REFRESHED` rather than leaking a later coordinator outcome.
-`readiness_age_seconds` is calculated only from an as-of-compatible
-`last_completed_at`.
+Readiness is protected against future-state leakage. A source readiness record is
+exposed only when all of its recorded observation timestamps are compatible with
+the decision evaluation time. Any future or unanchored observation degrades the
+entire readiness record to canonical `UNKNOWN_NOT_REFRESHED`, because PR32 does
+not reconstruct historical coordinator state. `next_due_at` is planning data and
+does not by itself make a readiness record future-leaking. `readiness_age_seconds`
+is calculated only from an as-of-compatible `last_completed_at`.
 
 ## Policy Boundary
 

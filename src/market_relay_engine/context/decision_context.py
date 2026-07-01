@@ -722,6 +722,16 @@ def _source_readiness_from_state(
     completed = _state_datetime(state, "last_completed_at")
     usable = _state_datetime(state, "last_usable_at")
     full_success = _state_datetime(state, "last_full_success_at")
+    observed_timestamps = (
+        status_observed_at,
+        attempted,
+        completed,
+        usable,
+        full_success,
+    )
+    if any(timestamp is not None and timestamp > evaluation_time for timestamp in observed_timestamps):
+        return _unknown_readiness(source_id)
+
     status_value = getattr(status, "value", status)
     if not isinstance(status_value, str):
         return _unknown_readiness(source_id)

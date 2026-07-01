@@ -277,9 +277,11 @@ def _check_readiness_safety() -> CheckResult:
             sources={
                 "macro_calendar": ContextRefreshSourceState(
                     last_status=ContextRefreshStatus.SUCCESS,
-                    last_status_observed_at=datetime(2026, 1, 2, 12, 6, tzinfo=UTC),
-                    last_completed_at=datetime(2026, 1, 2, 12, 6, tzinfo=UTC),
+                    last_status_observed_at=datetime(2026, 1, 2, 12, 4, tzinfo=UTC),
+                    last_attempted_at=datetime(2026, 1, 2, 12, 6, tzinfo=UTC),
+                    last_completed_at=datetime(2026, 1, 2, 12, 4, tzinfo=UTC),
                     next_due_at=datetime(2026, 1, 2, 13, 0, tzinfo=UTC),
+                    consecutive_failure_count=3,
                 )
             }
         )
@@ -290,7 +292,10 @@ def _check_readiness_safety() -> CheckResult:
         absent_statuses == {"UNKNOWN_NOT_REFRESHED"}
         and future_macro.source_id == "macro_calendar"
         and future_macro.refresh_status == "UNKNOWN_NOT_REFRESHED"
+        and future_macro.last_attempted_at is None
         and future_macro.last_completed_at is None
+        and future_macro.next_due_at is None
+        and future_macro.consecutive_failure_count is None
     )
     return CheckResult(ok, "source readiness handles absent and future runtime state")
 
