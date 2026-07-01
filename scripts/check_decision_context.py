@@ -84,6 +84,7 @@ def _fixture_context(
             value="ok",
             source="macro_calendar_v1",
             updated_at=datetime(2026, 1, 2, 12, 0, tzinfo=UTC),
+            details={"nested": {"value": "original"}},
         )
     )
     return DecisionContextAssembler(cache=cache).build_for_decision(
@@ -232,11 +233,18 @@ def _check_deterministic_fingerprint() -> CheckResult:
 
 def _check_json_audit_payload() -> CheckResult:
     try:
-        payload = _fixture_context().to_audit_payload().to_json_dict()
+        context = _fixture_context()
+        payload = context.to_audit_payload().to_json_dict()
         encoded = json.dumps(payload, allow_nan=False, sort_keys=True)
+        payload["all_structured_context"][0]["details"]["nested"]["value"] = "changed"  # type: ignore[index]
+        unchanged = (
+            context.to_audit_payload()
+            .to_json_dict()["all_structured_context"][0]["details"]["nested"]["value"]  # type: ignore[index]
+            == "original"
+        )
     except (TypeError, ValueError) as exc:
         return CheckResult(False, f"audit payload JSON serialization failed: {exc}")
-    ok = "native_result" not in encoded and "context_snapshot_id" in encoded
+    ok = "native_result" not in encoded and "context_snapshot_id" in encoded and unchanged
     return CheckResult(ok, "audit payload is JSON-safe and omits native collector internals")
 
 

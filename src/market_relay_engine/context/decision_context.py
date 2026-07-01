@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import hashlib
 import json
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 from market_relay_engine.common.serialization import to_json_dict
@@ -143,7 +144,10 @@ class DecisionContextEntry:
             _optional_aware_datetime(self.valid_until, "valid_until"),
         )
         object.__setattr__(self, "confidence", _optional_number(self.confidence, "confidence"))
-        object.__setattr__(self, "details", _json_safe_mapping(self.details, "details"))
+        details = _deep_freeze_json_safe(self.details)
+        if not isinstance(details, Mapping):
+            raise DecisionContextError("details must be a mapping")
+        object.__setattr__(self, "details", details)
         object.__setattr__(
             self,
             "resource_family",
@@ -173,7 +177,29 @@ class DecisionContextEntry:
 
     def to_json_dict(self) -> dict[str, object]:
         """Return a JSON-safe projection."""
-        return _json_safe_mapping(to_json_dict(self), "decision_context_entry")
+        return _json_safe_mapping(
+            {
+                "entry_identity": self.entry_identity,
+                "cache_scope": self.cache_scope,
+                "cache_name": self.cache_name,
+                "scope_target": self.scope_target,
+                "value": self.value,
+                "severity": self.severity,
+                "source": self.source,
+                "updated_at": self.updated_at,
+                "source_event_time": self.source_event_time,
+                "valid_until": self.valid_until,
+                "confidence": self.confidence,
+                "details": _deep_thaw_json_safe(self.details),
+                "resource_family": self.resource_family,
+                "source_mode": self.source_mode,
+                "selection_scope": self.selection_scope,
+                "authority_class": self.authority_class,
+                "provenance_state": self.provenance_state,
+                "refresh_status": self.refresh_status,
+            },
+            "decision_context_entry",
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -261,7 +287,7 @@ class DecisionContextPolicy:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "policy_version", _required_string(self.policy_version, "policy_version"))
-        rules: list[dict[str, str]] = []
+        rules: list[Mapping[str, object]] = []
         for rule in self.approved_entry_rules:
             if not isinstance(rule, Mapping):
                 raise DecisionContextError("approved_entry_rules entries must be mappings")
@@ -274,13 +300,16 @@ class DecisionContextPolicy:
                 raise DecisionContextError("unknown source cannot be approved for risk context")
             if not _is_risk_approval_eligible(classification):
                 raise DecisionContextError("development-only source cannot be approved for risk context")
-            rules.append(
+            frozen_rule = _deep_freeze_json_safe(
                 {
                     "source": source,
                     "cache_scope": _required_string(rule["cache_scope"], "approval.cache_scope"),
                     "cache_name": _required_string(rule["cache_name"], "approval.cache_name"),
                 }
             )
+            if not isinstance(frozen_rule, Mapping):
+                raise DecisionContextError("approval rule must be a mapping")
+            rules.append(frozen_rule)
         object.__setattr__(self, "approved_entry_rules", tuple(rules))
 
     def approves(self, *, source: str, cache_scope: str, cache_name: str) -> bool:
@@ -290,11 +319,20 @@ class DecisionContextPolicy:
             "cache_scope": cache_scope,
             "cache_name": cache_name,
         }
-        return any(rule == candidate for rule in self.approved_entry_rules)
+        return any(_deep_thaw_json_safe(rule) == candidate for rule in self.approved_entry_rules)
 
     def to_json_dict(self) -> dict[str, object]:
         """Return a JSON-safe projection."""
-        return _json_safe_mapping(to_json_dict(self), "decision_context_policy")
+        return _json_safe_mapping(
+            {
+                "policy_version": self.policy_version,
+                "approved_entry_rules": [
+                    _deep_thaw_json_safe(rule)
+                    for rule in self.approved_entry_rules
+                ],
+            },
+            "decision_context_policy",
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -320,7 +358,33 @@ class DecisionContextAuditPayload:
 
     def to_json_dict(self) -> dict[str, object]:
         """Return a JSON-safe audit payload."""
-        return _json_safe_mapping(to_json_dict(self), "decision_context_audit_payload")
+        return _json_safe_mapping(
+            {
+                "context_schema_version": self.context_schema_version,
+                "context_snapshot_id": self.context_snapshot_id,
+                "context_fingerprint": self.context_fingerprint,
+                "ticker": self.ticker,
+                "ticker_sector": self.ticker_sector,
+                "sector_resolution_status": self.sector_resolution_status,
+                "trace_id": self.trace_id,
+                "evaluation_time": self.evaluation_time,
+                "all_structured_context": [
+                    entry.to_json_dict()
+                    for entry in self.all_structured_context
+                ],
+                "approved_risk_context": [
+                    entry.to_json_dict()
+                    for entry in self.approved_risk_context
+                ],
+                "source_readiness": [
+                    item.to_json_dict()
+                    for item in self.source_readiness
+                ],
+                "future_entry_exclusion_count": self.future_entry_exclusion_count,
+                "policy_version": self.policy_version,
+            },
+            "decision_context_audit_payload",
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -364,7 +428,33 @@ class DecisionContext:
 
     def to_json_dict(self) -> dict[str, object]:
         """Return a JSON-safe projection."""
-        return _json_safe_mapping(to_json_dict(self), "decision_context")
+        return _json_safe_mapping(
+            {
+                "context_schema_version": self.context_schema_version,
+                "context_snapshot_id": self.context_snapshot_id,
+                "context_fingerprint": self.context_fingerprint,
+                "ticker": self.ticker,
+                "ticker_sector": self.ticker_sector,
+                "sector_resolution_status": self.sector_resolution_status,
+                "trace_id": self.trace_id,
+                "evaluation_time": self.evaluation_time,
+                "all_structured_context": [
+                    entry.to_json_dict()
+                    for entry in self.all_structured_context
+                ],
+                "approved_risk_context": [
+                    entry.to_json_dict()
+                    for entry in self.approved_risk_context
+                ],
+                "source_readiness": [
+                    item.to_json_dict()
+                    for item in self.source_readiness
+                ],
+                "future_entry_exclusion_count": self.future_entry_exclusion_count,
+                "policy_version": self.policy_version,
+            },
+            "decision_context",
+        )
 
 
 class DecisionContextAssembler:
@@ -937,11 +1027,40 @@ def _optional_non_negative_int(value: object, field_name: str) -> int | None:
     return _non_negative_int(value, field_name)
 
 
-def _json_safe_mapping(value: object, field_name: str) -> dict[str, object]:
-    if not isinstance(value, Mapping):
-        raise DecisionContextError(f"{field_name} must be a mapping")
+def _copy_json_container(value: object) -> object:
+    if isinstance(value, Mapping):
+        copied: dict[str, object] = {}
+        for key, child in value.items():
+            if not isinstance(key, str):
+                raise DecisionContextError("JSON object keys must be strings")
+            copied[key] = _copy_json_container(child)
+        return copied
+    if isinstance(value, (list, tuple)):
+        return [_copy_json_container(child) for child in value]
+    return value
+
+
+def _freeze_loaded_json(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {
+                key: _freeze_loaded_json(child)
+                for key, child in value.items()
+            }
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_loaded_json(child) for child in value)
+    if value is None or isinstance(value, (bool, int, float, str)):
+        json.dumps(value, allow_nan=False)
+        return value
+    raise DecisionContextError("value must be JSON-safe")
+
+
+def _deep_freeze_json_safe(value: object) -> object:
+    """Return a deeply immutable JSON-safe copy of a JSON-like value."""
     try:
-        safe_value = to_json_dict(dict(value))
+        prepared = _copy_json_container(value)
+        safe_value = to_json_dict(prepared)
         encoded = json.dumps(
             safe_value,
             allow_nan=False,
@@ -950,6 +1069,32 @@ def _json_safe_mapping(value: object, field_name: str) -> dict[str, object]:
         )
         loaded = json.loads(encoded)
     except (TypeError, ValueError) as exc:
+        raise DecisionContextError("value must be JSON-safe") from exc
+    return _freeze_loaded_json(loaded)
+
+
+def _deep_thaw_json_safe(value: object) -> object:
+    """Return a fresh mutable JSON-safe copy of a frozen JSON-like value."""
+    if isinstance(value, Mapping):
+        return {
+            key: _deep_thaw_json_safe(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_deep_thaw_json_safe(child) for child in value]
+    if value is None or isinstance(value, (bool, int, float, str)):
+        json.dumps(value, allow_nan=False)
+        return value
+    raise DecisionContextError("value must be JSON-safe")
+
+
+def _json_safe_mapping(value: object, field_name: str) -> dict[str, object]:
+    if not isinstance(value, Mapping):
+        raise DecisionContextError(f"{field_name} must be a mapping")
+    try:
+        frozen = _deep_freeze_json_safe(value)
+        loaded = _deep_thaw_json_safe(frozen)
+    except DecisionContextError as exc:
         raise DecisionContextError(f"{field_name} must be JSON-safe") from exc
     if not isinstance(loaded, dict):
         raise DecisionContextError(f"{field_name} must be a mapping")

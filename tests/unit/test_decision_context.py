@@ -378,7 +378,7 @@ def test_future_updated_entry_is_excluded_from_context_and_audit() -> None:
     assert context.all_structured_context == ()
     assert context.future_entry_exclusion_count == 1
     assert audit.future_entry_exclusion_count == 1
-    encoded = to_json_string(audit)
+    encoded = to_json_string(audit.to_json_dict())
     assert "after_eval_entry" not in encoded
     assert "not_yet_available" not in encoded
 
@@ -908,14 +908,106 @@ def test_severity_tier_substring_flag_type_and_provenance_do_not_approve() -> No
 
 
 def test_input_detail_mutation_cannot_mutate_assembled_context() -> None:
-    details = {"nested": {"value": "original"}}
+    details = {"nested": {"value": "original"}, "items": ["first"]}
     cache = ContextStateCache()
     cache.update(make_global_context_entry(name="mutable", value="ok", details=details, updated_at=BASE_TIME))
     context = _assemble(cache)
+    fingerprint = context.context_fingerprint
+    snapshot_id = context.context_snapshot_id
+    audit_before = context.to_audit_payload().to_json_dict()
 
     details["nested"]["value"] = "changed"  # type: ignore[index]
+    details["items"].append("changed")  # type: ignore[union-attr]
 
     assert context.all_structured_context[0].details["nested"]["value"] == "original"  # type: ignore[index]
+    assert context.all_structured_context[0].details["items"] == ("first",)
+    assert context.context_fingerprint == fingerprint
+    assert context.context_snapshot_id == snapshot_id
+    assert context.to_audit_payload().to_json_dict() == audit_before
+
+
+def test_decision_context_details_are_deeply_immutable() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="immutable",
+            value="ok",
+            details={"nested": {"value": "original"}, "items": ["first", {"second": True}]},
+            updated_at=BASE_TIME,
+        )
+    )
+    entry = _assemble(cache).all_structured_context[0]
+
+    with pytest.raises(TypeError):
+        entry.details["new_key"] = "changed"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        entry.details["nested"]["value"] = "changed"  # type: ignore[index]
+    assert entry.details["items"] == ("first", {"second": True})
+    assert isinstance(entry.details["items"], tuple)
+    with pytest.raises(AttributeError):
+        entry.details["items"].append("changed")  # type: ignore[attr-defined,union-attr]
+
+
+def test_audit_payload_projection_cannot_mutate_decision_context() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="audit_mutation",
+            value="ok",
+            details={"nested": {"value": "original"}, "items": ["first"]},
+            updated_at=BASE_TIME,
+        )
+    )
+    context = _assemble(cache)
+    audit_payload = context.to_audit_payload().to_json_dict()
+    entry_payload = audit_payload["all_structured_context"][0]  # type: ignore[index]
+    details_payload = entry_payload["details"]  # type: ignore[index]
+
+    details_payload["nested"]["value"] = "changed"  # type: ignore[index]
+    details_payload["items"].append("changed")  # type: ignore[index,union-attr]
+
+    entry = context.all_structured_context[0]
+    assert entry.details["nested"]["value"] == "original"  # type: ignore[index]
+    assert entry.details["items"] == ("first",)
+    assert context.to_audit_payload().to_json_dict()["all_structured_context"][0]["details"]["nested"]["value"] == "original"  # type: ignore[index]
+
+
+def test_audit_payload_projections_do_not_share_mutable_nested_objects() -> None:
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="audit_copy",
+            value="ok",
+            details={"nested": {"value": "original"}, "items": ["first"]},
+            updated_at=BASE_TIME,
+        )
+    )
+    context = _assemble(cache)
+
+    first = context.to_audit_payload().to_json_dict()
+    second = context.to_audit_payload().to_json_dict()
+
+    assert first == second
+    first_entry = first["all_structured_context"][0]  # type: ignore[index]
+    second_entry = second["all_structured_context"][0]  # type: ignore[index]
+    first_details = first_entry["details"]  # type: ignore[index]
+    second_details = second_entry["details"]  # type: ignore[index]
+    assert first_details is not second_details
+    assert first_details["nested"] is not second_details["nested"]  # type: ignore[index]
+    assert first_details["items"] is not second_details["items"]  # type: ignore[index]
+    first_details["nested"]["value"] = "changed"  # type: ignore[index]
+    assert second_details["nested"]["value"] == "original"  # type: ignore[index]
+
+
+def test_semantically_identical_details_keep_deterministic_fingerprint() -> None:
+    first_cache = ContextStateCache()
+    second_cache = ContextStateCache()
+    first_details = {"nested": {"value": "same"}, "items": ["one", {"two": 2}]}
+    second_details = json.loads(json.dumps(first_details, allow_nan=False, sort_keys=True))
+    first_cache.update(make_global_context_entry(name="details", value="ok", details=first_details, updated_at=BASE_TIME))
+    second_cache.update(make_global_context_entry(name="details", value="ok", details=second_details, updated_at=BASE_TIME))
+
+    assert _assemble(first_cache).context_fingerprint == _assemble(second_cache).context_fingerprint
 
 
 def test_no_cache_mutation_or_external_io(monkeypatch: pytest.MonkeyPatch) -> None:

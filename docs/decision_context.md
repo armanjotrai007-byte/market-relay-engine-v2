@@ -62,6 +62,9 @@ source-specific `details` preserved. PR32 adds only standard labels:
 Unknown source names remain visible with `UNKNOWN` labels and
 `RESEARCH_ONLY` authority. Source-specific evidence stays inside `details`; PR32
 does not duplicate collector schemas into a second abstraction layer.
+Decision-context entry details are deeply frozen at assembly time. Audit
+payloads are defensive JSON-safe projections and cannot mutate the assembled
+context or its deterministic identifiers.
 
 ## Provenance And Readiness
 
