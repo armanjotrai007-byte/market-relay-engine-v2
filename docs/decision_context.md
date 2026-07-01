@@ -89,6 +89,9 @@ all selected visible cache entries. `approved_risk_context` is empty unless an
 injected policy exactly matches `source`, `cache_scope`, and `cache_name`.
 Development-only context remains visible for research and audit purposes, but is
 permanently ineligible for approved risk context regardless of policy.
+Only centrally registered, non-development source classifications may be
+approved for future risk context. Unknown, manual, fixture, typo, and
+unregistered source data remains research-only regardless of policy.
 
 Approval is never inferred from severity, source-name substrings, event tiers,
 flag types, or provenance state. Approved entries are labelled

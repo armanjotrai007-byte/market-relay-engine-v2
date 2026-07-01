@@ -33,32 +33,37 @@ SUPPORTED_REFRESH_SOURCE_IDS: tuple[str, ...] = (
     "yfinance_dev_only",
 )
 
-KNOWN_SOURCE_CLASSIFICATION: dict[str, dict[str, str]] = {
+KNOWN_SOURCE_CLASSIFICATION: dict[str, dict[str, object]] = {
     "macro_calendar_v1": {
+        "known_source": True,
         "refresh_source_id": "macro_calendar",
         "resource_family": "MACRO_CALENDAR",
         "source_mode": "LOCAL_REVIEWED",
         "authority_class": "RESEARCH_ONLY",
     },
     "eia_wpsr_v1": {
+        "known_source": True,
         "refresh_source_id": "eia_wpsr",
         "resource_family": "EIA_WPSR",
         "source_mode": "OFFICIAL_SOURCE",
         "authority_class": "RESEARCH_ONLY",
     },
     "fred_rates_v1": {
+        "known_source": True,
         "refresh_source_id": "fred",
         "resource_family": "FRED",
         "source_mode": "OFFICIAL_SOURCE",
         "authority_class": "RESEARCH_ONLY",
     },
     "usaspending_awards_v1": {
+        "known_source": True,
         "refresh_source_id": "usaspending",
         "resource_family": "USASPENDING",
         "source_mode": "OFFICIAL_SOURCE",
         "authority_class": "RESEARCH_ONLY",
     },
     "yfinance_dev_raw_v1": {
+        "known_source": True,
         "refresh_source_id": "yfinance_dev_only",
         "resource_family": "YFINANCE_DEV",
         "source_mode": "DEVELOPMENT_ONLY",
@@ -265,6 +270,8 @@ class DecisionContextPolicy:
                 raise DecisionContextError("approval rules must contain source, cache_scope, and cache_name")
             source = _required_string(rule["source"], "approval.source")
             classification = _classify_source(source)
+            if classification.get("known_source") is not True:
+                raise DecisionContextError("unknown source cannot be approved for risk context")
             if not _is_risk_approval_eligible(classification):
                 raise DecisionContextError("development-only source cannot be approved for risk context")
             rules.append(
@@ -660,10 +667,12 @@ def _state_count(state: object, field_name: str) -> int | None:
     return _optional_non_negative_int(getattr(state, field_name, None), field_name)
 
 
-def _classify_source(source: str) -> dict[str, str]:
+def _classify_source(source: str) -> dict[str, object]:
     classification = KNOWN_SOURCE_CLASSIFICATION.get(source)
     if classification is None:
         return {
+            "known_source": False,
+            "refresh_source_id": None,
             "resource_family": "UNKNOWN",
             "source_mode": "UNKNOWN",
             "authority_class": "RESEARCH_ONLY",
@@ -671,9 +680,10 @@ def _classify_source(source: str) -> dict[str, str]:
     return dict(classification)
 
 
-def _is_risk_approval_eligible(classification: Mapping[str, str]) -> bool:
+def _is_risk_approval_eligible(classification: Mapping[str, object]) -> bool:
     return (
-        classification.get("source_mode") != "DEVELOPMENT_ONLY"
+        classification.get("known_source") is True
+        and classification.get("source_mode") != "DEVELOPMENT_ONLY"
         and classification.get("authority_class") != "DEVELOPMENT_ONLY"
     )
 

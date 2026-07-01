@@ -189,6 +189,11 @@ class UnsafeApprovingPolicy(DecisionContextPolicy):
         return source == "yfinance_dev_raw_v1" and cache_scope == "GLOBAL" and cache_name == "yfinance_dev"
 
 
+class UnsafeUnknownApprovingPolicy(DecisionContextPolicy):
+    def approves(self, *, source: str, cache_scope: str, cache_name: str) -> bool:
+        return source == "fixture_unknown" and cache_scope == "GLOBAL" and cache_name == "unknown"
+
+
 def _snapshot_entry(
     *,
     scope: str = "GLOBAL",
@@ -259,6 +264,19 @@ def _cache_with_yfinance_dev_entry() -> ContextStateCache:
             name="yfinance_dev",
             value=101.25,
             source="yfinance_dev_raw_v1",
+            updated_at=BASE_TIME,
+        )
+    )
+    return cache
+
+
+def _cache_with_unknown_entry() -> ContextStateCache:
+    cache = ContextStateCache()
+    cache.update(
+        make_global_context_entry(
+            name="unknown",
+            value="ok",
+            source="fixture_unknown",
             updated_at=BASE_TIME,
         )
     )
@@ -570,15 +588,53 @@ def test_yfinance_development_only_label_is_preserved_in_audit_and_fingerprint()
 
 
 def test_unknown_source_remains_visible_with_unknown_labels() -> None:
-    cache = ContextStateCache()
-    cache.update(make_global_context_entry(name="unknown", value="ok", source="fixture_unknown", updated_at=BASE_TIME))
-
-    entry = _assemble(cache).all_structured_context[0]
+    context = _assemble(_cache_with_unknown_entry())
+    entry = context.all_structured_context[0]
 
     assert entry.resource_family == "UNKNOWN"
     assert entry.source_mode == "UNKNOWN"
     assert entry.authority_class == "RESEARCH_ONLY"
     assert entry.refresh_status == "UNKNOWN_NOT_REFRESHED"
+    assert context.approved_risk_context == ()
+
+
+@pytest.mark.parametrize("source", ["manual", "fixture_unknown", "fred_rate_v1", "future_unregistered_source"])
+def test_unknown_policy_rule_is_rejected(source: str) -> None:
+    with pytest.raises(DecisionContextError, match="unknown source cannot be approved"):
+        DecisionContextPolicy(
+            policy_version="unsafe_policy",
+            approved_entry_rules=(
+                {
+                    "source": source,
+                    "cache_scope": "GLOBAL",
+                    "cache_name": "unknown",
+                },
+            ),
+        )
+
+
+def test_unsafe_policy_cannot_promote_unknown_source() -> None:
+    context = _assemble(_cache_with_unknown_entry(), policy=UnsafeUnknownApprovingPolicy())
+    entry = context.all_structured_context[0]
+
+    assert entry.source_mode == "UNKNOWN"
+    assert entry.authority_class == "RESEARCH_ONLY"
+    assert context.approved_risk_context == ()
+
+
+def test_unknown_research_only_label_is_preserved_in_audit_and_fingerprint() -> None:
+    default_context = _assemble(_cache_with_unknown_entry())
+    unsafe_context = _assemble(_cache_with_unknown_entry(), policy=UnsafeUnknownApprovingPolicy())
+    audit_json = json.dumps(
+        default_context.to_audit_payload().to_json_dict(),
+        allow_nan=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+    assert default_context.context_fingerprint == unsafe_context.context_fingerprint
+    assert '"authority_class":"RESEARCH_ONLY"' in audit_json
+    assert '"source_mode":"UNKNOWN"' in audit_json
 
 
 def test_provenance_states_are_safe() -> None:
@@ -822,11 +878,23 @@ def test_exact_policy_approval_selects_only_exact_entry() -> None:
 
 
 def test_severity_tier_substring_flag_type_and_provenance_do_not_approve() -> None:
+    with pytest.raises(DecisionContextError, match="unknown source cannot be approved"):
+        DecisionContextPolicy(
+            policy_version="test_policy",
+            approved_entry_rules=(
+                {
+                    "source": "usaspending",
+                    "cache_scope": "TICKER",
+                    "cache_name": "ticker_award",
+                },
+            ),
+        )
+
     policy = DecisionContextPolicy(
         policy_version="test_policy",
         approved_entry_rules=(
             {
-                "source": "usaspending",
+                "source": "usaspending_awards_v1",
                 "cache_scope": "TICKER",
                 "cache_name": "award",
             },
