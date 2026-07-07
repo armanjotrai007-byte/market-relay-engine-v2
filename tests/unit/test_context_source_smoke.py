@@ -226,6 +226,24 @@ def test_missing_or_relative_env_file_is_rejected(argv: list[str]) -> None:
     assert calls == []
 
 
+def test_explicit_env_file_overrides_ambient_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("QUESTDB_HTTP_HOST", "ambient-host")
+    monkeypatch.setenv("FRED_API_KEY", "ambient-fred-key")
+
+    with TemporaryDirectory(prefix=".tmp-smoke-env-") as temp_dir:
+        env_file = Path(temp_dir) / "server.env"
+        env_file.write_text(
+            "QUESTDB_HTTP_HOST=explicit-host\n"
+            "FRED_API_KEY=explicit-fred-key\n",
+            encoding="utf-8",
+        )
+
+        smoke.load_explicit_env_file(env_file)
+
+    assert os.environ["QUESTDB_HTTP_HOST"] == "explicit-host"
+    assert os.environ["FRED_API_KEY"] == "explicit-fred-key"
+
+
 def test_disabled_sources_produce_skipped_disabled() -> None:
     outcome = smoke.classify_probe_result(
         smoke.ProbeResult(

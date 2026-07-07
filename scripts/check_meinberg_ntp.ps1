@@ -65,17 +65,22 @@ function Parse-NtpqPeers {
         if ($trimmed.Length -eq 0 -or $trimmed.StartsWith("remote") -or $trimmed.StartsWith("=")) {
             continue
         }
-        if (-not $trimmed.StartsWith("*")) {
+        $tally = $trimmed.Substring(0, 1)
+        if ($tally -ne "*" -and $tally -ne "o") {
             continue
         }
         $parts = $trimmed -split "\s+"
         if ($parts.Count -lt 10) {
             throw "selected ntpq peer line has too few columns"
         }
+        if ($parts[0].Length -lt 2) {
+            throw "selected ntpq peer line is missing a peer name"
+        }
         $reach = ConvertTo-IntInvariant $parts[6]
         $offset = ConvertTo-DoubleInvariant $parts[8]
         $selected += [pscustomobject]@{
             Peer = $parts[0].Substring(1)
+            Marker = $tally
             Reach = $reach
             OffsetMilliseconds = $offset
             ThresholdMilliseconds = $ThresholdMilliseconds
@@ -96,10 +101,16 @@ function Parse-NtpqPeers {
 }
 
 function Invoke-SelfTest {
-    $valid = @"
+    $validStar = @"
      remote           refid      st t when poll reach   delay   offset  jitter
 ==============================================================================
 *203.0.113.10    .GPS.            1 u   17   64   377    1.234   -0.456   0.020
++203.0.113.11    .GPS.            1 u   12   64   377    1.111    0.100   0.010
+"@
+    $validPps = @"
+     remote           refid      st t when poll reach   delay   offset  jitter
+==============================================================================
+o127.127.22.0    .PPS.            0 l   11   16   377    0.000    0.003   0.001
 +203.0.113.11    .GPS.            1 u   12   64   377    1.111    0.100   0.010
 "@
     $noneSelected = @"
@@ -117,20 +128,32 @@ function Invoke-SelfTest {
 ==============================================================================
 *203.0.113.10    .GPS.            1 u   17   64   377    1.234   25.000   0.020
 "@
+    $twoSelected = @"
+     remote           refid      st t when poll reach   delay   offset  jitter
+==============================================================================
+*203.0.113.10    .GPS.            1 u   17   64   377    1.234   -0.456   0.020
+o127.127.22.0    .PPS.            0 l   11   16   377    0.000    0.003   0.001
+"@
 
     $failed = $false
-    try {
-        $peer = Parse-NtpqPeers -Text $valid -ThresholdMilliseconds 5.0
-        Write-Check $true "self-test valid selected peer" ("reach={0}; offset_ms={1}; threshold_ms={2}" -f $peer.Reach, $peer.OffsetMilliseconds, $peer.ThresholdMilliseconds)
-    } catch {
-        Write-Check $false "self-test valid selected peer" "parser rejected valid fixture"
-        $failed = $true
+    foreach ($case in @(
+        @{ Name = "self-test valid star selected peer"; Text = $validStar },
+        @{ Name = "self-test valid PPS selected peer"; Text = $validPps }
+    )) {
+        try {
+            $peer = Parse-NtpqPeers -Text $case.Text -ThresholdMilliseconds 5.0
+            Write-Check $true $case.Name ("marker={0}; reach={1}; offset_ms={2}; threshold_ms={3}" -f $peer.Marker, $peer.Reach, $peer.OffsetMilliseconds, $peer.ThresholdMilliseconds)
+        } catch {
+            Write-Check $false $case.Name "parser rejected valid fixture"
+            $failed = $true
+        }
     }
 
     foreach ($case in @(
         @{ Name = "self-test no selected peer"; Text = $noneSelected },
         @{ Name = "self-test zero reach"; Text = $zeroReach },
-        @{ Name = "self-test over threshold"; Text = $overThreshold }
+        @{ Name = "self-test over threshold"; Text = $overThreshold },
+        @{ Name = "self-test two selected peers"; Text = $twoSelected }
     )) {
         try {
             $null = Parse-NtpqPeers -Text $case.Text -ThresholdMilliseconds 5.0

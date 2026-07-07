@@ -12,7 +12,7 @@ PR33 validates collector-to-cache-to-decision-context assembly. It does not vali
 
 `scripts/smoke_context_sources.py` is intentionally excluded from pytest, CI, scheduler flows, service startup, and ordinary checker scripts. It must be run only from an isolated server-side validation checkout or worktree, never from the active 24/7 service checkout.
 
-The operator must pass the active server environment’s `.env` by absolute path with `--env-file`. The file is never auto-discovered and must never be copied into the validation worktree.
+The operator must pass the active server environment’s `.env` by absolute path with `--env-file`. The file is never auto-discovered and must never be copied into the validation worktree. Values from the explicitly supplied file take precedence over inherited shell environment variables for that validation invocation.
 
 The script refuses live setup unless both `--live` and an absolute existing `--env-file` are supplied. Its help path does not load `.env`, instantiate collectors, import live configuration, or contact sources.
 

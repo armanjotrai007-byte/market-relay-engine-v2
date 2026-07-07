@@ -940,7 +940,7 @@ class ContextSourceSmokeRunner:
 def load_explicit_env_file(env_path: Path) -> None:
     from dotenv import load_dotenv
 
-    load_dotenv(env_path, override=False)
+    load_dotenv(env_path, override=True)
 
 
 def main(
