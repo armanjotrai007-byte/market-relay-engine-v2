@@ -24,6 +24,8 @@ Ordinary `--live --env-file` mode uses `write_questdb=False` and `questdb_requir
 
 `--live --questdb --env-file` is an explicit operator decision. In that mode the script first reuses the existing QuestDB health/config, `QuestDBLedgerWriter`, `SystemHealthEvent`, and `QuestDBLedgerReader` contracts to persist and read back a clearly tagged `context_source_smoke` validation marker. It then requests each enabled source collector's existing QuestDB writer path with generated validation run/session IDs and reads back the collector-reported ledger tables through the existing read-only reader.
 
+A successful QuestDB marker alone is not a successful context-source validation. In `--live --questdb` mode, at least one non-marker source must either complete source-specific `WRITTEN_READBACK` or return valid `EXPECTED_NO_DATA` with `NO_CONTEXT`. A materialized source configured not to write QuestDB is a failure in explicit `--questdb` mode. The standalone QuestDB checks remain the correct tools for database-only validation.
+
 PR33 QuestDB validation preserves clearly tagged validation rows. It does not delete them, and it must never run destructive schema apply against the active server ledger.
 
 USAspending uses a temporary checkpoint path under the isolated validation worktree so the real checkpoint lock and atomic write behavior are exercised without touching the production checkpoint path or the active service `data` directory.

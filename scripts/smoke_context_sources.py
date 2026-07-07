@@ -232,7 +232,21 @@ def aggregate_exit_code(
             and outcome.source_ledger == LEDGER_WRITTEN_READBACK
             for outcome in outcomes
         )
-        return 0 if marker_ok else 1
+        source_ok = any(
+            outcome.source_id != QUESTDB_MARKER_SOURCE_ID
+            and (
+                (
+                    outcome.outcome == PASS
+                    and outcome.source_ledger == LEDGER_WRITTEN_READBACK
+                )
+                or (
+                    outcome.outcome == EXPECTED_NO_DATA
+                    and outcome.source_ledger == LEDGER_NO_CONTEXT
+                )
+            )
+            for outcome in outcomes
+        )
+        return 0 if marker_ok and source_ok else 1
     tested = [
         outcome for outcome in outcomes if outcome.outcome in {PASS, EXPECTED_NO_DATA}
     ]
@@ -929,7 +943,7 @@ class ContextSourceSmokeRunner:
         if materialized_entry_count <= 0:
             return LEDGER_NO_CONTEXT, None
         if not config_writes_questdb_ledger:
-            return LEDGER_NOT_CONFIGURED, None
+            return LEDGER_FAILED, "LedgerNotConfigured"
         if self.questdb_runtime is None:
             return LEDGER_FAILED, "QuestDBRuntimeUnavailable"
         return self.questdb_runtime.verify_source_ledger_results(

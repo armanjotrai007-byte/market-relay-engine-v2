@@ -367,6 +367,13 @@ def test_live_questdb_runner_is_invoked_with_questdb_required() -> None:
                         status="VALIDATION",
                         attempted=True,
                         source_ledger=smoke.LEDGER_WRITTEN_READBACK,
+                    ),
+                    smoke.SmokeOutcome(
+                        source_id="fred",
+                        outcome=smoke.PASS,
+                        status="SUCCESS",
+                        attempted=True,
+                        source_ledger=smoke.LEDGER_WRITTEN_READBACK,
                     )
                 ]
 
@@ -454,6 +461,62 @@ def test_missing_marker_readback_fails() -> None:
     assert outcome.error_type == "MarkerReadbackMissing"
 
 
+def test_questdb_marker_only_is_not_successful_context_source_validation() -> None:
+    outcomes = [
+        smoke.SmokeOutcome(
+            source_id=smoke.QUESTDB_MARKER_SOURCE_ID,
+            outcome=smoke.PASS,
+            status="VALIDATION",
+            attempted=True,
+            source_ledger=smoke.LEDGER_WRITTEN_READBACK,
+        )
+    ]
+
+    assert smoke.aggregate_exit_code(outcomes, questdb_mode=True) == 1
+
+
+def test_questdb_marker_plus_disabled_source_is_not_successful_context_source_validation() -> None:
+    outcomes = [
+        smoke.SmokeOutcome(
+            source_id=smoke.QUESTDB_MARKER_SOURCE_ID,
+            outcome=smoke.PASS,
+            status="VALIDATION",
+            attempted=True,
+            source_ledger=smoke.LEDGER_WRITTEN_READBACK,
+        ),
+        smoke.SmokeOutcome(
+            source_id="fred",
+            outcome=smoke.SKIPPED_DISABLED,
+            status="DISABLED",
+            attempted=False,
+            source_ledger=smoke.LEDGER_NOT_REQUESTED,
+        ),
+    ]
+
+    assert smoke.aggregate_exit_code(outcomes, questdb_mode=True) == 1
+
+
+def test_questdb_marker_plus_materialized_persisted_source_succeeds() -> None:
+    outcomes = [
+        smoke.SmokeOutcome(
+            source_id=smoke.QUESTDB_MARKER_SOURCE_ID,
+            outcome=smoke.PASS,
+            status="VALIDATION",
+            attempted=True,
+            source_ledger=smoke.LEDGER_WRITTEN_READBACK,
+        ),
+        smoke.SmokeOutcome(
+            source_id="fred",
+            outcome=smoke.PASS,
+            status="SUCCESS",
+            attempted=True,
+            source_ledger=smoke.LEDGER_WRITTEN_READBACK,
+        ),
+    ]
+
+    assert smoke.aggregate_exit_code(outcomes, questdb_mode=True) == 0
+
+
 def test_materialized_context_with_failed_ledger_readback_fails_source_validation() -> None:
     runner = smoke.ContextSourceSmokeRunner(
         repo_root=REPO_ROOT,
@@ -479,6 +542,24 @@ def test_materialized_context_with_failed_ledger_readback_fails_source_validatio
     assert error == "LedgerReadbackMismatch"
 
 
+def test_materialized_context_with_questdb_not_configured_fails_source_validation() -> None:
+    runner = smoke.ContextSourceSmokeRunner(
+        repo_root=REPO_ROOT,
+        write_questdb=True,
+        questdb_required=True,
+        questdb_runtime=_FakeQuestDBRuntime(),
+    )
+
+    status, error = runner._source_ledger_status(
+        materialized_entry_count=1,
+        config_writes_questdb_ledger=False,
+        native_result=type("NativeResult", (), {"ledger_write_results": ()})(),
+    )
+
+    assert status == smoke.LEDGER_FAILED
+    assert error == "LedgerNotConfigured"
+
+
 def test_valid_no_data_still_succeeds_when_mandatory_questdb_marker_succeeds() -> None:
     outcomes = [
         smoke.SmokeOutcome(
@@ -498,6 +579,53 @@ def test_valid_no_data_still_succeeds_when_mandatory_questdb_marker_succeeds() -
     ]
 
     assert smoke.aggregate_exit_code(outcomes, questdb_mode=True) == 0
+
+
+def test_questdb_marker_with_pass_not_configured_source_is_not_successful() -> None:
+    outcomes = [
+        smoke.SmokeOutcome(
+            source_id=smoke.QUESTDB_MARKER_SOURCE_ID,
+            outcome=smoke.PASS,
+            status="VALIDATION",
+            attempted=True,
+            source_ledger=smoke.LEDGER_WRITTEN_READBACK,
+        ),
+        smoke.SmokeOutcome(
+            source_id="fred",
+            outcome=smoke.PASS,
+            status="SUCCESS",
+            attempted=True,
+            source_ledger=smoke.LEDGER_NOT_CONFIGURED,
+        ),
+    ]
+
+    assert smoke.aggregate_exit_code(outcomes, questdb_mode=True) == 1
+
+
+def test_ordinary_non_questdb_aggregation_is_unchanged() -> None:
+    assert smoke.aggregate_exit_code(
+        [
+            smoke.SmokeOutcome(
+                source_id="fred",
+                outcome=smoke.PASS,
+                status="SUCCESS",
+                attempted=True,
+                source_ledger=smoke.LEDGER_NOT_REQUESTED,
+            )
+        ]
+    ) == 0
+    assert smoke.aggregate_exit_code(
+        [
+            smoke.SmokeOutcome(
+                source_id="fred",
+                outcome=smoke.EXPECTED_NO_DATA,
+                status="STALE",
+                attempted=True,
+                source_ledger=smoke.LEDGER_NOT_REQUESTED,
+            )
+        ]
+    ) == 0
+    assert smoke.aggregate_exit_code([]) == 1
 
 
 def test_not_configured_is_rendered_distinctly_without_claiming_persistence_success() -> None:
