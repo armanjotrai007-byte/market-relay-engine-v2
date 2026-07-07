@@ -13,6 +13,9 @@ from tempfile import TemporaryDirectory
 from typing import Callable, Iterable, Protocol, Sequence
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / "src"
+
 SOURCE_IDS: tuple[str, ...] = (
     "macro_calendar",
     "eia_wpsr",
@@ -36,6 +39,18 @@ _SENSITIVE_MARKERS = (
     "token",
 )
 _MAX_MESSAGE_LENGTH = 160
+
+
+def _bootstrap_repository_src_path() -> None:
+    src_dir = SRC_DIR.resolve()
+    if not src_dir.is_dir():
+        raise RuntimeError(f"repository src directory does not exist: {src_dir}")
+    src_path = str(src_dir)
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
+
+
+_bootstrap_repository_src_path()
 
 
 class SmokeRunner(Protocol):
@@ -556,9 +571,8 @@ def main(
 
     env_path = Path(args.env_file)
     env_loader(env_path)
-    repo_root = Path(__file__).resolve().parents[1]
     runner = runner_factory(
-        repo_root=repo_root,
+        repo_root=REPO_ROOT,
         write_questdb=False,
         questdb_required=False,
     )
