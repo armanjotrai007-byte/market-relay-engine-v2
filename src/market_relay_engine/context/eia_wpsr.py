@@ -528,8 +528,14 @@ class EIAWPSRCollector:
         self,
         *,
         evaluation_time: datetime | None = None,
+        write_questdb: bool = False,
+        questdb_required: bool = False,
+        run_id: str | None = None,
+        session_id: str | None = None,
     ) -> EIAWPSRCollectionResult:
         """Read-only numeric EIA probe that always attempts the bounded source routes."""
+        if write_questdb and questdb_required and self.ledger_writer is None:
+            raise EIAWPSRError("QuestDB writes are required but no writer was provided")
         now = ensure_timezone_aware_utc(evaluation_time or self.clock())
         if not self.config.numeric_source_enabled:
             plan = plan_eia_wpsr_action(
@@ -578,10 +584,10 @@ class EIAWPSRCollector:
             cache_results=[],
             ledger_results=[],
             issues=[],
-            write_questdb=False,
-            questdb_required=False,
-            run_id=None,
-            session_id=None,
+            write_questdb=write_questdb,
+            questdb_required=questdb_required,
+            run_id=run_id,
+            session_id=session_id,
         )
 
     def _collect_numeric_report(

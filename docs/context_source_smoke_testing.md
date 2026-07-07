@@ -20,7 +20,11 @@ The script refuses live setup unless both `--live` and an absolute existing `--e
 
 Each source uses a fresh in-process `ContextStateCache`. No active service cache, runtime state, scheduler, or process is read or modified.
 
-Collector calls use `write_questdb=False` and `questdb_required=False`. The script performs no QuestDB writes and no fallback-ledger writes.
+Ordinary `--live --env-file` mode uses `write_questdb=False` and `questdb_required=False`. It performs no QuestDB writes and no fallback-ledger writes.
+
+`--live --questdb --env-file` is an explicit operator decision. In that mode the script first reuses the existing QuestDB health/config, `QuestDBLedgerWriter`, `SystemHealthEvent`, and `QuestDBLedgerReader` contracts to persist and read back a clearly tagged `context_source_smoke` validation marker. It then requests each enabled source collector's existing QuestDB writer path with generated validation run/session IDs and reads back the collector-reported ledger tables through the existing read-only reader.
+
+PR33 QuestDB validation preserves clearly tagged validation rows. It does not delete them, and it must never run destructive schema apply against the active server ledger.
 
 USAspending uses a temporary checkpoint path under the isolated validation worktree so the real checkpoint lock and atomic write behavior are exercised without touching the production checkpoint path or the active service `data` directory.
 
@@ -33,6 +37,8 @@ USAspending uses a temporary checkpoint path under the isolated validation workt
 `SKIPPED_DISABLED` means the existing configuration disables that source capability, so no collector/probe/network setup was attempted.
 
 `FAILED` means required enabled-source configuration, authentication, transport, parser, materialization, temporary checkpoint, collector, or assembler validation failed. Enabled scheduler-style non-attempt outcomes are failures, not successful smoke results.
+
+The `source_ledger` column is separate from source outcome. `NOT_REQUESTED` means ordinary no-write mode. `WRITTEN_READBACK` means source-specific collector ledger writes were read back for the generated validation identity. `NO_CONTEXT` means the source returned a valid no-data result or no materialized context to persist. `NOT_CONFIGURED` means deployed source configuration does not enable that collector's ledger output. `FAILED` means a requested source-specific ledger write or read-back failed.
 
 ## Source Notes
 
