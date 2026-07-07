@@ -50,6 +50,59 @@ function ConvertTo-IntInvariant {
     return $value
 }
 
+function Normalize-NtpEndpointToken {
+    param([string]$Token)
+    $trimmed = $Token.Trim()
+    if ($trimmed.EndsWith(".")) {
+        return $trimmed.Substring(0, $trimmed.Length - 1)
+    }
+    return $trimmed
+}
+
+function Get-ActiveNtpUpstreamTokens {
+    param([string]$Text)
+
+    $tokens = @()
+    foreach ($line in ($Text -split "`r?`n")) {
+        $withoutComment = $line
+        $commentIndex = $withoutComment.IndexOf("#")
+        if ($commentIndex -ge 0) {
+            $withoutComment = $withoutComment.Substring(0, $commentIndex)
+        }
+        $trimmed = $withoutComment.Trim()
+        if ($trimmed.Length -eq 0) {
+            continue
+        }
+
+        $parts = $trimmed -split "\s+"
+        if ($parts.Count -lt 2) {
+            continue
+        }
+        $directive = $parts[0]
+        if (-not $directive.Equals("server", [System.StringComparison]::OrdinalIgnoreCase) -and
+            -not $directive.Equals("pool", [System.StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        $tokens += $parts[1]
+    }
+    return $tokens
+}
+
+function Test-ExpectedUpstreamActive {
+    param(
+        [string]$Text,
+        [string]$ExpectedUpstream
+    )
+    $expected = Normalize-NtpEndpointToken $ExpectedUpstream
+    foreach ($token in (Get-ActiveNtpUpstreamTokens $Text)) {
+        $normalized = Normalize-NtpEndpointToken $token
+        if ($normalized.Equals($expected, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Parse-NtpqPeers {
     param(
         [string]$Text,
@@ -101,6 +154,66 @@ function Parse-NtpqPeers {
 }
 
 function Invoke-SelfTest {
+    $failed = $false
+    foreach ($case in @(
+        @{
+            Name = "self-test active server upstream";
+            Text = "server expected.example.net iburst";
+            Expected = "expected.example.net";
+            ShouldMatch = $true
+        },
+        @{
+            Name = "self-test active pool upstream";
+            Text = "pool expected.example.net iburst";
+            Expected = "expected.example.net";
+            ShouldMatch = $true
+        },
+        @{
+            Name = "self-test active upstream trailing dot";
+            Text = "server expected.example.net. iburst";
+            Expected = "expected.example.net";
+            ShouldMatch = $true
+        },
+        @{
+            Name = "self-test commented upstream ignored";
+            Text = "# server expected.example.net iburst";
+            Expected = "expected.example.net";
+            ShouldMatch = $false
+        },
+        @{
+            Name = "self-test inline comment upstream ignored";
+            Text = "server other.example.net iburst # expected.example.net";
+            Expected = "expected.example.net";
+            ShouldMatch = $false
+        },
+        @{
+            Name = "self-test unrelated directive ignored";
+            Text = "restrict expected.example.net";
+            Expected = "expected.example.net";
+            ShouldMatch = $false
+        },
+        @{
+            Name = "self-test substring hostname ignored";
+            Text = "server not-expected.example.net";
+            Expected = "expected.example.net";
+            ShouldMatch = $false
+        },
+        @{
+            Name = "self-test different active upstream ignored";
+            Text = "server other.example.net iburst";
+            Expected = "expected.example.net";
+            ShouldMatch = $false
+        }
+    )) {
+        $matched = Test-ExpectedUpstreamActive -Text $case.Text -ExpectedUpstream $case.Expected
+        if ($matched -eq $case.ShouldMatch) {
+            Write-Check $true $case.Name "parser result matched expectation"
+        } else {
+            Write-Check $false $case.Name "parser result did not match expectation"
+            $failed = $true
+        }
+    }
+
     $validStar = @"
      remote           refid      st t when poll reach   delay   offset  jitter
 ==============================================================================
@@ -135,7 +248,6 @@ o127.127.22.0    .PPS.            0 l   11   16   377    0.000    0.003   0.001
 o127.127.22.0    .PPS.            0 l   11   16   377    0.000    0.003   0.001
 "@
 
-    $failed = $false
     foreach ($case in @(
         @{ Name = "self-test valid star selected peer"; Text = $validStar },
         @{ Name = "self-test valid PPS selected peer"; Text = $validPps }
@@ -232,11 +344,15 @@ try {
     Write-Check $configOk "configuration file" $configItem.FullName
     if (-not $configOk) { $failedNormal = $true }
     $configText = Get-Content -LiteralPath $configItem.FullName -Raw -Encoding UTF8
-    $upstreamMatch = $configText.Contains($ExpectedUpstream)
-    Write-Check $upstreamMatch "configuration upstream-token match" $ExpectedUpstream
+    $upstreamMatch = Test-ExpectedUpstreamActive -Text $configText -ExpectedUpstream $ExpectedUpstream
+    if ($upstreamMatch) {
+        Write-Check $true "configuration expected upstream active" $ExpectedUpstream
+    } else {
+        Write-Check $false "configuration expected upstream missing" $ExpectedUpstream
+    }
     if (-not $upstreamMatch) { $failedNormal = $true }
 } catch {
-    Write-Check $false "configuration upstream-token match" "configuration check failed"
+    Write-Check $false "configuration expected upstream missing" "configuration check failed"
     $failedNormal = $true
 }
 
