@@ -1,0 +1,47 @@
+# Context Source Smoke Testing
+
+PR33 adds two complementary validations for decision-context inputs.
+
+The deterministic integration tests are offline software-correctness checks. They prove fixed cache evidence and fixture-backed collector output can flow through `ContextStateCache` into `DecisionContextAssembler.build_for_decision(...)` and produce JSON-safe audit payloads.
+
+The live source smoke script is a manual server-only operational check. It verifies configured source request/parsing paths can currently be reached, can materialize fresh in-process cache entries when data exists, and can pass those entries through the decision-context assembler.
+
+PR33 validates collector-to-cache-to-decision-context assembly. It does not validate context consumption by the risk filter, because that integration remains deliberately deferred.
+
+## Manual-Only Boundary
+
+`scripts/smoke_context_sources.py` is intentionally excluded from pytest, CI, scheduler flows, service startup, and ordinary checker scripts. It must be run only from an isolated server-side validation checkout or worktree, never from the active 24/7 service checkout.
+
+The operator must pass the active server environment’s `.env` by absolute path with `--env-file`. The file is never auto-discovered and must never be copied into the validation worktree.
+
+The script refuses live setup unless both `--live` and an absolute existing `--env-file` are supplied. Its help path does not load `.env`, instantiate collectors, import live configuration, or contact sources.
+
+## State And Writes
+
+Each source uses a fresh in-process `ContextStateCache`. No active service cache, runtime state, scheduler, or process is read or modified.
+
+Collector calls use `write_questdb=False` and `questdb_required=False`. The script performs no QuestDB writes and no fallback-ledger writes.
+
+USAspending uses a temporary checkpoint path under the isolated validation worktree so the real checkpoint lock and atomic write behavior are exercised without touching the production checkpoint path or the active service `data` directory.
+
+## Outcomes
+
+`PASS` means an enabled source completed its real bounded request/parsing path or local artifact validation, materialized cache entries, and those entries were selected by the decision-context assembler with a JSON-safe audit payload.
+
+`EXPECTED_NO_DATA` means an enabled source completed the real path but returned a documented valid empty/no-current-data result, such as no active macro events, no fresh EIA/yfinance data, stale-but-parsed FRED observations, or a successful USAspending search with no award material.
+
+`SKIPPED_DISABLED` means the existing configuration disables that source capability, so no collector/probe/network setup was attempted.
+
+`FAILED` means required enabled-source configuration, authentication, transport, parser, materialization, temporary checkpoint, collector, or assembler validation failed. Enabled scheduler-style non-attempt outcomes are failures, not successful smoke results.
+
+## Source Notes
+
+Macro calendar is a local reviewed-artifact validation, not an online API health claim.
+
+EIA WPSR has two distinct paths: local release-window material and numeric remote WPSR data. Numeric EIA reachability is claimed only when the explicit numeric probe completes the real bounded EIA request/parser/materialization path.
+
+FRED, USAspending, and yfinance development-only checks use the existing collector/client code paths instead of fake ping endpoints or duplicate parsers.
+
+Yfinance material is tested only as development-only connectivity/data material. It remains permanently ineligible for `approved_risk_context`.
+
+`all_structured_context` contains selected research-only, development-only, unknown, and approved entries. `approved_risk_context` contains only exact-policy-approved, centrally registered, known non-development entries; no PR33 test or document treats `all_structured_context` as currently risk-consumable.
