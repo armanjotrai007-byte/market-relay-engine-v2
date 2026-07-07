@@ -38,6 +38,26 @@ class _FakeReader:
         return Result(rows=[{"row_count": self.row_count}])
 
 
+class _SourceScopedFakeReader:
+    def __init__(self, counts_by_source: dict[str, int]) -> None:
+        self.counts_by_source = dict(counts_by_source)
+        self.sql: list[str] = []
+
+    def execute_select(self, sql: str) -> object:
+        self.sql.append(sql)
+        row_count = 0
+        for source, count in self.counts_by_source.items():
+            if f"source = '{source}'" in sql:
+                row_count = count
+                break
+
+        @dataclass(frozen=True)
+        class Result:
+            rows: list[dict[str, int]]
+
+        return Result(rows=[{"row_count": row_count}])
+
+
 class _FakeWriter:
     def __init__(self, success: bool = True) -> None:
         self.success = success
@@ -87,6 +107,7 @@ class _FakeQuestDBRuntime:
     def verify_source_ledger_results(
         self,
         ledger_results: tuple[object, ...],
+        canonical_source: str,
     ) -> tuple[str, str | None]:
         return self.ledger_status, self.ledger_error
 
@@ -443,6 +464,13 @@ def test_successful_marker_write_plus_exact_reader_readback_is_accepted() -> Non
     assert getattr(writer.events[0], "status") == "VALIDATION"
     assert writer.kwargs[0]["run_id"] == runtime.identity.run_id
     assert writer.kwargs[0]["session_id"] == runtime.identity.session_id
+    marker_sql = reader.sql[0]
+    assert f"run_id = '{runtime.identity.run_id}'" in marker_sql
+    assert f"session_id = '{runtime.identity.session_id}'" in marker_sql
+    assert f"trace_id = '{runtime.identity.trace_id}'" in marker_sql
+    assert "component = 'context_source_smoke'" in marker_sql
+    assert "status = 'VALIDATION'" in marker_sql
+    assert "source =" not in marker_sql
 
 
 def test_missing_marker_readback_fails() -> None:
@@ -459,6 +487,80 @@ def test_missing_marker_readback_fails() -> None:
     assert outcome.outcome == smoke.FAILED
     assert outcome.source_ledger == smoke.LEDGER_FAILED
     assert outcome.error_type == "MarkerReadbackMissing"
+
+
+def test_source_readback_rejects_cross_source_shared_table_false_positive() -> None:
+    runtime = smoke.QuestDBRuntimeValidation(
+        repo_root=REPO_ROOT,
+        identity=_FakeQuestDBRuntime().identity,
+        reader=_SourceScopedFakeReader({"macro_calendar": 2, "fred": 0}),
+    )
+
+    status, error = runtime.verify_source_ledger_results(
+        (_FakeWriteResult(True, "context_indicator_snapshots", 1),),
+        "fred",
+    )
+
+    assert status == smoke.LEDGER_FAILED
+    assert error == "LedgerReadbackMismatch"
+    assert status != smoke.LEDGER_WRITTEN_READBACK
+
+
+def test_source_readback_accepts_current_source_rows() -> None:
+    runtime = smoke.QuestDBRuntimeValidation(
+        repo_root=REPO_ROOT,
+        identity=_FakeQuestDBRuntime().identity,
+        reader=_SourceScopedFakeReader({"macro_calendar": 2, "fred": 1}),
+    )
+
+    status, error = runtime.verify_source_ledger_results(
+        (_FakeWriteResult(True, "context_indicator_snapshots", 1),),
+        "fred",
+    )
+
+    assert status == smoke.LEDGER_WRITTEN_READBACK
+    assert error is None
+
+
+def test_source_readback_query_is_source_scoped() -> None:
+    identity = _FakeQuestDBRuntime().identity
+    reader = _SourceScopedFakeReader({"fred": 1})
+    runtime = smoke.QuestDBRuntimeValidation(
+        repo_root=REPO_ROOT,
+        identity=identity,
+        reader=reader,
+    )
+
+    status, _ = runtime.verify_source_ledger_results(
+        (_FakeWriteResult(True, "context_indicator_snapshots", 1),),
+        "fred",
+    )
+
+    assert status == smoke.LEDGER_WRITTEN_READBACK
+    assert len(reader.sql) == 1
+    sql = reader.sql[0]
+    assert f"run_id = '{identity.run_id}'" in sql
+    assert f"session_id = '{identity.session_id}'" in sql
+    assert "source = 'fred'" in sql
+    assert "WHERE run_id" in sql
+
+
+def test_unsupported_unscoped_source_table_fails_closed_without_query() -> None:
+    reader = _SourceScopedFakeReader({"fred": 1})
+    runtime = smoke.QuestDBRuntimeValidation(
+        repo_root=REPO_ROOT,
+        identity=_FakeQuestDBRuntime().identity,
+        reader=reader,
+    )
+
+    status, error = runtime.verify_source_ledger_results(
+        (_FakeWriteResult(True, "system_health_events", 1),),
+        "fred",
+    )
+
+    assert status == smoke.LEDGER_FAILED
+    assert error == "SourceReadbackUnscoped"
+    assert reader.sql == []
 
 
 def test_questdb_marker_only_is_not_successful_context_source_validation() -> None:
@@ -536,6 +638,7 @@ def test_materialized_context_with_failed_ledger_readback_fails_source_validatio
             (),
             {"ledger_write_results": (_FakeWriteResult(True, "context_indicator_snapshots", 1),)},
         )(),
+        canonical_ledger_source="fred",
     )
 
     assert status == smoke.LEDGER_FAILED
@@ -554,6 +657,7 @@ def test_materialized_context_with_questdb_not_configured_fails_source_validatio
         materialized_entry_count=1,
         config_writes_questdb_ledger=False,
         native_result=type("NativeResult", (), {"ledger_write_results": ()})(),
+        canonical_ledger_source="fred",
     )
 
     assert status == smoke.LEDGER_FAILED

@@ -40,7 +40,7 @@ USAspending uses a temporary checkpoint path under the isolated validation workt
 
 `FAILED` means required enabled-source configuration, authentication, transport, parser, materialization, temporary checkpoint, collector, or assembler validation failed. Enabled scheduler-style non-attempt outcomes are failures, not successful smoke results.
 
-The `source_ledger` column is separate from source outcome. `NOT_REQUESTED` means ordinary no-write mode. `WRITTEN_READBACK` means source-specific collector ledger writes were read back for the generated validation identity. `NO_CONTEXT` means the source returned a valid no-data result or no materialized context to persist. `NOT_CONFIGURED` means deployed source configuration does not enable that collector's ledger output. `FAILED` means a requested source-specific ledger write or read-back failed.
+The `source_ledger` column is separate from source outcome. `NOT_REQUESTED` means ordinary no-write mode. `WRITTEN_READBACK` means source-specific collector ledger writes were read back for the generated validation identity and the current collector's canonical source scope, so one source cannot satisfy another source's persistence check. `NO_CONTEXT` means the source returned a valid no-data result or no materialized context to persist. `NOT_CONFIGURED` means deployed source configuration does not enable that collector's ledger output. `FAILED` means a requested source-specific ledger write or read-back failed.
 
 ## Source Notes
 

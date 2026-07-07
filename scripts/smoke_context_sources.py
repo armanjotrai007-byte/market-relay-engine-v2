@@ -80,6 +80,7 @@ class QuestDBRuntime(Protocol):
     def verify_source_ledger_results(
         self,
         ledger_results: Sequence[object],
+        canonical_source: str,
     ) -> tuple[str, str | None]:
         ...
 
@@ -312,33 +313,40 @@ class QuestDBRuntimeValidation:
     def verify_source_ledger_results(
         self,
         ledger_results: Sequence[object],
+        canonical_source: str,
     ) -> tuple[str, str | None]:
         if not ledger_results:
             return LEDGER_FAILED, "NoLedgerResults"
         if self._reader is None:
             return LEDGER_FAILED, "ReaderUnavailable"
-        expected_by_table: dict[str, int] = {}
+        if not _is_safe_source_value(canonical_source):
+            return LEDGER_FAILED, "SourceReadbackUnscoped"
+        expected_by_pair: dict[tuple[str, str], int] = {}
         for result in ledger_results:
             if getattr(result, "success", False) is not True:
                 return LEDGER_FAILED, "LedgerWriteFailed"
             table_name = getattr(result, "table_name", None)
             if not isinstance(table_name, str) or not _SAFE_SQL_IDENTIFIER.fullmatch(table_name):
                 return LEDGER_FAILED, "UnsafeTableName"
+            if table_name not in _SOURCE_SCOPED_LEDGER_TABLES:
+                return LEDGER_FAILED, "SourceReadbackUnscoped"
             try:
                 row_count = int(getattr(result, "row_count", 0))
             except (TypeError, ValueError):
                 return LEDGER_FAILED, "InvalidRowCount"
             if row_count <= 0:
                 return LEDGER_FAILED, "InvalidRowCount"
-            expected_by_table[table_name] = expected_by_table.get(table_name, 0) + row_count
+            key = (table_name, canonical_source)
+            expected_by_pair[key] = expected_by_pair.get(key, 0) + row_count
 
-        for table_name, expected_count in expected_by_table.items():
+        for (table_name, source), expected_count in expected_by_pair.items():
             try:
                 actual_count = _readback_count(
                     self._reader,
                     table_name,
                     self.identity.run_id,
                     self.identity.session_id,
+                    source=source,
                 )
             except Exception:  # noqa: BLE001 - output exposes only safe status.
                 return LEDGER_FAILED, "LedgerReadbackFailed"
@@ -425,6 +433,13 @@ class QuestDBRuntimeValidation:
 
 _SAFE_SQL_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _SAFE_VALIDATION_ID = re.compile(r"server_validation_pr33_[A-Za-z0-9_]+")
+_SAFE_SOURCE_VALUE = re.compile(r"[A-Za-z0-9_.:-]{1,120}")
+_SOURCE_SCOPED_LEDGER_TABLES = frozenset(
+    {
+        "context_flags",
+        "context_indicator_snapshots",
+    }
+)
 
 
 def generate_questdb_validation_identity() -> QuestDBValidationIdentity:
@@ -461,6 +476,7 @@ def _readback_count(
     trace_id: str | None = None,
     component: str | None = None,
     status: str | None = None,
+    source: str | None = None,
 ) -> int:
     if not _SAFE_SQL_IDENTIFIER.fullmatch(table_name):
         raise RuntimeError("unsafe table name")
@@ -474,6 +490,8 @@ def _readback_count(
         filters.append(f"component = {_safe_fixed_sql_literal(component)}")
     if status is not None:
         filters.append(f"status = {_safe_fixed_sql_literal(status)}")
+    if source is not None:
+        filters.append(f"source = {_safe_source_sql_literal(source)}")
     result = reader.execute_select(
         f"SELECT count() AS row_count FROM {table_name} WHERE {' AND '.join(filters)}"
     )
@@ -497,6 +515,16 @@ def _safe_fixed_sql_literal(value: str) -> str:
     if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_ ]{1,80}", value):
         raise RuntimeError("unsafe fixed marker literal")
     return f"'{value}'"
+
+
+def _safe_source_sql_literal(value: str) -> str:
+    if not _is_safe_source_value(value):
+        raise RuntimeError("unsafe source literal")
+    return f"'{value}'"
+
+
+def _is_safe_source_value(value: str) -> bool:
+    return isinstance(value, str) and _SAFE_SOURCE_VALUE.fullmatch(value) is not None
 
 
 class ContextSourceSmokeRunner:
@@ -876,10 +904,12 @@ class ContextSourceSmokeRunner:
     ) -> ProbeResult:
         issue_types = _issue_types(native_result)
         entries = _snapshot_entries(cache, evaluation_time)
+        canonical_ledger_source = _canonical_ledger_source(native_result, entries)
         ledger_state, ledger_error = self._source_ledger_status(
             materialized_entry_count=len(entries),
             config_writes_questdb_ledger=config_writes_questdb_ledger,
             native_result=native_result,
+            canonical_ledger_source=canonical_ledger_source,
         )
         if status in failure_statuses or issue_types.intersection(failure_issue_types):
             return ProbeResult(
@@ -937,6 +967,7 @@ class ContextSourceSmokeRunner:
         materialized_entry_count: int,
         config_writes_questdb_ledger: bool,
         native_result: object,
+        canonical_ledger_source: str | None,
     ) -> tuple[str, str | None]:
         if not self.write_questdb:
             return LEDGER_NOT_REQUESTED, None
@@ -946,8 +977,11 @@ class ContextSourceSmokeRunner:
             return LEDGER_FAILED, "LedgerNotConfigured"
         if self.questdb_runtime is None:
             return LEDGER_FAILED, "QuestDBRuntimeUnavailable"
+        if canonical_ledger_source is None:
+            return LEDGER_FAILED, "SourceReadbackUnscoped"
         return self.questdb_runtime.verify_source_ledger_results(
-            tuple(getattr(native_result, "ledger_write_results", ()))
+            tuple(getattr(native_result, "ledger_write_results", ())),
+            canonical_ledger_source,
         )
 
 
@@ -994,6 +1028,27 @@ def _snapshot_entries(cache: object, evaluation_time: datetime) -> list[dict[str
     for by_name in snapshot["sectors"].values():
         entries.extend(dict(entry) for entry in by_name.values())
     return entries
+
+
+def _canonical_ledger_source(
+    native_result: object,
+    entries: Sequence[dict[str, object]],
+) -> str | None:
+    sources: set[str] = set()
+    for attribute in ("indicator_snapshots", "context_flags"):
+        for record in getattr(native_result, attribute, ()):
+            source = getattr(record, "source", None)
+            if isinstance(source, str) and source.strip():
+                sources.add(source.strip())
+    if not sources:
+        for entry in entries:
+            source = entry.get("source")
+            if isinstance(source, str) and source.strip():
+                sources.add(source.strip())
+    if len(sources) != 1:
+        return None
+    (source,) = tuple(sources)
+    return source if _is_safe_source_value(source) else None
 
 
 def _verify_assembler_entries(
