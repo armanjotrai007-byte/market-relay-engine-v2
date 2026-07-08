@@ -21,6 +21,16 @@ from market_relay_engine.common.config import (  # noqa: E402
     validate_required_config_files,
     validate_required_top_level_sections,
 )
+from market_relay_engine.context.eia_wpsr import EIAWPSRConfig  # noqa: E402
+from market_relay_engine.context.fred_collector import FREDConfig  # noqa: E402
+from market_relay_engine.context.macro_calendar import (  # noqa: E402
+    MacroCalendarConfig,
+    load_macro_calendar,
+)
+from market_relay_engine.context.usaspending_collector import (  # noqa: E402
+    USAspendingConfig,
+    load_recipient_mappings,
+)
 from market_relay_engine.context.yfinance_proxy import YFinanceProxyConfig, build_proxy_registry  # noqa: E402
 
 FORBIDDEN_V1_TERMS = (
@@ -101,17 +111,25 @@ def _find_forbidden_v1_terms(base_dir: Path) -> list[str]:
     return issues
 
 
-def _check_context_sources(configs: dict[str, dict[str, Any]]) -> list[str]:
+def _check_context_sources(
+    configs: dict[str, dict[str, Any]],
+    *,
+    base_dir: Path,
+) -> list[str]:
     issues: list[str] = []
     context_sources = configs["context_sources"]
+    structured_sources = context_sources["structured_sources"]
 
-    for source_name, source in context_sources["structured_sources"].items():
-        if source.get("enabled") is not False:
-            issues.append(f"structured source {source_name} must be disabled by default")
+    for source_name, source in structured_sources.items():
         if source.get("used_in_per_tick_loop") is not False:
             issues.append(f"structured source {source_name} must not run in per-tick loop")
 
-    yfinance = context_sources["structured_sources"]["yfinance_dev_only"]
+    _check_eia_source(configs, issues)
+    _check_fred_source(context_sources, issues)
+    _check_usaspending_source(context_sources, issues, base_dir=base_dir)
+    _check_macro_calendar_source(context_sources, issues, base_dir=base_dir)
+
+    yfinance = structured_sources["yfinance_dev_only"]
     if yfinance.get("development_only") is not True:
         issues.append("yfinance_dev_only must be marked development_only")
     if yfinance.get("production_critical") is not False:
@@ -133,25 +151,116 @@ def _check_context_sources(configs: dict[str, dict[str, Any]]) -> list[str]:
             issues.append("yfinance_dev_only max_staleness_seconds must be at least 300 + bar_completion_grace_seconds")
 
     for source_name, source in context_sources["unstructured_sources"].items():
-        if source.get("enabled") is not False:
-            issues.append(f"unstructured source {source_name} must be disabled by default")
         if source.get("direct_trade_authority") is not False:
             issues.append(f"unstructured source {source_name} must not trade directly")
 
     ai_filter = context_sources["ai_context_filter"]
-    if ai_filter.get("enabled") is not False:
-        issues.append("AI context filter must be disabled by default")
     if ai_filter.get("direct_trade_authority") is not False:
         issues.append("AI context filter must not have direct trade authority")
 
     return issues
 
 
+def _check_eia_source(configs: dict[str, dict[str, Any]], issues: list[str]) -> None:
+    source = configs["context_sources"]["structured_sources"]["eia"]
+    window = configs["calendar_events"]["event_windows"]["eia"]
+    if source.get("enabled") is not True and window.get("enabled") is not True:
+        return
+    if not _non_empty_string(source.get("api_key_env")):
+        issues.append("enabled EIA source requires non-empty api_key_env reference")
+    if source.get("enabled") is True and window.get("enabled") is not True:
+        issues.append("enabled EIA source requires calendar_events.event_windows.eia.enabled true")
+    releases = window.get("releases")
+    if window.get("enabled") is True and (not isinstance(releases, list) or not releases):
+        issues.append("enabled EIA source requires at least one reviewed release")
+    try:
+        EIAWPSRConfig.from_repository_configs(
+            configs["calendar_events"],
+            configs["context_sources"],
+            configs["symbols"],
+        )
+    except Exception as exc:  # noqa: BLE001 - validation reports all config failures.
+        issues.append(f"EIA WPSR config invalid: {exc}")
+
+
+def _check_fred_source(context_sources: dict[str, Any], issues: list[str]) -> None:
+    fred = context_sources["structured_sources"]["fred"]
+    if fred.get("enabled") is not True:
+        return
+    if not _non_empty_string(fred.get("api_key_env")):
+        issues.append("enabled FRED source requires non-empty api_key_env reference")
+    series_ids = fred.get("series_ids")
+    if not isinstance(series_ids, dict) or not series_ids:
+        issues.append("enabled FRED source requires at least one series id")
+    try:
+        FREDConfig.from_repository_config(context_sources)
+    except Exception as exc:  # noqa: BLE001 - validation reports all config failures.
+        issues.append(f"FRED config invalid: {exc}")
+
+
+def _check_usaspending_source(
+    context_sources: dict[str, Any],
+    issues: list[str],
+    *,
+    base_dir: Path,
+) -> None:
+    source = context_sources["structured_sources"]["usaspending"]
+    if source.get("enabled") is not True:
+        return
+    if not _non_empty_string(source.get("recipient_map_path")):
+        issues.append("enabled USAspending source requires recipient_map_path")
+        return
+    health_only_allowed = (
+        context_sources.get("validation_modes", {})
+        .get("usaspending", {})
+        .get("allow_health_only_without_recipient_mapping")
+        is True
+    )
+    try:
+        config = USAspendingConfig.from_repository_config(context_sources)
+        recipient_path = Path(config.recipient_map_path)
+        resolved = recipient_path if recipient_path.is_absolute() else base_dir / recipient_path
+        mappings = load_recipient_mappings(resolved)
+    except Exception as exc:  # noqa: BLE001 - validation reports all config failures.
+        issues.append(f"USAspending config invalid: {exc}")
+        return
+    active_mappings = [mapping for mapping in mappings if mapping.active]
+    if not active_mappings and not health_only_allowed:
+        issues.append(
+            "enabled USAspending source requires at least one active confirmed recipient mapping "
+            "or validation_modes.usaspending.allow_health_only_without_recipient_mapping true"
+        )
+
+
+def _check_macro_calendar_source(
+    context_sources: dict[str, Any],
+    issues: list[str],
+    *,
+    base_dir: Path,
+) -> None:
+    source = context_sources["structured_sources"]["macro_calendar"]
+    if source.get("enabled") is not True:
+        return
+    if not _non_empty_string(source.get("artifact_path")):
+        issues.append("enabled macro_calendar source requires artifact_path")
+        return
+    try:
+        config = MacroCalendarConfig.from_repository_config(context_sources)
+        artifact_path = Path(config.artifact_path)
+        resolved = artifact_path if artifact_path.is_absolute() else base_dir / artifact_path
+        if not resolved.is_file():
+            issues.append(f"enabled macro_calendar source artifact_path does not exist: {config.artifact_path}")
+            return
+        load_macro_calendar(config.artifact_path, base_dir=base_dir)
+    except Exception as exc:  # noqa: BLE001 - validation reports all config failures.
+        issues.append(f"macro_calendar config invalid: {exc}")
+
+
 def _check_calendar_events(configs: dict[str, dict[str, Any]]) -> list[str]:
     issues: list[str] = []
     for event_name, event_config in configs["calendar_events"]["event_windows"].items():
-        if event_config.get("enabled") is not False:
-            issues.append(f"calendar event {event_name} must be disabled by default")
+        if not isinstance(event_config.get("enabled"), bool):
+            issues.append(f"calendar event {event_name} enabled must be bool")
     return issues
 
 
@@ -165,10 +274,12 @@ def _check_trading_defaults(configs: dict[str, dict[str, Any]]) -> list[str]:
         issues.append("risk default_trading_mode must be paper")
     if risk_mode.get("live_trading_enabled_by_default") is not False:
         issues.append("risk live_trading_enabled_by_default must be false")
-    if broker.get("enabled") is not False:
-        issues.append("broker must be disabled by default")
+    if broker.get("name") != "alpaca":
+        issues.append("broker name must remain alpaca")
+    if not isinstance(broker.get("enabled"), bool):
+        issues.append("broker enabled must be bool")
     if broker.get("paper_trading_only") is not True:
-        issues.append("broker must be paper_trading_only by default")
+        issues.append("broker must remain paper_trading_only")
     if broker.get("live_trading_enabled") is not False:
         issues.append("broker live_trading_enabled must be false")
     if safety.get("allow_direct_ai_orders") is not False:
@@ -177,6 +288,10 @@ def _check_trading_defaults(configs: dict[str, dict[str, Any]]) -> list[str]:
         issues.append("live trading must require a manual config change")
 
     return issues
+
+
+def _non_empty_string(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
 
 
 def _check_questdb_role(configs: dict[str, dict[str, Any]]) -> list[str]:
@@ -248,18 +363,18 @@ def run_config_checks(base_dir: Path | None = None) -> list[CheckResult]:
     secret_issues = _find_secret_issues(configs)
     _record(results, not secret_issues, f"No obvious committed secrets: {secret_issues or 'ok'}")
 
-    context_issues = _check_context_sources(configs)
+    context_issues = _check_context_sources(configs, base_dir=root)
     _record(
         results,
         not context_issues,
-        f"Context sources are disabled or development-safe by default: {context_issues or 'ok'}",
+        f"Context sources are online-capable and trading-safe: {context_issues or 'ok'}",
     )
 
     calendar_issues = _check_calendar_events(configs)
     _record(
         results,
         not calendar_issues,
-        f"Calendar event windows are disabled by default: {calendar_issues or 'ok'}",
+        f"Calendar event windows are configured safely: {calendar_issues or 'ok'}",
     )
 
     trading_issues = _check_trading_defaults(configs)

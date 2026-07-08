@@ -2,6 +2,10 @@ metadata:
   config_version: 1
   description: "V2 context source configuration."
 
+validation_modes:
+  usaspending:
+    allow_health_only_without_recipient_mapping: true
+
 structured_sources:
   eia:
     enabled: true

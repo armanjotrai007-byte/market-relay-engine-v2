@@ -1,8 +1,11 @@
 from pathlib import Path
+from copy import deepcopy
 
 from market_relay_engine.common.config import EXPECTED_CONFIG_FILES, load_all_configs
 from scripts.check_config import (
     FORBIDDEN_V1_TERMS,
+    _check_context_sources,
+    _check_trading_defaults,
     _find_forbidden_v1_terms,
     _find_secret_issues,
     run_config_checks,
@@ -34,22 +37,30 @@ def test_questdb_config_is_ledger_only_not_market_warehouse() -> None:
     assert "model_signals" in questdb["ledger_tables"]
 
 
-def test_execution_defaults_to_paper_only_disabled_broker() -> None:
+def test_execution_defaults_to_paper_only_broker_without_live_trading() -> None:
     execution = load_all_configs(base_dir=REPO_ROOT)["execution"]
 
     assert execution["broker"]["name"] == "alpaca"
-    assert execution["broker"]["enabled"] is False
+    assert execution["broker"]["enabled"] is True
     assert execution["broker"]["paper_trading_only"] is True
     assert execution["broker"]["live_trading_enabled"] is False
     assert execution["safety"]["allow_direct_ai_orders"] is False
     assert execution["safety"]["allow_live_trading_without_manual_config_change"] is False
 
 
-def test_context_sources_are_disabled_or_development_safe_by_default() -> None:
+def test_structured_context_sources_are_enabled_and_decision_loop_safe() -> None:
     context_sources = load_all_configs(base_dir=REPO_ROOT)["context_sources"]
 
-    for source in context_sources["structured_sources"].values():
-        assert source["enabled"] is False
+    expected_enabled = {
+        "eia",
+        "fred",
+        "macro_calendar",
+        "usaspending",
+        "yfinance_dev_only",
+    }
+    assert set(context_sources["structured_sources"]) == expected_enabled
+    for source_name, source in context_sources["structured_sources"].items():
+        assert source["enabled"] is True, source_name
         assert source["used_in_per_tick_loop"] is False
 
     yfinance = context_sources["structured_sources"]["yfinance_dev_only"]
@@ -62,6 +73,77 @@ def test_context_sources_are_disabled_or_development_safe_by_default() -> None:
 
     assert context_sources["ai_context_filter"]["enabled"] is False
     assert context_sources["ai_context_filter"]["direct_trade_authority"] is False
+
+
+def test_enabled_structured_sources_pass_validation_when_complete() -> None:
+    configs = load_all_configs(base_dir=REPO_ROOT)
+
+    assert _check_context_sources(configs, base_dir=REPO_ROOT) == []
+
+
+def test_enabled_source_with_per_tick_loop_fails_validation() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    configs["context_sources"]["structured_sources"]["fred"]["used_in_per_tick_loop"] = True
+
+    issues = _check_context_sources(configs, base_dir=REPO_ROOT)
+
+    assert "structured source fred must not run in per-tick loop" in issues
+
+
+def test_enabled_eia_without_releases_fails_validation() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    configs["calendar_events"]["event_windows"]["eia"]["releases"] = []
+
+    issues = _check_context_sources(configs, base_dir=REPO_ROOT)
+
+    assert any("enabled EIA source requires at least one reviewed release" in issue for issue in issues)
+
+
+def test_enabled_fred_without_series_ids_fails_validation() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    configs["context_sources"]["structured_sources"]["fred"]["series_ids"] = {}
+
+    issues = _check_context_sources(configs, base_dir=REPO_ROOT)
+
+    assert any("enabled FRED source requires at least one series id" in issue for issue in issues)
+
+
+def test_enabled_macro_calendar_missing_artifact_fails_validation() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    configs["context_sources"]["structured_sources"]["macro_calendar"]["artifact_path"] = (
+        "config/missing_macro_calendar.yaml"
+    )
+
+    issues = _check_context_sources(configs, base_dir=REPO_ROOT)
+
+    assert any("enabled macro_calendar source artifact_path does not exist" in issue for issue in issues)
+
+
+def test_enabled_yfinance_production_critical_fails_validation() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    configs["context_sources"]["structured_sources"]["yfinance_dev_only"]["production_critical"] = True
+
+    issues = _check_context_sources(configs, base_dir=REPO_ROOT)
+
+    assert "yfinance_dev_only must not be production critical" in issues
+
+
+def test_live_trading_enabled_by_default_fails_validation() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    configs["execution"]["broker"]["live_trading_enabled"] = True
+
+    issues = _check_trading_defaults(configs)
+
+    assert "broker live_trading_enabled must be false" in issues
+
+
+def test_committed_secret_like_values_still_fail_validation() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    configs["context_sources"]["structured_sources"]["fred"]["api_key"] = "sk_live_123456789012"
+
+    issues = _find_secret_issues(configs)
+
+    assert any("stores a secret-like value" in issue for issue in issues)
 
 
 def test_symbol_config_separates_tradable_and_context_symbols() -> None:

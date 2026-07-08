@@ -126,6 +126,11 @@ def _enable_structured_source(configs: dict[str, dict[str, object]], source_id: 
     structured[source_id]["enabled"] = True  # type: ignore[index]
 
 
+def _disable_structured_source(configs: dict[str, dict[str, object]], source_id: str) -> None:
+    structured = configs["context_sources"]["structured_sources"]  # type: ignore[index]
+    structured[source_id]["enabled"] = False  # type: ignore[index]
+
+
 def _add_reviewed_eia_release(configs: dict[str, dict[str, object]]) -> None:
     eia_window = configs["calendar_events"]["event_windows"]["eia"]  # type: ignore[index]
     eia_window["enabled"] = True
@@ -306,8 +311,10 @@ def test_disabled_sources_produce_skipped_disabled() -> None:
 
 
 def test_macro_disabled_message_reports_parsed_config_path() -> None:
+    configs = _repo_configs()
+    _disable_structured_source(configs, "macro_calendar")
     runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
-    result = runner._probe_macro_calendar(_repo_configs(), FIXED_EVALUATION_TIME)
+    result = runner._probe_macro_calendar(configs, FIXED_EVALUATION_TIME)
     outcome = smoke.classify_probe_result(result)
 
     assert outcome.outcome == smoke.SKIPPED_DISABLED
@@ -329,6 +336,8 @@ def test_macro_enabled_config_is_not_classified_disabled() -> None:
 def test_eia_enabled_source_requires_enabled_release_windows() -> None:
     configs = _repo_configs()
     _enable_structured_source(configs, "eia")
+    eia_window = configs["calendar_events"]["event_windows"]["eia"]  # type: ignore[index]
+    eia_window["enabled"] = False
     runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
 
     result = runner._probe_eia_wpsr(configs, FIXED_EVALUATION_TIME)
@@ -344,6 +353,7 @@ def test_eia_enabled_windows_require_reviewed_releases() -> None:
     _enable_structured_source(configs, "eia")
     eia_window = configs["calendar_events"]["event_windows"]["eia"]  # type: ignore[index]
     eia_window["enabled"] = True
+    eia_window["releases"] = []
     runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
 
     result = runner._probe_eia_wpsr(configs, FIXED_EVALUATION_TIME)
@@ -394,6 +404,8 @@ def test_eia_enabled_config_path_reaches_numeric_probe(monkeypatch: pytest.Monke
 def test_usaspending_enabled_empty_mapping_is_actionable_failure() -> None:
     configs = _repo_configs()
     _enable_structured_source(configs, "usaspending")
+    validation_mode = configs["context_sources"]["validation_modes"]["usaspending"]  # type: ignore[index]
+    validation_mode["allow_health_only_without_recipient_mapping"] = False
     runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
 
     result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
@@ -403,6 +415,37 @@ def test_usaspending_enabled_empty_mapping_is_actionable_failure() -> None:
     assert outcome.error_type == "USAspendingRecipientMapEmpty"
     assert "active confirmed recipient mapping" in outcome.message
     assert "source probe raised a safe boundary exception" not in outcome.message
+
+
+def test_usaspending_health_only_mode_allows_empty_mapping_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import market_relay_engine.context.usaspending_collector as usaspending_module
+
+    configs = _repo_configs()
+    _enable_structured_source(configs, "usaspending")
+
+    class FakeUSAspendingHTTPClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = dict(kwargs)
+
+        def fetch_last_updated(self) -> dict[str, object]:
+            return {"last_updated": "2026-07-08"}
+
+    monkeypatch.setattr(
+        usaspending_module,
+        "USAspendingHTTPClient",
+        FakeUSAspendingHTTPClient,
+    )
+    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+    result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert outcome.outcome == smoke.EXPECTED_NO_DATA
+    assert outcome.status == "HEALTH_ONLY_NO_MAPPING"
+    assert outcome.error_type is None
+    assert "source-health request and parser succeeded" in outcome.message
 
 
 def test_source_issue_messages_are_actionable_and_redacted() -> None:

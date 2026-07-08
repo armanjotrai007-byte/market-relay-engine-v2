@@ -297,6 +297,13 @@ def _mapping_value(mapping: Mapping[str, object], key: str) -> Mapping[str, obje
     return value if isinstance(value, Mapping) else {}
 
 
+def _usaspending_health_only_allowed(configs: Mapping[str, Mapping[str, object]]) -> bool:
+    context_sources = configs.get("context_sources", {})
+    validation_modes = _mapping_value(context_sources, "validation_modes")
+    usaspending_mode = _mapping_value(validation_modes, "usaspending")
+    return usaspending_mode.get("allow_health_only_without_recipient_mapping") is True
+
+
 def _safe_exception_diagnostic(source_id: str, exc: BaseException) -> tuple[str, str]:
     text = str(exc)
     if source_id == "eia_wpsr":
@@ -868,7 +875,9 @@ class ContextSourceSmokeRunner:
             USAspendingCollectionStatus,
             USAspendingCollector,
             USAspendingConfig,
+            USAspendingHTTPClient,
             load_recipient_mappings,
+            parse_source_last_updated_date,
         )
 
         base_config = USAspendingConfig.from_repository_config(configs["context_sources"])
@@ -889,6 +898,12 @@ class ContextSourceSmokeRunner:
                 message=message,
             )
         if not any(mapping.active for mapping in recipient_mappings):
+            if _usaspending_health_only_allowed(configs):
+                return self._probe_usaspending_health_only(
+                    base_config=base_config,
+                    client_class=USAspendingHTTPClient,
+                    parse_last_updated=parse_source_last_updated_date,
+                )
             return _failed_probe(
                 "usaspending",
                 error_type="USAspendingRecipientMapEmpty",
@@ -938,6 +953,47 @@ class ContextSourceSmokeRunner:
                 native_result=result,
                 config_writes_questdb_ledger=config.writes_questdb_ledger,
             )
+
+    def _probe_usaspending_health_only(
+        self,
+        *,
+        base_config: object,
+        client_class: Callable[..., object],
+        parse_last_updated: Callable[[object], object],
+    ) -> ProbeResult:
+        try:
+            client = client_class(timeout_seconds=getattr(base_config, "timeout_seconds"))
+            payload = client.fetch_last_updated()
+        except Exception as exc:  # noqa: BLE001 - safe script boundary.
+            error_type, message = _safe_exception_diagnostic("usaspending", exc)
+            return _failed_probe(
+                "usaspending",
+                error_type=error_type,
+                message=message,
+            )
+        if not isinstance(payload, Mapping):
+            return _failed_probe(
+                "usaspending",
+                error_type="USAspendingSourceHealthInvalid",
+                message="USAspending source-health response was not a mapping",
+            )
+        try:
+            parse_last_updated(payload.get("last_updated"))
+        except Exception:  # noqa: BLE001 - output exposes only safe status.
+            return _failed_probe(
+                "usaspending",
+                error_type="USAspendingSourceHealthInvalid",
+                message="USAspending source-health last_updated value was invalid",
+            )
+        return ProbeResult(
+            source_id="usaspending",
+            enabled=True,
+            attempted=True,
+            status="HEALTH_ONLY_NO_MAPPING",
+            valid_no_data=True,
+            message="USAspending source-health request and parser succeeded without recipient mappings",
+            source_ledger=LEDGER_NO_CONTEXT if self.write_questdb else LEDGER_NOT_REQUESTED,
+        )
 
     def _probe_yfinance(
         self,

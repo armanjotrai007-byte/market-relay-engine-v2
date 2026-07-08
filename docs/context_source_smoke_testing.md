@@ -4,7 +4,7 @@ PR33 adds two complementary validations for decision-context inputs.
 
 The deterministic integration tests are offline software-correctness checks. They prove fixed cache evidence and fixture-backed collector output can flow through `ContextStateCache` into `DecisionContextAssembler.build_for_decision(...)` and produce JSON-safe audit payloads.
 
-The live source smoke script is a manual server-only operational check. It verifies configured source request/parsing paths can currently be reached, can materialize fresh in-process cache entries when data exists, and can pass those entries through the decision-context assembler.
+The live source smoke script is a manual server-only operational check. It verifies configured source request/parsing paths can currently be reached, can materialize fresh in-process cache entries when data exists, and can pass those entries through the decision-context assembler. PR33 allows functional live context-source validation for built structured sources while preserving separate trading safety boundaries.
 
 PR33 validates collector-to-cache-to-decision-context assembly. It does not validate context consumption by the risk filter, because that integration remains deliberately deferred.
 
@@ -32,7 +32,7 @@ USAspending uses a temporary checkpoint path under the isolated validation workt
 
 ## Validation Configuration
 
-The repository defaults keep context sources disabled so normal configuration checks continue to fail closed. To validate all five PR33 sources, the operator enables source capabilities only in the isolated validation worktree.
+The repository config may enable the built PR33 structured context sources for functional connectivity. That does not enable live trading, direct AI orders, yfinance production-critical usage, QuestDB decision-loop reads, or context consumption by the risk filter.
 
 Macro calendar is enabled by `structured_sources.macro_calendar.enabled` in `config/context_sources.yaml`. If the smoke output reports `SKIPPED_DISABLED`, the parsed value at that exact path is false.
 
@@ -42,7 +42,7 @@ Yfinance development-only material is enabled by `structured_sources.yfinance_de
 
 EIA WPSR numeric validation requires both `structured_sources.eia.enabled` in `config/context_sources.yaml` and `calendar_events.event_windows.eia.enabled` with reviewed `releases` in `config/calendar_events.yaml`. Numeric reachability also requires the configured EIA source key environment variable, such as `EIA_API_KEY`, in the explicitly supplied `.env`. Enabling only the numeric source without reviewed release windows is a configuration failure, not proof that the EIA API was reached.
 
-USAspending validation requires `structured_sources.usaspending.enabled` and a reviewed recipient map at the configured `recipient_map_path`. The committed default map is intentionally empty; live validation needs at least one active confirmed mapping in the isolated validation worktree or in an explicitly configured reviewed map. Do not invent UEIs or point the smoke script at the production checkpoint path.
+USAspending validation requires `structured_sources.usaspending.enabled` and a reviewed recipient map at the configured `recipient_map_path` for award materialization. The committed default map is intentionally empty; when `validation_modes.usaspending.allow_health_only_without_recipient_mapping` is true, the smoke script may perform source-health-only connectivity validation without fake UEIs or award searches. Do not invent UEIs or point the smoke script at the production checkpoint path.
 
 ## Outcomes
 
@@ -62,8 +62,10 @@ Macro calendar is a local reviewed-artifact validation, not an online API health
 
 EIA WPSR has two distinct paths: local release-window material and numeric remote WPSR data. Numeric EIA reachability is claimed only when the explicit numeric probe completes the real bounded EIA request/parser/materialization path.
 
-FRED, USAspending, and yfinance development-only checks use the existing collector/client code paths instead of fake ping endpoints or duplicate parsers.
+FRED, USAspending, and yfinance development-only checks use the existing collector/client code paths instead of fake ping endpoints or duplicate parsers. USAspending health-only mode reuses the existing source-health request and `last_updated` parser.
 
 Yfinance material is tested only as development-only connectivity/data material. It remains permanently ineligible for `approved_risk_context`.
+
+QuestDB remains bot-ledger-only. Context source collection may write validation or ledger rows only when explicitly requested by the relevant script mode; per-tick and per-signal decisions must read context from the in-memory cache, not QuestDB.
 
 `all_structured_context` contains selected research-only, development-only, unknown, and approved entries. `approved_risk_context` contains only exact-policy-approved, centrally registered, known non-development entries; no PR33 test or document treats `all_structured_context` as currently risk-consumable.
