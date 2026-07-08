@@ -4,7 +4,7 @@ metadata:
 
 structured_sources:
   eia:
-    enabled: false
+    enabled: true
     api_key_env: EIA_API_KEY
     purpose: "Oil inventory and release-window context."
     feeds_memory_cache: true
@@ -14,7 +14,7 @@ structured_sources:
     max_staleness_seconds: 86400
 
   fred:
-    enabled: false
+    enabled: true
     api_key_env: FRED_API_KEY
     purpose: "Slow daily Treasury-rate context."
     feeds_memory_cache: true
@@ -29,7 +29,7 @@ structured_sources:
       us_treasury_10y_yield: DGS10
 
   usaspending:
-    enabled: false
+    enabled: true
     api_key_required: false
     purpose: "Ticker-linked U.S. government contract award discovery for future profitability research."
     feeds_memory_cache: true
@@ -51,7 +51,7 @@ structured_sources:
     contract_awards_only: true
 
   macro_calendar:
-    enabled: false
+    enabled: true
     purpose: "Reviewed local U.S. macro calendar context for research-only event-window analysis."
     artifact_path: "config/macro_calendar.yaml"
     feeds_memory_cache: true
@@ -64,7 +64,7 @@ structured_sources:
     upcoming_lookahead_days: 14
 
   yfinance_dev_only:
-    enabled: false
+    enabled: true
     development_only: true
     production_critical: false
     required: false

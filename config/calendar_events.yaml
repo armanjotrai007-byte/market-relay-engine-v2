@@ -8,7 +8,7 @@ market:
 
 event_windows:
   eia:
-    enabled: false
+    enabled: true
     timezone: America/New_York
     pre_release_window_seconds: 300
     post_release_window_seconds: 900
@@ -16,7 +16,85 @@ event_windows:
     fast_retry_interval_seconds: 60
     fast_retry_window_seconds: 1200
     delayed_retry_interval_seconds: 3600
-    releases: []
+    releases:
+      - release_id: eia_wpsr_2026_07_08
+        release_at: "2026-07-08T10:30:00-04:00"
+        report_period: "2026-07-03"
+      - release_id: eia_wpsr_2026_07_15
+        release_at: "2026-07-15T10:30:00-04:00"
+        report_period: "2026-07-10"
+      - release_id: eia_wpsr_2026_07_22
+        release_at: "2026-07-22T10:30:00-04:00"
+        report_period: "2026-07-17"
+      - release_id: eia_wpsr_2026_07_29
+        release_at: "2026-07-29T10:30:00-04:00"
+        report_period: "2026-07-24"
+      - release_id: eia_wpsr_2026_08_05
+        release_at: "2026-08-05T10:30:00-04:00"
+        report_period: "2026-07-31"
+      - release_id: eia_wpsr_2026_08_12
+        release_at: "2026-08-12T10:30:00-04:00"
+        report_period: "2026-08-07"
+      - release_id: eia_wpsr_2026_08_19
+        release_at: "2026-08-19T10:30:00-04:00"
+        report_period: "2026-08-14"
+      - release_id: eia_wpsr_2026_08_26
+        release_at: "2026-08-26T10:30:00-04:00"
+        report_period: "2026-08-21"
+      - release_id: eia_wpsr_2026_09_02
+        release_at: "2026-09-02T10:30:00-04:00"
+        report_period: "2026-08-28"
+      - release_id: eia_wpsr_2026_09_10
+        release_at: "2026-09-10T12:00:00-04:00"
+        report_period: "2026-09-04"
+      - release_id: eia_wpsr_2026_09_16
+        release_at: "2026-09-16T10:30:00-04:00"
+        report_period: "2026-09-11"
+      - release_id: eia_wpsr_2026_09_23
+        release_at: "2026-09-23T10:30:00-04:00"
+        report_period: "2026-09-18"
+      - release_id: eia_wpsr_2026_09_30
+        release_at: "2026-09-30T10:30:00-04:00"
+        report_period: "2026-09-25"
+      - release_id: eia_wpsr_2026_10_07
+        release_at: "2026-10-07T10:30:00-04:00"
+        report_period: "2026-10-02"
+      - release_id: eia_wpsr_2026_10_15
+        release_at: "2026-10-15T12:00:00-04:00"
+        report_period: "2026-10-09"
+      - release_id: eia_wpsr_2026_10_21
+        release_at: "2026-10-21T10:30:00-04:00"
+        report_period: "2026-10-16"
+      - release_id: eia_wpsr_2026_10_28
+        release_at: "2026-10-28T10:30:00-04:00"
+        report_period: "2026-10-23"
+      - release_id: eia_wpsr_2026_11_04
+        release_at: "2026-11-04T10:30:00-05:00"
+        report_period: "2026-10-30"
+      - release_id: eia_wpsr_2026_11_12
+        release_at: "2026-11-12T12:00:00-05:00"
+        report_period: "2026-11-06"
+      - release_id: eia_wpsr_2026_11_18
+        release_at: "2026-11-18T10:30:00-05:00"
+        report_period: "2026-11-13"
+      - release_id: eia_wpsr_2026_11_25
+        release_at: "2026-11-25T10:30:00-05:00"
+        report_period: "2026-11-20"
+      - release_id: eia_wpsr_2026_12_02
+        release_at: "2026-12-02T10:30:00-05:00"
+        report_period: "2026-11-27"
+      - release_id: eia_wpsr_2026_12_09
+        release_at: "2026-12-09T10:30:00-05:00"
+        report_period: "2026-12-04"
+      - release_id: eia_wpsr_2026_12_16
+        release_at: "2026-12-16T10:30:00-05:00"
+        report_period: "2026-12-11"
+      - release_id: eia_wpsr_2026_12_23
+        release_at: "2026-12-23T10:30:00-05:00"
+        report_period: "2026-12-18"
+      - release_id: eia_wpsr_2026_12_30
+        release_at: "2026-12-30T10:30:00-05:00"
+        report_period: "2026-12-25"
 
   cpi:
     enabled: false

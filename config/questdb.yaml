@@ -21,18 +21,18 @@ connection:
 health_check:
   endpoint: /exec
   query: "SELECT 1"
-  required_by_default: false
+  required_by_default: true
 
 writer:
   endpoint: /exec
   method: GET
-  required_by_default: false
+  required_by_default: true
   max_sql_length_chars: 7000
 
 analysis:
   endpoint: /exec
   method: GET
-  required_by_default: false
+  required_by_default: true
   max_encoded_url_length_chars: 7000
 
 ledger_tables:
