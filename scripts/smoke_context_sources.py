@@ -6,12 +6,13 @@ import argparse
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import os
 from pathlib import Path
 import re
 import secrets
 import sys
 from tempfile import TemporaryDirectory
-from typing import Any, Callable, Iterable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -269,6 +270,88 @@ def render_outcomes(outcomes: Sequence[SmokeOutcome]) -> str:
         )
         lines.append(" | ".join(fields))
     return "\n".join(lines)
+
+
+def _failed_probe(
+    source_id: str,
+    *,
+    error_type: str,
+    message: str,
+    status: str = FAILED,
+    source_ledger: str = LEDGER_NOT_REQUESTED,
+) -> ProbeResult:
+    return ProbeResult(
+        source_id=source_id,
+        enabled=True,
+        attempted=True,
+        status=status,
+        failed=True,
+        error_type=error_type,
+        message=message,
+        source_ledger=source_ledger,
+    )
+
+
+def _mapping_value(mapping: Mapping[str, object], key: str) -> Mapping[str, object]:
+    value = mapping.get(key)
+    return value if isinstance(value, Mapping) else {}
+
+
+def _safe_exception_diagnostic(source_id: str, exc: BaseException) -> tuple[str, str]:
+    text = str(exc)
+    if source_id == "eia_wpsr":
+        if "requires enabled release windows" in text:
+            return (
+                "EiaReleaseWindowsDisabled",
+                "enabled EIA numeric validation requires enabled reviewed release windows",
+            )
+        if "requires reviewed releases" in text or "requires at least one release" in text:
+            return (
+                "EiaReleasesMissing",
+                "enabled EIA validation requires reviewed release entries",
+            )
+        if "missing" in text and "EIA" in text:
+            return (
+                "EiaApiKeyMissing",
+                "enabled EIA numeric validation requires its configured source key environment variable to be set",
+            )
+        if "official EIA" in text:
+            return ("EiaHttpFailure", "official EIA source request failed")
+    if source_id == "usaspending":
+        if "active confirmed mapping" in text:
+            return (
+                "USAspendingRecipientMapEmpty",
+                "enabled USAspending validation requires at least one active confirmed recipient mapping",
+            )
+        if "recipient map" in text:
+            return (
+                "USAspendingRecipientMapInvalid",
+                "USAspending recipient mapping configuration is missing or invalid",
+            )
+        if "official USAspending" in text or (
+            "USAspending" in text and "HTTP" in text
+        ):
+            return ("USAspendingHttpFailure", "official USAspending HTTP request failed")
+    return (type(exc).__name__, "source probe raised a safe boundary exception")
+
+
+def _failure_message_from_issues(
+    source_id: str,
+    issue_types: set[str],
+    fallback: str,
+) -> str:
+    if source_id == "eia_wpsr" and "SOURCE_REQUEST_FAILED" in issue_types:
+        return "official EIA source request failed; verify source access and network reachability"
+    if source_id == "usaspending":
+        if "SOURCE_LAST_UPDATED_FAILED" in issue_types:
+            return "official USAspending source-health HTTP request failed"
+        if "RECIPIENT_DISCOVERY_FAILED" in issue_types:
+            return "official USAspending award search HTTP request failed"
+        if "AWARD_ENRICHMENT_FAILED" in issue_types:
+            return "official USAspending award detail or funding HTTP request failed"
+        if "CHECKPOINT_PERSISTENCE_FAILED" in issue_types:
+            return "USAspending temporary checkpoint persistence failed"
+    return fallback or "source returned a failed operational status"
 
 
 class QuestDBRuntimeValidation:
@@ -585,13 +668,14 @@ class ContextSourceSmokeRunner:
                         message="unsupported source id",
                     )
             except Exception as exc:  # noqa: BLE001 - script boundary sanitizes output.
+                error_type, message = _safe_exception_diagnostic(source_id, exc)
                 probe = ProbeResult(
                     source_id=source_id,
                     enabled=True,
                     attempted=True,
                     failed=True,
-                    error_type=type(exc).__name__,
-                    message="source probe raised a safe boundary exception",
+                    error_type=error_type,
+                    message=message,
                     source_ledger=LEDGER_FAILED if self.write_questdb else LEDGER_NOT_REQUESTED,
                 )
             outcomes.append(classify_probe_result(probe))
@@ -633,6 +717,7 @@ class ContextSourceSmokeRunner:
                 enabled=False,
                 attempted=False,
                 status="DISABLED",
+                message="structured_sources.macro_calendar.enabled is false in parsed configuration",
             )
         cache = ContextStateCache()
         collector = MacroCalendarCollector(
@@ -667,11 +752,14 @@ class ContextSourceSmokeRunner:
     ) -> ProbeResult:
         from market_relay_engine.context.eia_wpsr import (
             EIAWPSRCollectionStatus,
-            EIAWPSRConfig,
             EIAWPSRCollector,
+            EIAWPSRConfig,
         )
         from market_relay_engine.context.state_cache import ContextStateCache
 
+        preflight = self._preflight_eia_config(configs)
+        if preflight is not None:
+            return preflight
         config = EIAWPSRConfig.from_repository_configs(
             configs["calendar_events"],
             configs["context_sources"],
@@ -780,6 +868,7 @@ class ContextSourceSmokeRunner:
             USAspendingCollectionStatus,
             USAspendingCollector,
             USAspendingConfig,
+            load_recipient_mappings,
         )
 
         base_config = USAspendingConfig.from_repository_config(configs["context_sources"])
@@ -789,6 +878,21 @@ class ContextSourceSmokeRunner:
                 enabled=False,
                 attempted=False,
                 status="DISABLED",
+            )
+        try:
+            recipient_mappings = load_recipient_mappings(base_config.recipient_map_path)
+        except Exception as exc:  # noqa: BLE001 - safe script boundary.
+            error_type, message = _safe_exception_diagnostic("usaspending", exc)
+            return _failed_probe(
+                "usaspending",
+                error_type=error_type,
+                message=message,
+            )
+        if not any(mapping.active for mapping in recipient_mappings):
+            return _failed_probe(
+                "usaspending",
+                error_type="USAspendingRecipientMapEmpty",
+                message="enabled USAspending validation requires at least one active confirmed recipient mapping in config/usaspending_recipient_ticker_map.yaml",
             )
         with TemporaryDirectory(
             prefix=".tmp-context-source-smoke-usaspending-",
@@ -804,6 +908,7 @@ class ContextSourceSmokeRunner:
                 cache=cache,
                 config=config,
                 ledger_writer=self._ledger_writer,
+                recipient_mappings=recipient_mappings,
             ).collect(
                 evaluation_time=evaluation_time,
                 write_questdb=self.write_questdb,
@@ -888,6 +993,43 @@ class ContextSourceSmokeRunner:
             config_writes_questdb_ledger=config.writes_questdb_ledger,
         )
 
+    def _preflight_eia_config(
+        self,
+        configs: dict[str, dict[str, object]],
+    ) -> ProbeResult | None:
+        context_sources = _mapping_value(configs["context_sources"], "structured_sources")
+        eia_source = _mapping_value(context_sources, "eia")
+        calendar_windows = _mapping_value(configs["calendar_events"], "event_windows")
+        eia_window = _mapping_value(calendar_windows, "eia")
+
+        numeric_enabled = eia_source.get("enabled") is True
+        release_windows_enabled = eia_window.get("enabled") is True
+        if not numeric_enabled and not release_windows_enabled:
+            return None
+        if numeric_enabled and not release_windows_enabled:
+            return _failed_probe(
+                "eia_wpsr",
+                error_type="EiaReleaseWindowsDisabled",
+                message="enabled EIA numeric validation requires calendar_events.event_windows.eia.enabled=true with reviewed releases",
+            )
+        releases = eia_window.get("releases")
+        if release_windows_enabled and (not isinstance(releases, list) or not releases):
+            return _failed_probe(
+                "eia_wpsr",
+                error_type="EiaReleasesMissing",
+                message="enabled EIA validation requires reviewed release entries in calendar_events.event_windows.eia.releases",
+            )
+        api_key_env = eia_source.get("api_key_env", "EIA_API_KEY")
+        if numeric_enabled and (
+            not isinstance(api_key_env, str) or not os.getenv(api_key_env)
+        ):
+            return _failed_probe(
+                "eia_wpsr",
+                error_type="EiaApiKeyMissing",
+                message="enabled EIA numeric validation requires its configured source key environment variable to be set",
+            )
+        return None
+
     def _classify_materialized_result(
         self,
         *,
@@ -920,7 +1062,7 @@ class ContextSourceSmokeRunner:
                 materialized_entry_count=len(entries),
                 failed=True,
                 error_type="SourceFailed",
-                message=message or "source returned a failed operational status",
+                message=_failure_message_from_issues(source_id, issue_types, message),
                 source_ledger=ledger_state,
             )
         if entries:

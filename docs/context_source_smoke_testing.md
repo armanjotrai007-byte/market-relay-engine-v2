@@ -12,7 +12,7 @@ PR33 validates collector-to-cache-to-decision-context assembly. It does not vali
 
 `scripts/smoke_context_sources.py` is intentionally excluded from pytest, CI, scheduler flows, service startup, and ordinary checker scripts. It must be run only from an isolated server-side validation checkout or worktree, never from the active 24/7 service checkout.
 
-The operator must pass the active server environment’s `.env` by absolute path with `--env-file`. The file is never auto-discovered and must never be copied into the validation worktree. Values from the explicitly supplied file take precedence over inherited shell environment variables for that validation invocation.
+The operator must pass the active server environment's `.env` by absolute path with `--env-file`. The file is never auto-discovered and must never be copied into the validation worktree. Values from the explicitly supplied file take precedence over inherited shell environment variables for that validation invocation.
 
 The script refuses live setup unless both `--live` and an absolute existing `--env-file` are supplied. Its help path does not load `.env`, instantiate collectors, import live configuration, or contact sources.
 
@@ -29,6 +29,20 @@ A successful QuestDB marker alone is not a successful context-source validation.
 PR33 QuestDB validation preserves clearly tagged validation rows. It does not delete them, and it must never run destructive schema apply against the active server ledger.
 
 USAspending uses a temporary checkpoint path under the isolated validation worktree so the real checkpoint lock and atomic write behavior are exercised without touching the production checkpoint path or the active service `data` directory.
+
+## Validation Configuration
+
+The repository defaults keep context sources disabled so normal configuration checks continue to fail closed. To validate all five PR33 sources, the operator enables source capabilities only in the isolated validation worktree.
+
+Macro calendar is enabled by `structured_sources.macro_calendar.enabled` in `config/context_sources.yaml`. If the smoke output reports `SKIPPED_DISABLED`, the parsed value at that exact path is false.
+
+FRED is enabled by `structured_sources.fred.enabled` and requires the configured FRED API key environment variable in the explicitly supplied `.env`.
+
+Yfinance development-only material is enabled by `structured_sources.yfinance_dev_only.enabled`. A successful check proves only development-only connectivity/data material; it does not make yfinance eligible for approved risk context.
+
+EIA WPSR numeric validation requires both `structured_sources.eia.enabled` in `config/context_sources.yaml` and `calendar_events.event_windows.eia.enabled` with reviewed `releases` in `config/calendar_events.yaml`. Numeric reachability also requires the configured EIA source key environment variable, such as `EIA_API_KEY`, in the explicitly supplied `.env`. Enabling only the numeric source without reviewed release windows is a configuration failure, not proof that the EIA API was reached.
+
+USAspending validation requires `structured_sources.usaspending.enabled` and a reviewed recipient map at the configured `recipient_map_path`. The committed default map is intentionally empty; live validation needs at least one active confirmed mapping in the isolated validation worktree or in an explicitly configured reviewed map. Do not invent UEIs or point the smoke script at the production checkpoint path.
 
 ## Outcomes
 

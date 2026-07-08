@@ -1,19 +1,24 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
+from datetime import UTC, datetime
 import json
 import os
 from io import StringIO
 from pathlib import Path
 import subprocess
 import sys
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 
 import pytest
 
 import scripts.smoke_context_sources as smoke
+from market_relay_engine.common.config import load_all_configs
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+FIXED_EVALUATION_TIME = datetime(2026, 7, 8, 16, 0, tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -110,6 +115,27 @@ class _FakeQuestDBRuntime:
         canonical_source: str,
     ) -> tuple[str, str | None]:
         return self.ledger_status, self.ledger_error
+
+
+def _repo_configs() -> dict[str, dict[str, object]]:
+    return deepcopy(load_all_configs(base_dir=REPO_ROOT))
+
+
+def _enable_structured_source(configs: dict[str, dict[str, object]], source_id: str) -> None:
+    structured = configs["context_sources"]["structured_sources"]  # type: ignore[index]
+    structured[source_id]["enabled"] = True  # type: ignore[index]
+
+
+def _add_reviewed_eia_release(configs: dict[str, dict[str, object]]) -> None:
+    eia_window = configs["calendar_events"]["event_windows"]["eia"]  # type: ignore[index]
+    eia_window["enabled"] = True
+    eia_window["releases"] = [
+        {
+            "release_id": "eia_wpsr_2026_07_08",
+            "release_at": "2026-07-08T10:30:00-04:00",
+            "report_period": "2026-07-03",
+        }
+    ]
 
 
 def test_script_bootstraps_src_path_from_absolute_import_without_site_packages() -> None:
@@ -277,6 +303,134 @@ def test_disabled_sources_produce_skipped_disabled() -> None:
 
     assert outcome.outcome == smoke.SKIPPED_DISABLED
     assert outcome.attempted is False
+
+
+def test_macro_disabled_message_reports_parsed_config_path() -> None:
+    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+    result = runner._probe_macro_calendar(_repo_configs(), FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert outcome.outcome == smoke.SKIPPED_DISABLED
+    assert "structured_sources.macro_calendar.enabled is false" in outcome.message
+
+
+def test_macro_enabled_config_is_not_classified_disabled() -> None:
+    configs = _repo_configs()
+    _enable_structured_source(configs, "macro_calendar")
+    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+    result = runner._probe_macro_calendar(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert result.enabled is True
+    assert outcome.outcome != smoke.SKIPPED_DISABLED
+
+
+def test_eia_enabled_source_requires_enabled_release_windows() -> None:
+    configs = _repo_configs()
+    _enable_structured_source(configs, "eia")
+    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+    result = runner._probe_eia_wpsr(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert outcome.outcome == smoke.FAILED
+    assert outcome.error_type == "EiaReleaseWindowsDisabled"
+    assert "calendar_events.event_windows.eia.enabled=true" in outcome.message
+
+
+def test_eia_enabled_windows_require_reviewed_releases() -> None:
+    configs = _repo_configs()
+    _enable_structured_source(configs, "eia")
+    eia_window = configs["calendar_events"]["event_windows"]["eia"]  # type: ignore[index]
+    eia_window["enabled"] = True
+    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+    result = runner._probe_eia_wpsr(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert outcome.outcome == smoke.FAILED
+    assert outcome.error_type == "EiaReleasesMissing"
+    assert "reviewed release entries" in outcome.message
+
+
+def test_eia_enabled_numeric_source_requires_key_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    configs = _repo_configs()
+    _enable_structured_source(configs, "eia")
+    _add_reviewed_eia_release(configs)
+    monkeypatch.delenv("EIA_API_KEY", raising=False)
+    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+    result = runner._probe_eia_wpsr(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert outcome.outcome == smoke.FAILED
+    assert outcome.error_type == "EiaApiKeyMissing"
+    assert "configured source key environment variable" in outcome.message
+    assert "redacted" not in outcome.message
+
+
+def test_eia_enabled_config_path_reaches_numeric_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    import market_relay_engine.context.eia_wpsr as eia_module
+
+    configs = _repo_configs()
+    _enable_structured_source(configs, "eia")
+    _add_reviewed_eia_release(configs)
+    monkeypatch.setenv("EIA_API_KEY", "fake-test-key")
+
+    def fake_probe(self: object, **kwargs: object) -> object:
+        return SimpleNamespace(status="NO_FRESH_DATA", issues=(), ledger_write_results=())
+
+    monkeypatch.setattr(eia_module.EIAWPSRCollector, "probe_numeric_source", fake_probe)
+    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+    result = runner._probe_eia_wpsr(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert outcome.outcome == smoke.EXPECTED_NO_DATA
+    assert outcome.error_type is None
+
+
+def test_usaspending_enabled_empty_mapping_is_actionable_failure() -> None:
+    configs = _repo_configs()
+    _enable_structured_source(configs, "usaspending")
+    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+    result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert outcome.outcome == smoke.FAILED
+    assert outcome.error_type == "USAspendingRecipientMapEmpty"
+    assert "active confirmed recipient mapping" in outcome.message
+    assert "source probe raised a safe boundary exception" not in outcome.message
+
+
+def test_source_issue_messages_are_actionable_and_redacted() -> None:
+    eia_message = smoke._failure_message_from_issues(
+        "eia_wpsr",
+        {"SOURCE_REQUEST_FAILED"},
+        "",
+    )
+    usaspending_message = smoke._failure_message_from_issues(
+        "usaspending",
+        {"SOURCE_LAST_UPDATED_FAILED"},
+        "",
+    )
+
+    assert "official EIA source request failed" in eia_message
+    assert "official USAspending source-health HTTP request failed" in usaspending_message
+    rendered = smoke.render_outcomes(
+        [
+            smoke.SmokeOutcome(
+                source_id="eia_wpsr",
+                outcome=smoke.FAILED,
+                status="FAILED",
+                error_type="EiaApiKeyMissing",
+                message=eia_message,
+            )
+        ]
+    )
+    assert "redacted" not in rendered
 
 
 def test_attempted_valid_no_data_becomes_expected_no_data() -> None:
