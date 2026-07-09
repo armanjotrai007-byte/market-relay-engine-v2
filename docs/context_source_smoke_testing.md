@@ -42,7 +42,7 @@ Yfinance development-only material is enabled by `structured_sources.yfinance_de
 
 EIA WPSR numeric validation requires both `structured_sources.eia.enabled` in `config/context_sources.yaml` and `calendar_events.event_windows.eia.enabled` with reviewed `releases` in `config/calendar_events.yaml`. Numeric reachability also requires the configured EIA source key environment variable, such as `EIA_API_KEY`, in the explicitly supplied `.env`. Enabling only the numeric source without reviewed release windows is a configuration failure, not proof that the EIA API was reached.
 
-USAspending validation requires `structured_sources.usaspending.enabled` and a reviewed recipient map at the configured `recipient_map_path` for award materialization. The committed default map is intentionally empty; when `validation_modes.usaspending.allow_health_only_without_recipient_mapping` is true, the smoke script may perform source-health-only connectivity validation without fake UEIs or award searches. Do not invent UEIs or point the smoke script at the production checkpoint path.
+USAspending validation requires `structured_sources.usaspending.enabled` and a reviewed recipient map at the configured `recipient_map_path` for award materialization. The committed map contains reviewed active defense-recipient UEIs. If a validation clone intentionally points to an empty map and `validation_modes.usaspending.allow_health_only_without_recipient_mapping` is true, the smoke script may perform source-health-only connectivity validation without fake UEIs or award searches. Do not invent UEIs or point the smoke script at the production checkpoint path.
 
 ## Outcomes
 

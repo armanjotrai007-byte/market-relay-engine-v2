@@ -341,7 +341,7 @@ class _FREDFakeClient:
         return deepcopy(self.payloads[series_id])
 
 
-UEI = "EXACTUEI123"
+UEI = "EXACTUEI1234"
 
 
 def _usaspending_mapping(*, ticker: str = "TST") -> USAspendingRecipientMapping:

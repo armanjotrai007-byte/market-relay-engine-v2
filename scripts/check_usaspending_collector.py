@@ -26,7 +26,7 @@ from market_relay_engine.context.usaspending_collector import (  # noqa: E402
 
 
 CHECKED_AT = datetime(2026, 6, 20, 16, 0, tzinfo=UTC)
-UEI = "EXACTUEI123"
+UEI = "EXACTUEI1234"
 
 
 def _mapping() -> USAspendingRecipientMapping:

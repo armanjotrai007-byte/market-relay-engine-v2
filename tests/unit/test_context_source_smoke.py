@@ -143,6 +143,14 @@ def _add_reviewed_eia_release(configs: dict[str, dict[str, object]]) -> None:
     ]
 
 
+def _set_usaspending_map_path(
+    configs: dict[str, dict[str, object]],
+    map_path: Path,
+) -> None:
+    source = configs["context_sources"]["structured_sources"]["usaspending"]  # type: ignore[index]
+    source["recipient_map_path"] = map_path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
+
+
 def test_script_bootstraps_src_path_from_absolute_import_without_site_packages() -> None:
     with TemporaryDirectory(prefix=".tmp-smoke-bootstrap-") as temp_dir:
         env = os.environ.copy()
@@ -402,13 +410,20 @@ def test_eia_enabled_config_path_reaches_numeric_probe(monkeypatch: pytest.Monke
 
 
 def test_usaspending_enabled_empty_mapping_is_actionable_failure() -> None:
-    configs = _repo_configs()
-    _enable_structured_source(configs, "usaspending")
-    validation_mode = configs["context_sources"]["validation_modes"]["usaspending"]  # type: ignore[index]
-    validation_mode["allow_health_only_without_recipient_mapping"] = False
-    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+    with TemporaryDirectory(prefix=".tmp-smoke-usaspending-empty-", dir=REPO_ROOT) as temp_dir:
+        map_path = Path(temp_dir) / "recipient_map.yaml"
+        map_path.write_text(
+            "mapping_version: usaspending_recipient_map_v1\nrecipients: []\n",
+            encoding="utf-8",
+        )
+        configs = _repo_configs()
+        _enable_structured_source(configs, "usaspending")
+        _set_usaspending_map_path(configs, map_path)
+        validation_mode = configs["context_sources"]["validation_modes"]["usaspending"]  # type: ignore[index]
+        validation_mode["allow_health_only_without_recipient_mapping"] = False
+        runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
 
-    result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
+        result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
     outcome = smoke.classify_probe_result(result)
 
     assert outcome.outcome == smoke.FAILED
@@ -437,15 +452,81 @@ def test_usaspending_health_only_mode_allows_empty_mapping_without_network(
         "USAspendingHTTPClient",
         FakeUSAspendingHTTPClient,
     )
-    runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+    with TemporaryDirectory(prefix=".tmp-smoke-usaspending-empty-", dir=REPO_ROOT) as temp_dir:
+        map_path = Path(temp_dir) / "recipient_map.yaml"
+        map_path.write_text(
+            "mapping_version: usaspending_recipient_map_v1\nrecipients: []\n",
+            encoding="utf-8",
+        )
+        _set_usaspending_map_path(configs, map_path)
+        runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
 
-    result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
+        result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
     outcome = smoke.classify_probe_result(result)
 
     assert outcome.outcome == smoke.EXPECTED_NO_DATA
     assert outcome.status == "HEALTH_ONLY_NO_MAPPING"
     assert outcome.error_type is None
     assert "source-health request and parser succeeded" in outcome.message
+
+
+def test_usaspending_mapped_no_awards_is_expected_no_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import market_relay_engine.context.usaspending_collector as usaspending_module
+
+    configs = _repo_configs()
+    _enable_structured_source(configs, "usaspending")
+    search_calls: list[dict[str, object]] = []
+
+    class FakeUSAspendingHTTPClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = dict(kwargs)
+
+        def fetch_last_updated(self) -> dict[str, object]:
+            return {"last_updated": "2026-07-08"}
+
+        def search_spending_by_award(self, **kwargs: object) -> dict[str, object]:
+            search_calls.append(dict(kwargs))
+            return {"results": [], "page_metadata": {"hasNext": False}}
+
+        def fetch_award_detail(self, award_id: str) -> dict[str, object]:
+            raise AssertionError("no awards should not request detail")
+
+        def fetch_award_funding(self, award_id: str, *, limit: int) -> dict[str, object]:
+            raise AssertionError("no awards should not request funding")
+
+    monkeypatch.setattr(
+        usaspending_module,
+        "USAspendingHTTPClient",
+        FakeUSAspendingHTTPClient,
+    )
+    with TemporaryDirectory(prefix=".tmp-smoke-usaspending-map-", dir=REPO_ROOT) as temp_dir:
+        map_path = Path(temp_dir) / "recipient_map.yaml"
+        map_path.write_text(
+            "mapping_version: usaspending_recipient_map_v1\n"
+            "recipients:\n"
+            "  - recipient_uei: ABCDEF123456\n"
+            "    recipient_name: EXACT LEGAL NAME\n"
+            "    ticker: LMT\n"
+            "    issuer_name: Lockheed Martin Corporation\n"
+            "    mapping_confidence: confirmed\n"
+            "    economic_beneficiary: prime_recipient\n"
+            "    active: true\n"
+            "    mapping_version: usaspending_recipient_map_v1\n",
+            encoding="utf-8",
+        )
+        _set_usaspending_map_path(configs, map_path)
+        runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+        result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert search_calls
+    assert search_calls[0]["recipient_uei"] == "ABCDEF123456"
+    assert outcome.outcome == smoke.EXPECTED_NO_DATA
+    assert outcome.status == "SUCCESS"
+    assert outcome.error_type is None
 
 
 def test_source_issue_messages_are_actionable_and_redacted() -> None:

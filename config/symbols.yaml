@@ -1,30 +1,19 @@
 metadata:
   config_version: 1
-  description: "V2 symbol configuration. Examples only until manually approved."
+  description: "Selected production/paper validation universe for PR33 context-chain validation."
   review_required: true
 
 tradable_universe:
-  oil:
-    description: "Example oil/energy tradable symbols. Final list requires manual approval."
-    enabled: true
-    symbols:
-      - ticker: XOM
-        name: Exxon Mobil Corporation
-        sector: oil
-        alpaca_symbol: XOM
-        databento_symbol: XOM
-        approved_for_live: false
-      - ticker: CVX
-        name: Chevron Corporation
-        sector: oil
-        alpaca_symbol: CVX
-        databento_symbol: CVX
-        approved_for_live: false
-
   defense:
-    description: "Example defense tradable symbols. Final list requires manual approval."
+    description: "Selected defense tradable symbols for production/paper validation."
     enabled: true
     symbols:
+      - ticker: PLTR
+        name: Palantir Technologies Inc.
+        sector: defense
+        alpaca_symbol: PLTR
+        databento_symbol: PLTR
+        approved_for_live: false
       - ticker: LMT
         name: Lockheed Martin Corporation
         sector: defense
@@ -37,17 +26,52 @@ tradable_universe:
         alpaca_symbol: RTX
         databento_symbol: RTX
         approved_for_live: false
-      - ticker: NOC
-        name: Northrop Grumman Corporation
-        sector: defense
-        alpaca_symbol: NOC
-        databento_symbol: NOC
-        approved_for_live: false
       - ticker: GD
         name: General Dynamics Corporation
         sector: defense
         alpaca_symbol: GD
         databento_symbol: GD
+        approved_for_live: false
+      - ticker: AVAV
+        name: AeroVironment, Inc.
+        sector: defense
+        alpaca_symbol: AVAV
+        databento_symbol: AVAV
+        approved_for_live: false
+
+  oil:
+    description: "Selected oil/energy tradable symbols for production/paper validation."
+    enabled: true
+    symbols:
+      - ticker: XOM
+        name: Exxon Mobil Corporation
+        sector: oil
+        alpaca_symbol: XOM
+        databento_symbol: XOM
+        approved_for_live: false
+      - ticker: OXY
+        name: Occidental Petroleum Corporation
+        sector: oil
+        alpaca_symbol: OXY
+        databento_symbol: OXY
+        approved_for_live: false
+      - ticker: SLB
+        name: SLB
+        sector: oil
+        alpaca_symbol: SLB
+        databento_symbol: SLB
+        approved_for_live: false
+      - ticker: COP
+        name: ConocoPhillips
+        sector: oil
+        alpaca_symbol: COP
+        databento_symbol: COP
+        approved_for_live: false
+      - ticker: VLO
+        name: Valero Energy Corporation
+        sector: oil
+        alpaca_symbol: VLO
+        databento_symbol: VLO
         approved_for_live: false
 
 context_symbols:

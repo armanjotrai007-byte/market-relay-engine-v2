@@ -34,7 +34,7 @@ from market_relay_engine.questdb.jsonl_fallback import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CHECKED_AT = datetime(2026, 6, 20, 16, 0, tzinfo=UTC)
-UEI = "EXACTUEI123"
+UEI = "EXACTUEI1234"
 
 
 def _mapping(ticker: str = "TST", uei: str = UEI) -> USAspendingRecipientMapping:
@@ -305,11 +305,11 @@ def _seed_durable_award(
     return writer, result
 
 
-def test_repository_configuration_is_exact_and_disabled_by_default() -> None:
+def test_repository_configuration_is_exact_and_enabled_for_validation() -> None:
     loaded = yaml.safe_load((REPO_ROOT / "config" / "context_sources.yaml").read_text(encoding="utf-8"))
     config = USAspendingConfig.from_repository_config(loaded)
 
-    assert config.enabled is False
+    assert config.enabled is True
     assert config.api_key_required is False
     assert config.discovery_last_modified_lookback_calendar_days == 14
     assert config.funding_limit_per_award == 100
@@ -317,12 +317,16 @@ def test_repository_configuration_is_exact_and_disabled_by_default() -> None:
     assert not hasattr(config, "event_cache_ttl_seconds")
 
 
-def test_mapping_file_starts_empty() -> None:
-    loaded = yaml.safe_load(
-        (REPO_ROOT / "config" / "usaspending_recipient_ticker_map.yaml").read_text(encoding="utf-8")
+def test_mapping_file_contains_active_confirmed_defense_recipients() -> None:
+    mappings = load_recipient_mappings(
+        REPO_ROOT / "config" / "usaspending_recipient_ticker_map.yaml"
     )
 
-    assert loaded == {"mapping_version": "usaspending_recipient_map_v1", "recipients": []}
+    assert mappings
+    assert {mapping.ticker for mapping in mappings} == {"LMT", "RTX", "GD", "AVAV", "PLTR"}
+    assert all(mapping.active for mapping in mappings)
+    assert all(mapping.mapping_confidence == "confirmed" for mapping in mappings)
+    assert len({mapping.recipient_uei for mapping in mappings}) == len(mappings)
 
 
 def test_disabled_collector_does_nothing(tmp_path: Path) -> None:
@@ -392,6 +396,47 @@ def test_duplicate_mapping_uei_rejected(tmp_path: Path) -> None:
     )
 
     with pytest.raises(USAspendingCollectorError, match="duplicate recipient_uei"):
+        load_recipient_mappings(path)
+
+
+def test_duplicate_ticker_mappings_are_allowed_for_separate_recipients(tmp_path: Path) -> None:
+    path = tmp_path / "map.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "mapping_version": "usaspending_recipient_map_v1",
+                "recipients": [
+                    _mapping(ticker="LMT", uei="ABCDEF123456").__dict__,
+                    _mapping(ticker="LMT", uei="ZXCVBN987654").__dict__,
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    mappings = load_recipient_mappings(path)
+
+    assert [mapping.ticker for mapping in mappings] == ["LMT", "LMT"]
+    assert [mapping.recipient_uei for mapping in mappings] == [
+        "ABCDEF123456",
+        "ZXCVBN987654",
+    ]
+
+
+def test_placeholder_uei_mapping_is_rejected(tmp_path: Path) -> None:
+    path = tmp_path / "map.yaml"
+    payload = _mapping().__dict__ | {"recipient_uei": "VERIFIED_UEI"}
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "mapping_version": "usaspending_recipient_map_v1",
+                "recipients": [payload],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(USAspendingCollectorError, match="recipient_uei"):
         load_recipient_mappings(path)
 
 
