@@ -524,6 +524,7 @@ def test_usaspending_mapped_no_awards_is_expected_no_data(
 
     assert search_calls
     assert search_calls[0]["recipient_uei"] == "ABCDEF123456"
+    assert search_calls[0]["limit"] == smoke.DEFAULT_USASPENDING_SMOKE_SEARCH_LIMIT_PER_RECIPIENT
     assert outcome.outcome == smoke.EXPECTED_NO_DATA
     assert outcome.status == "SUCCESS"
     assert outcome.error_type is None
@@ -586,6 +587,30 @@ def test_usaspending_mapped_path_emits_progress_messages(
     assert "event=source_start source_id=usaspending" in rendered_progress
     assert "event=usaspending_recipient_map" in rendered_progress
     assert "active_recipient_count=1" in rendered_progress
+    assert "event=usaspending_smoke_limits" in rendered_progress
+    assert (
+        f"request_timeout_seconds="
+        f"{smoke.DEFAULT_USASPENDING_SMOKE_REQUEST_TIMEOUT_SECONDS:.1f}"
+    ) in rendered_progress
+    assert (
+        f"request_attempts={smoke.DEFAULT_USASPENDING_SMOKE_REQUEST_ATTEMPTS}"
+    ) in rendered_progress
+    assert (
+        f"discovery_lookback_days="
+        f"{smoke.DEFAULT_USASPENDING_SMOKE_DISCOVERY_LOOKBACK_DAYS}"
+    ) in rendered_progress
+    assert (
+        f"search_limit_per_recipient="
+        f"{smoke.DEFAULT_USASPENDING_SMOKE_SEARCH_LIMIT_PER_RECIPIENT}"
+    ) in rendered_progress
+    assert (
+        f"max_award_details_per_recipient="
+        f"{smoke.DEFAULT_USASPENDING_SMOKE_MAX_AWARD_DETAILS_PER_RECIPIENT}"
+    ) in rendered_progress
+    assert (
+        f"funding_limit_per_award="
+        f"{smoke.DEFAULT_USASPENDING_SMOKE_FUNDING_LIMIT_PER_AWARD}"
+    ) in rendered_progress
     assert "phase=health_check" in rendered_progress
     assert "phase=award_search" in rendered_progress
     assert "recipient_index=1" in rendered_progress
@@ -593,6 +618,176 @@ def test_usaspending_mapped_path_emits_progress_messages(
     assert "ticker=LMT" in rendered_progress
     assert "recipient_uei=ABCDEF123456" in rendered_progress
     assert "event=source_end source_id=usaspending outcome=EXPECTED_NO_DATA" in rendered_progress
+
+
+def test_usaspending_mapped_smoke_uses_bounded_collector_limits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import market_relay_engine.context.usaspending_collector as usaspending_module
+
+    configs = _repo_configs()
+    _enable_structured_source(configs, "usaspending")
+    captured_configs: list[object] = []
+    search_limits: list[int] = []
+
+    class FakeUSAspendingHTTPClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = dict(kwargs)
+
+        def fetch_last_updated(self) -> dict[str, object]:
+            return {"last_updated": "2026-07-08"}
+
+        def search_spending_by_award(self, **kwargs: object) -> dict[str, object]:
+            search_limits.append(int(kwargs["limit"]))
+            return {"results": [], "page_metadata": {"hasNext": False}}
+
+    class FakeUSAspendingCollector:
+        def __init__(
+            self,
+            *,
+            cache: object,
+            config: object,
+            client: object,
+            ledger_writer: object,
+            recipient_mappings: object,
+        ) -> None:
+            self.config = config
+            self.client = client
+            self.recipient_mappings = tuple(recipient_mappings)  # type: ignore[arg-type]
+            captured_configs.append(config)
+
+        def collect(self, **kwargs: object) -> object:
+            self.client.fetch_last_updated()
+            for mapping in self.recipient_mappings:
+                if mapping.active:
+                    self.client.search_spending_by_award(
+                        recipient_uei=mapping.recipient_uei,
+                        start_date="2026-07-01",
+                        end_date="2026-07-08",
+                        limit=self.config.search_limit_per_recipient,
+                    )
+            return usaspending_module.USAspendingCollectionResult(
+                status=usaspending_module.USAspendingCollectionStatus.SUCCESS,
+                collector_observed_at=FIXED_EVALUATION_TIME,
+            )
+
+    monkeypatch.setattr(
+        usaspending_module,
+        "USAspendingHTTPClient",
+        FakeUSAspendingHTTPClient,
+    )
+    monkeypatch.setattr(
+        usaspending_module,
+        "USAspendingCollector",
+        FakeUSAspendingCollector,
+    )
+    with TemporaryDirectory(prefix=".tmp-smoke-usaspending-limits-", dir=REPO_ROOT) as temp_dir:
+        map_path = Path(temp_dir) / "recipient_map.yaml"
+        map_path.write_text(
+            "mapping_version: usaspending_recipient_map_v1\n"
+            "recipients:\n"
+            "  - recipient_uei: ABCDEF123456\n"
+            "    recipient_name: EXACT LEGAL NAME\n"
+            "    ticker: LMT\n"
+            "    issuer_name: Lockheed Martin Corporation\n"
+            "    mapping_confidence: confirmed\n"
+            "    economic_beneficiary: prime_recipient\n"
+            "    active: true\n"
+            "    mapping_version: usaspending_recipient_map_v1\n",
+            encoding="utf-8",
+        )
+        _set_usaspending_map_path(configs, map_path)
+        runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT)
+
+        result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+    smoke_config = captured_configs[0]
+
+    assert outcome.outcome == smoke.EXPECTED_NO_DATA
+    assert search_limits == [smoke.DEFAULT_USASPENDING_SMOKE_SEARCH_LIMIT_PER_RECIPIENT]
+    assert smoke_config.timeout_seconds == smoke.DEFAULT_USASPENDING_SMOKE_REQUEST_TIMEOUT_SECONDS
+    assert (
+        smoke_config.discovery_last_modified_lookback_calendar_days
+        == smoke.DEFAULT_USASPENDING_SMOKE_DISCOVERY_LOOKBACK_DAYS
+    )
+    assert (
+        smoke_config.search_limit_per_recipient
+        == smoke.DEFAULT_USASPENDING_SMOKE_SEARCH_LIMIT_PER_RECIPIENT
+    )
+    assert (
+        smoke_config.max_award_details_per_recipient_per_run
+        == smoke.DEFAULT_USASPENDING_SMOKE_MAX_AWARD_DETAILS_PER_RECIPIENT
+    )
+    assert (
+        smoke_config.funding_limit_per_award
+        == smoke.DEFAULT_USASPENDING_SMOKE_FUNDING_LIMIT_PER_AWARD
+    )
+
+
+def test_usaspending_mapped_search_retries_transient_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import market_relay_engine.context.usaspending_collector as usaspending_module
+
+    configs = _repo_configs()
+    _enable_structured_source(configs, "usaspending")
+    search_calls: list[dict[str, object]] = []
+
+    class FakeUSAspendingHTTPClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = dict(kwargs)
+
+        def fetch_last_updated(self) -> dict[str, object]:
+            return {"last_updated": "2026-07-08"}
+
+        def search_spending_by_award(self, **kwargs: object) -> dict[str, object]:
+            search_calls.append(dict(kwargs))
+            if len(search_calls) == 1:
+                raise RuntimeError("secret-token-value")
+            return {"results": [], "page_metadata": {"hasNext": False}}
+
+        def fetch_award_detail(self, award_id: str) -> dict[str, object]:
+            raise AssertionError("no awards should not request detail")
+
+        def fetch_award_funding(self, award_id: str, *, limit: int) -> dict[str, object]:
+            raise AssertionError("no awards should not request funding")
+
+    monkeypatch.setattr(
+        usaspending_module,
+        "USAspendingHTTPClient",
+        FakeUSAspendingHTTPClient,
+    )
+    progress_stream = StringIO()
+    progress = smoke.SmokeProgressReporter(progress_stream)
+    with TemporaryDirectory(prefix=".tmp-smoke-usaspending-retry-", dir=REPO_ROOT) as temp_dir:
+        map_path = Path(temp_dir) / "recipient_map.yaml"
+        map_path.write_text(
+            "mapping_version: usaspending_recipient_map_v1\n"
+            "recipients:\n"
+            "  - recipient_uei: ABCDEF123456\n"
+            "    recipient_name: EXACT LEGAL NAME\n"
+            "    ticker: LMT\n"
+            "    issuer_name: Lockheed Martin Corporation\n"
+            "    mapping_confidence: confirmed\n"
+            "    economic_beneficiary: prime_recipient\n"
+            "    active: true\n"
+            "    mapping_version: usaspending_recipient_map_v1\n",
+            encoding="utf-8",
+        )
+        _set_usaspending_map_path(configs, map_path)
+        runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT, progress=progress)
+
+        result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+    rendered_progress = progress_stream.getvalue()
+
+    assert len(search_calls) == 2
+    assert outcome.outcome == smoke.EXPECTED_NO_DATA
+    assert "event=usaspending_retry" in rendered_progress
+    assert "phase=award_search" in rendered_progress
+    assert "next_attempt=2" in rendered_progress
+    assert "error_type=RuntimeError" in rendered_progress
+    assert "secret-token-value" not in rendered_progress
 
 
 def test_usaspending_timeout_reports_current_phase_and_recipient(
@@ -660,6 +855,40 @@ def test_usaspending_timeout_reports_current_phase_and_recipient(
     assert "recipient_uei=ABCDEF123456" in outcome.message
     assert "secret" not in outcome.message.lower()
     assert "api_key" not in outcome.message
+
+
+def test_usaspending_timeout_progress_stops_after_first_timeout() -> None:
+    class StepClock:
+        def __init__(self) -> None:
+            self.values = [0.0, 1.0, 1.0]
+
+        def __call__(self) -> float:
+            if self.values:
+                return self.values.pop(0)
+            return 1.0
+
+    mapping = SimpleNamespace(
+        active=True,
+        ticker="LMT",
+        recipient_uei="ABCDEF123456",
+    )
+    progress_stream = StringIO()
+    budget = smoke.USAspendingSmokeBudget(
+        timeout_seconds=0.5,
+        recipient_mappings=(mapping,),
+        progress=smoke.SmokeProgressReporter(progress_stream),
+        monotonic=StepClock(),
+    )
+
+    with pytest.raises(smoke.USAspendingSmokeTimeoutError):
+        budget.enter("award_search", mapping=mapping)
+    with pytest.raises(smoke.USAspendingSmokeTimeoutError):
+        budget.enter("award_detail", mapping=mapping, award_id="CONT_AWD_SECRET_FREE")
+
+    rendered_progress = progress_stream.getvalue()
+    assert rendered_progress.count("event=usaspending_phase") == 1
+    assert "phase=award_search" in rendered_progress
+    assert "phase=award_detail" not in rendered_progress
 
 
 def test_live_main_progress_redacts_env_file_values() -> None:

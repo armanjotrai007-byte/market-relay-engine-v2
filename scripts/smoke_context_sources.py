@@ -40,6 +40,12 @@ LEDGER_FAILED = "FAILED"
 
 QUESTDB_MARKER_SOURCE_ID = "questdb_marker"
 DEFAULT_USASPENDING_SMOKE_TIMEOUT_SECONDS = 180.0
+DEFAULT_USASPENDING_SMOKE_REQUEST_TIMEOUT_SECONDS = 30.0
+DEFAULT_USASPENDING_SMOKE_DISCOVERY_LOOKBACK_DAYS = 7
+DEFAULT_USASPENDING_SMOKE_SEARCH_LIMIT_PER_RECIPIENT = 10
+DEFAULT_USASPENDING_SMOKE_MAX_AWARD_DETAILS_PER_RECIPIENT = 3
+DEFAULT_USASPENDING_SMOKE_FUNDING_LIMIT_PER_AWARD = 25
+DEFAULT_USASPENDING_SMOKE_REQUEST_ATTEMPTS = 2
 
 _SENSITIVE_MARKERS = (
     "api_key",
@@ -219,6 +225,8 @@ class USAspendingSmokeBudget:
         mapping: object | None = None,
         award_id: str | None = None,
     ) -> None:
+        if self._timeout is not None:
+            raise self._timeout
         self._phase = phase
         if mapping is not None:
             self._mapping = mapping
@@ -265,6 +273,10 @@ class USAspendingSmokeBudget:
         return None if uei is None else self._index_by_uei.get(uei)
 
     @property
+    def recipient_total(self) -> int | None:
+        return self._total or None
+
+    @property
     def ticker(self) -> str | None:
         if self._mapping is None:
             return None
@@ -296,10 +308,12 @@ class InstrumentedUSAspendingSmokeClient:
         self._current_mapping: object | None = None
 
     def fetch_last_updated(self) -> Mapping[str, object]:
-        self.budget.enter("health_check")
-        result = self.inner.fetch_last_updated()
-        self.budget.check()
-        return result
+        return self._call_with_retry(
+            "health_check",
+            mapping=None,
+            award_id=None,
+            call=self.inner.fetch_last_updated,
+        )
 
     def search_spending_by_award(
         self,
@@ -311,35 +325,70 @@ class InstrumentedUSAspendingSmokeClient:
     ) -> Mapping[str, object]:
         mapping = self._mapping_by_uei.get(recipient_uei)
         self._current_mapping = mapping
-        self.budget.enter("award_search", mapping=mapping)
-        result = self.inner.search_spending_by_award(
-            recipient_uei=recipient_uei,
-            start_date=start_date,
-            end_date=end_date,
-            limit=limit,
+        return self._call_with_retry(
+            "award_search",
+            mapping=mapping,
+            award_id=None,
+            call=lambda: self.inner.search_spending_by_award(
+                recipient_uei=recipient_uei,
+                start_date=start_date,
+                end_date=end_date,
+                limit=limit,
+            ),
         )
-        self.budget.check()
-        return result
 
     def fetch_award_detail(self, award_id: str) -> Mapping[str, object]:
-        self.budget.enter(
+        return self._call_with_retry(
             "award_detail",
             mapping=self._current_mapping,
             award_id=award_id,
+            call=lambda: self.inner.fetch_award_detail(award_id),
         )
-        result = self.inner.fetch_award_detail(award_id)
-        self.budget.check()
-        return result
 
     def fetch_award_funding(self, award_id: str, *, limit: int) -> Mapping[str, object]:
-        self.budget.enter(
+        return self._call_with_retry(
             "funding_fetch",
             mapping=self._current_mapping,
             award_id=award_id,
+            call=lambda: self.inner.fetch_award_funding(award_id, limit=limit),
         )
-        result = self.inner.fetch_award_funding(award_id, limit=limit)
-        self.budget.check()
-        return result
+
+    def _call_with_retry(
+        self,
+        phase: str,
+        *,
+        mapping: object | None,
+        award_id: str | None,
+        call: Callable[[], Mapping[str, object]],
+    ) -> Mapping[str, object]:
+        attempts = DEFAULT_USASPENDING_SMOKE_REQUEST_ATTEMPTS
+        for attempt in range(1, attempts + 1):
+            self.budget.enter(phase, mapping=mapping, award_id=award_id)
+            try:
+                result = call()
+                self.budget.check()
+                return result
+            except USAspendingSmokeTimeoutError:
+                raise
+            except Exception as exc:
+                self.budget.check()
+                if attempt >= attempts:
+                    raise
+                if self.budget.progress is not None:
+                    self.budget.progress.emit(
+                        "usaspending_retry",
+                        phase=phase,
+                        next_attempt=attempt + 1,
+                        max_attempts=attempts,
+                        recipient_index=self.budget.recipient_index,
+                        recipient_total=self.budget.recipient_total,
+                        ticker=self.budget.ticker,
+                        recipient_uei=self.budget.recipient_uei,
+                        award_id=award_id,
+                        error_type=type(exc).__name__,
+                        remaining_seconds=f"{self.budget.remaining_seconds():.1f}",
+                    )
+        raise RuntimeError("unreachable USAspending smoke retry state")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1141,6 +1190,29 @@ class ContextSourceSmokeRunner:
                 attempted=False,
                 status="DISABLED",
             )
+        smoke_search_limit_per_recipient = min(
+            base_config.search_limit_per_recipient,
+            DEFAULT_USASPENDING_SMOKE_SEARCH_LIMIT_PER_RECIPIENT,
+        )
+        smoke_request_timeout_seconds = min(
+            max(
+                base_config.timeout_seconds,
+                DEFAULT_USASPENDING_SMOKE_REQUEST_TIMEOUT_SECONDS,
+            ),
+            self.usaspending_timeout_seconds,
+        )
+        smoke_discovery_lookback_days = min(
+            base_config.discovery_last_modified_lookback_calendar_days,
+            DEFAULT_USASPENDING_SMOKE_DISCOVERY_LOOKBACK_DAYS,
+        )
+        smoke_max_award_details_per_recipient = min(
+            base_config.max_award_details_per_recipient_per_run,
+            DEFAULT_USASPENDING_SMOKE_MAX_AWARD_DETAILS_PER_RECIPIENT,
+        )
+        smoke_funding_limit_per_award = min(
+            base_config.funding_limit_per_award,
+            DEFAULT_USASPENDING_SMOKE_FUNDING_LIMIT_PER_AWARD,
+        )
         try:
             recipient_mappings = load_recipient_mappings(base_config.recipient_map_path)
         except Exception as exc:  # noqa: BLE001 - safe script boundary.
@@ -1157,6 +1229,15 @@ class ContextSourceSmokeRunner:
                 recipient_map_path=base_config.recipient_map_path,
                 active_recipient_count=len(active_mappings),
                 timeout_seconds=f"{self.usaspending_timeout_seconds:.1f}",
+            )
+            self.progress.emit(
+                "usaspending_smoke_limits",
+                request_timeout_seconds=f"{smoke_request_timeout_seconds:.1f}",
+                request_attempts=DEFAULT_USASPENDING_SMOKE_REQUEST_ATTEMPTS,
+                discovery_lookback_days=smoke_discovery_lookback_days,
+                search_limit_per_recipient=smoke_search_limit_per_recipient,
+                max_award_details_per_recipient=smoke_max_award_details_per_recipient,
+                funding_limit_per_award=smoke_funding_limit_per_award,
             )
         budget = USAspendingSmokeBudget(
             timeout_seconds=self.usaspending_timeout_seconds,
@@ -1185,6 +1266,11 @@ class ContextSourceSmokeRunner:
             config = replace(
                 base_config,
                 checkpoint_path=_repo_relative(checkpoint_path, self.repo_root),
+                timeout_seconds=smoke_request_timeout_seconds,
+                discovery_last_modified_lookback_calendar_days=smoke_discovery_lookback_days,
+                search_limit_per_recipient=smoke_search_limit_per_recipient,
+                max_award_details_per_recipient_per_run=smoke_max_award_details_per_recipient,
+                funding_limit_per_award=smoke_funding_limit_per_award,
             )
             cache = ContextStateCache()
             client = InstrumentedUSAspendingSmokeClient(
