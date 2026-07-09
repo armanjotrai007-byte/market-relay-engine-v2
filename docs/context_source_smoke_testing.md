@@ -16,6 +16,8 @@ The operator must pass the active server environment's `.env` by absolute path w
 
 The script refuses live setup unless both `--live` and an absolute existing `--env-file` are supplied. Its help path does not load `.env`, instantiate collectors, import live configuration, or contact sources.
 
+Live smoke runs print `smoke_progress` lines with `flush=True` so operators can see immediate progress in PowerShell. Progress output confirms smoke start, selected sources, redacted `.env` loading, each source start/end, and total elapsed time. It never prints environment variable values or secret-like diagnostics.
+
 ## State And Writes
 
 Each source uses a fresh in-process `ContextStateCache`. No active service cache, runtime state, scheduler, or process is read or modified.
@@ -43,6 +45,8 @@ Yfinance development-only material is enabled by `structured_sources.yfinance_de
 EIA WPSR numeric validation requires both `structured_sources.eia.enabled` in `config/context_sources.yaml` and `calendar_events.event_windows.eia.enabled` with reviewed `releases` in `config/calendar_events.yaml`. Numeric reachability also requires the configured EIA source key environment variable, such as `EIA_API_KEY`, in the explicitly supplied `.env`. Enabling only the numeric source without reviewed release windows is a configuration failure, not proof that the EIA API was reached.
 
 USAspending validation requires `structured_sources.usaspending.enabled` and a reviewed recipient map at the configured `recipient_map_path` for award materialization. The committed map contains reviewed active defense-recipient UEIs. If a validation clone intentionally points to an empty map and `validation_modes.usaspending.allow_health_only_without_recipient_mapping` is true, the smoke script may perform source-health-only connectivity validation without fake UEIs or award searches. Do not invent UEIs or point the smoke script at the production checkpoint path.
+
+Mapped USAspending validation prints the recipient map path, active recipient count, and per-recipient phases such as `health_check`, `award_search`, `award_detail`, `funding_fetch`, and `parse_materialize`. The default mapped USAspending smoke budget is 180 seconds and can be adjusted with `--usaspending-timeout-seconds`. When the budget is exceeded, the result is `FAILED` with `USAspendingSmokeTimeout` and the last phase plus recipient index, ticker, and UEI.
 
 ## Outcomes
 

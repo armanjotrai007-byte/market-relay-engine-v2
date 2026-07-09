@@ -12,6 +12,7 @@ import re
 import secrets
 import sys
 from tempfile import TemporaryDirectory
+import time
 from typing import Any, Callable, Mapping, Protocol, Sequence
 
 
@@ -38,6 +39,7 @@ LEDGER_NO_CONTEXT = "NO_CONTEXT"
 LEDGER_FAILED = "FAILED"
 
 QUESTDB_MARKER_SOURCE_ID = "questdb_marker"
+DEFAULT_USASPENDING_SMOKE_TIMEOUT_SECONDS = 180.0
 
 _SENSITIVE_MARKERS = (
     "api_key",
@@ -118,6 +120,228 @@ class SmokeOutcome:
     source_ledger: str = LEDGER_NOT_REQUESTED
 
 
+class SmokeProgressReporter:
+    def __init__(
+        self,
+        stream: object,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.stream = stream
+        self._monotonic = monotonic
+        self._started_at = monotonic()
+
+    def emit(self, event: str, **fields: object) -> None:
+        parts = [
+            f"smoke_progress elapsed={self.elapsed_seconds():.1f}s",
+            f"event={_safe_progress_value(event)}",
+        ]
+        for key, value in fields.items():
+            if value is None:
+                continue
+            parts.append(f"{_safe_progress_key(key)}={_safe_progress_value(value)}")
+        print(" ".join(parts), file=self.stream, flush=True)
+
+    def elapsed_seconds(self) -> float:
+        return max(0.0, self._monotonic() - self._started_at)
+
+
+class USAspendingSmokeTimeoutError(RuntimeError):
+    def __init__(
+        self,
+        *,
+        phase: str,
+        elapsed_seconds: float,
+        timeout_seconds: float,
+        recipient_index: int | None = None,
+        recipient_total: int | None = None,
+        ticker: str | None = None,
+        recipient_uei: str | None = None,
+        award_id: str | None = None,
+    ) -> None:
+        self.phase = phase
+        self.elapsed_seconds = elapsed_seconds
+        self.timeout_seconds = timeout_seconds
+        self.recipient_index = recipient_index
+        self.recipient_total = recipient_total
+        self.ticker = ticker
+        self.recipient_uei = recipient_uei
+        self.award_id = award_id
+        super().__init__(self.safe_message())
+
+    def safe_message(self) -> str:
+        parts = [
+            "USAspending smoke timeout",
+            f"elapsed={self.elapsed_seconds:.1f}s",
+            f"budget={self.timeout_seconds:.1f}s",
+            f"phase={self.phase}",
+        ]
+        if self.recipient_index is not None and self.recipient_total is not None:
+            parts.append(f"recipient={self.recipient_index}/{self.recipient_total}")
+        if self.ticker:
+            parts.append(f"ticker={self.ticker}")
+        if self.recipient_uei:
+            parts.append(f"recipient_uei={self.recipient_uei}")
+        if self.award_id:
+            parts.append(f"award_id={self.award_id}")
+        return " ".join(parts)
+
+
+class USAspendingSmokeBudget:
+    def __init__(
+        self,
+        *,
+        timeout_seconds: float,
+        recipient_mappings: Sequence[object],
+        progress: SmokeProgressReporter | None,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.timeout_seconds = max(0.0, float(timeout_seconds))
+        self.progress = progress
+        self._monotonic = monotonic
+        self._started_at = monotonic()
+        self._deadline = self._started_at + self.timeout_seconds
+        active = [mapping for mapping in recipient_mappings if getattr(mapping, "active", False)]
+        self._index_by_uei = {
+            str(getattr(mapping, "recipient_uei", "")): index
+            for index, mapping in enumerate(active, start=1)
+        }
+        self._total = len(active)
+        self._phase = "setup"
+        self._mapping: object | None = None
+        self._award_id: str | None = None
+        self._timeout: USAspendingSmokeTimeoutError | None = None
+
+    def enter(
+        self,
+        phase: str,
+        *,
+        mapping: object | None = None,
+        award_id: str | None = None,
+    ) -> None:
+        self._phase = phase
+        if mapping is not None:
+            self._mapping = mapping
+        self._award_id = award_id
+        if self.progress is not None:
+            self.progress.emit(
+                "usaspending_phase",
+                phase=phase,
+                recipient_index=self.recipient_index,
+                recipient_total=self._total or None,
+                ticker=self.ticker,
+                recipient_uei=self.recipient_uei,
+                award_id=award_id,
+                remaining_seconds=f"{self.remaining_seconds():.1f}",
+            )
+        self.check()
+
+    def check(self) -> None:
+        now = self._monotonic()
+        if now > self._deadline:
+            if self._timeout is None:
+                self._timeout = USAspendingSmokeTimeoutError(
+                    phase=self._phase,
+                    elapsed_seconds=now - self._started_at,
+                    timeout_seconds=self.timeout_seconds,
+                    recipient_index=self.recipient_index,
+                    recipient_total=self._total or None,
+                    ticker=self.ticker,
+                    recipient_uei=self.recipient_uei,
+                    award_id=self._award_id,
+                )
+            raise self._timeout
+
+    def raise_if_timed_out(self) -> None:
+        if self._timeout is not None:
+            raise self._timeout
+
+    def remaining_seconds(self) -> float:
+        return max(0.0, self._deadline - self._monotonic())
+
+    @property
+    def recipient_index(self) -> int | None:
+        uei = self.recipient_uei
+        return None if uei is None else self._index_by_uei.get(uei)
+
+    @property
+    def ticker(self) -> str | None:
+        if self._mapping is None:
+            return None
+        value = getattr(self._mapping, "ticker", None)
+        return value if isinstance(value, str) else None
+
+    @property
+    def recipient_uei(self) -> str | None:
+        if self._mapping is None:
+            return None
+        value = getattr(self._mapping, "recipient_uei", None)
+        return value if isinstance(value, str) else None
+
+
+class InstrumentedUSAspendingSmokeClient:
+    def __init__(
+        self,
+        *,
+        inner: object,
+        budget: USAspendingSmokeBudget,
+        active_mappings: Sequence[object],
+    ) -> None:
+        self.inner = inner
+        self.budget = budget
+        self._mapping_by_uei = {
+            str(getattr(mapping, "recipient_uei", "")): mapping
+            for mapping in active_mappings
+        }
+        self._current_mapping: object | None = None
+
+    def fetch_last_updated(self) -> Mapping[str, object]:
+        self.budget.enter("health_check")
+        result = self.inner.fetch_last_updated()
+        self.budget.check()
+        return result
+
+    def search_spending_by_award(
+        self,
+        *,
+        recipient_uei: str,
+        start_date: str,
+        end_date: str,
+        limit: int,
+    ) -> Mapping[str, object]:
+        mapping = self._mapping_by_uei.get(recipient_uei)
+        self._current_mapping = mapping
+        self.budget.enter("award_search", mapping=mapping)
+        result = self.inner.search_spending_by_award(
+            recipient_uei=recipient_uei,
+            start_date=start_date,
+            end_date=end_date,
+            limit=limit,
+        )
+        self.budget.check()
+        return result
+
+    def fetch_award_detail(self, award_id: str) -> Mapping[str, object]:
+        self.budget.enter(
+            "award_detail",
+            mapping=self._current_mapping,
+            award_id=award_id,
+        )
+        result = self.inner.fetch_award_detail(award_id)
+        self.budget.check()
+        return result
+
+    def fetch_award_funding(self, award_id: str, *, limit: int) -> Mapping[str, object]:
+        self.budget.enter(
+            "funding_fetch",
+            mapping=self._current_mapping,
+            award_id=award_id,
+        )
+        result = self.inner.fetch_award_funding(award_id, limit=limit)
+        self.budget.check()
+        return result
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Manual server-only context source smoke validation.",
@@ -142,6 +366,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=SOURCE_IDS,
         help="Optional source to run; may be repeated.",
     )
+    parser.add_argument(
+        "--usaspending-timeout-seconds",
+        type=float,
+        default=DEFAULT_USASPENDING_SMOKE_TIMEOUT_SECONDS,
+        help=(
+            "Total smoke budget for mapped USAspending validation; default "
+            f"{DEFAULT_USASPENDING_SMOKE_TIMEOUT_SECONDS:.0f} seconds."
+        ),
+    )
     return parser
 
 
@@ -155,6 +388,8 @@ def validate_cli_confirmation(args: argparse.Namespace) -> tuple[bool, str]:
         return False, "--env-file must be an absolute path"
     if not env_path.is_file():
         return False, "--env-file must point to an existing file"
+    if float(getattr(args, "usaspending_timeout_seconds", 0.0)) <= 0:
+        return False, "--usaspending-timeout-seconds must be positive"
     return True, ""
 
 
@@ -325,6 +560,8 @@ def _safe_exception_diagnostic(source_id: str, exc: BaseException) -> tuple[str,
         if "official EIA" in text:
             return ("EiaHttpFailure", "official EIA source request failed")
     if source_id == "usaspending":
+        if isinstance(exc, USAspendingSmokeTimeoutError):
+            return ("USAspendingSmokeTimeout", exc.safe_message())
         if "active confirmed mapping" in text:
             return (
                 "USAspendingRecipientMapEmpty",
@@ -625,12 +862,18 @@ class ContextSourceSmokeRunner:
         write_questdb: bool = False,
         questdb_required: bool = False,
         questdb_runtime: QuestDBRuntime | None = None,
+        progress: SmokeProgressReporter | None = None,
+        usaspending_timeout_seconds: float = DEFAULT_USASPENDING_SMOKE_TIMEOUT_SECONDS,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         if questdb_required and not write_questdb:
             raise ValueError("QuestDB-required smoke runner must request QuestDB writes")
         self.repo_root = repo_root
         self.write_questdb = write_questdb
         self.questdb_required = questdb_required
+        self.progress = progress
+        self.usaspending_timeout_seconds = float(usaspending_timeout_seconds)
+        self._monotonic = monotonic
         self.questdb_runtime = (
             questdb_runtime
             if questdb_runtime is not None
@@ -654,6 +897,8 @@ class ContextSourceSmokeRunner:
 
         configs = self._load_configs()
         for source_id in requested:
+            if self.progress is not None:
+                self.progress.emit("source_start", source_id=source_id)
             try:
                 if source_id == "macro_calendar":
                     probe = self._probe_macro_calendar(configs, evaluation_time)
@@ -685,7 +930,15 @@ class ContextSourceSmokeRunner:
                     message=message,
                     source_ledger=LEDGER_FAILED if self.write_questdb else LEDGER_NOT_REQUESTED,
                 )
-            outcomes.append(classify_probe_result(probe))
+            outcome = classify_probe_result(probe)
+            outcomes.append(outcome)
+            if self.progress is not None:
+                self.progress.emit(
+                    "source_end",
+                    source_id=source_id,
+                    outcome=outcome.outcome,
+                    status=outcome.status or "-",
+                )
         return outcomes
 
     @property
@@ -897,12 +1150,27 @@ class ContextSourceSmokeRunner:
                 error_type=error_type,
                 message=message,
             )
-        if not any(mapping.active for mapping in recipient_mappings):
+        active_mappings = tuple(mapping for mapping in recipient_mappings if mapping.active)
+        if self.progress is not None:
+            self.progress.emit(
+                "usaspending_recipient_map",
+                recipient_map_path=base_config.recipient_map_path,
+                active_recipient_count=len(active_mappings),
+                timeout_seconds=f"{self.usaspending_timeout_seconds:.1f}",
+            )
+        budget = USAspendingSmokeBudget(
+            timeout_seconds=self.usaspending_timeout_seconds,
+            recipient_mappings=recipient_mappings,
+            progress=self.progress,
+            monotonic=self._monotonic,
+        )
+        if not active_mappings:
             if _usaspending_health_only_allowed(configs):
                 return self._probe_usaspending_health_only(
                     base_config=base_config,
                     client_class=USAspendingHTTPClient,
                     parse_last_updated=parse_source_last_updated_date,
+                    budget=budget,
                 )
             return _failed_probe(
                 "usaspending",
@@ -919,18 +1187,33 @@ class ContextSourceSmokeRunner:
                 checkpoint_path=_repo_relative(checkpoint_path, self.repo_root),
             )
             cache = ContextStateCache()
-            result = USAspendingCollector(
-                cache=cache,
-                config=config,
-                ledger_writer=self._ledger_writer,
-                recipient_mappings=recipient_mappings,
-            ).collect(
-                evaluation_time=evaluation_time,
-                write_questdb=self.write_questdb,
-                questdb_required=self.questdb_required,
-                run_id=self._run_id,
-                session_id=self._session_id,
+            client = InstrumentedUSAspendingSmokeClient(
+                inner=USAspendingHTTPClient(timeout_seconds=config.timeout_seconds),
+                budget=budget,
+                active_mappings=active_mappings,
             )
+            try:
+                result = USAspendingCollector(
+                    cache=cache,
+                    config=config,
+                    client=client,
+                    ledger_writer=self._ledger_writer,
+                    recipient_mappings=recipient_mappings,
+                ).collect(
+                    evaluation_time=evaluation_time,
+                    write_questdb=self.write_questdb,
+                    questdb_required=self.questdb_required,
+                    run_id=self._run_id,
+                    session_id=self._session_id,
+                )
+                budget.raise_if_timed_out()
+                budget.enter("parse_materialize")
+            except USAspendingSmokeTimeoutError as exc:
+                return _failed_probe(
+                    "usaspending",
+                    error_type="USAspendingSmokeTimeout",
+                    message=exc.safe_message(),
+                )
             return self._classify_materialized_result(
                 source_id="usaspending",
                 cache=cache,
@@ -960,10 +1243,21 @@ class ContextSourceSmokeRunner:
         base_config: object,
         client_class: Callable[..., object],
         parse_last_updated: Callable[[object], object],
+        budget: USAspendingSmokeBudget | None = None,
     ) -> ProbeResult:
         try:
             client = client_class(timeout_seconds=getattr(base_config, "timeout_seconds"))
+            if budget is not None:
+                budget.enter("health_check")
             payload = client.fetch_last_updated()
+            if budget is not None:
+                budget.check()
+        except USAspendingSmokeTimeoutError as exc:
+            return _failed_probe(
+                "usaspending",
+                error_type="USAspendingSmokeTimeout",
+                message=exc.safe_message(),
+            )
         except Exception as exc:  # noqa: BLE001 - safe script boundary.
             error_type, message = _safe_exception_diagnostic("usaspending", exc)
             return _failed_probe(
@@ -1205,14 +1499,24 @@ def main(
         return 2
 
     env_path = Path(args.env_file)
+    requested = None if args.source is None else tuple(dict.fromkeys(args.source))
+    progress = SmokeProgressReporter(stdout)
+    progress.emit("smoke_start")
+    progress.emit(
+        "selected_sources",
+        sources=",".join(SOURCE_IDS if requested is None else requested),
+    )
     env_loader(env_path)
+    progress.emit("env_file_loaded", env_file="redacted")
     runner = runner_factory(
         repo_root=REPO_ROOT,
         write_questdb=args.questdb,
         questdb_required=args.questdb,
+        progress=progress,
+        usaspending_timeout_seconds=args.usaspending_timeout_seconds,
     )
-    requested = None if args.source is None else tuple(dict.fromkeys(args.source))
     outcomes = runner.run(sources=requested)
+    progress.emit("smoke_end", total_elapsed_seconds=f"{progress.elapsed_seconds():.1f}")
     print(render_outcomes(outcomes), file=stdout)
     return aggregate_exit_code(outcomes, questdb_mode=args.questdb)
 
@@ -1320,6 +1624,18 @@ def _safe_message(message: str) -> str:
     if len(text) > _MAX_MESSAGE_LENGTH:
         return text[: _MAX_MESSAGE_LENGTH - 3] + "..."
     return text
+
+
+def _safe_progress_key(value: object) -> str:
+    text = re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
+    return text or "field"
+
+
+def _safe_progress_value(value: object) -> str:
+    text = _safe_message(str(value))
+    if not text:
+        return "-"
+    return re.sub(r"\s+", "_", text)
 
 
 if __name__ == "__main__":

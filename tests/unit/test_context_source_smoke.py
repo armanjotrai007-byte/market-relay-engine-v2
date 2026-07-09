@@ -529,6 +529,175 @@ def test_usaspending_mapped_no_awards_is_expected_no_data(
     assert outcome.error_type is None
 
 
+def test_usaspending_mapped_path_emits_progress_messages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import market_relay_engine.context.usaspending_collector as usaspending_module
+
+    configs = _repo_configs()
+    _enable_structured_source(configs, "usaspending")
+
+    class FakeUSAspendingHTTPClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = dict(kwargs)
+
+        def fetch_last_updated(self) -> dict[str, object]:
+            return {"last_updated": "2026-07-08"}
+
+        def search_spending_by_award(self, **kwargs: object) -> dict[str, object]:
+            return {"results": [], "page_metadata": {"hasNext": False}}
+
+        def fetch_award_detail(self, award_id: str) -> dict[str, object]:
+            raise AssertionError("no awards should not request detail")
+
+        def fetch_award_funding(self, award_id: str, *, limit: int) -> dict[str, object]:
+            raise AssertionError("no awards should not request funding")
+
+    monkeypatch.setattr(
+        usaspending_module,
+        "USAspendingHTTPClient",
+        FakeUSAspendingHTTPClient,
+    )
+    progress_stream = StringIO()
+    progress = smoke.SmokeProgressReporter(progress_stream)
+    with TemporaryDirectory(prefix=".tmp-smoke-usaspending-progress-", dir=REPO_ROOT) as temp_dir:
+        map_path = Path(temp_dir) / "recipient_map.yaml"
+        map_path.write_text(
+            "mapping_version: usaspending_recipient_map_v1\n"
+            "recipients:\n"
+            "  - recipient_uei: ABCDEF123456\n"
+            "    recipient_name: EXACT LEGAL NAME\n"
+            "    ticker: LMT\n"
+            "    issuer_name: Lockheed Martin Corporation\n"
+            "    mapping_confidence: confirmed\n"
+            "    economic_beneficiary: prime_recipient\n"
+            "    active: true\n"
+            "    mapping_version: usaspending_recipient_map_v1\n",
+            encoding="utf-8",
+        )
+        _set_usaspending_map_path(configs, map_path)
+        runner = smoke.ContextSourceSmokeRunner(repo_root=REPO_ROOT, progress=progress)
+        runner._load_configs = lambda: configs  # type: ignore[method-assign]
+
+        outcomes = runner.run(sources=("usaspending",))
+
+    rendered_progress = progress_stream.getvalue()
+    assert outcomes[0].outcome == smoke.EXPECTED_NO_DATA
+    assert "event=source_start source_id=usaspending" in rendered_progress
+    assert "event=usaspending_recipient_map" in rendered_progress
+    assert "active_recipient_count=1" in rendered_progress
+    assert "phase=health_check" in rendered_progress
+    assert "phase=award_search" in rendered_progress
+    assert "recipient_index=1" in rendered_progress
+    assert "recipient_total=1" in rendered_progress
+    assert "ticker=LMT" in rendered_progress
+    assert "recipient_uei=ABCDEF123456" in rendered_progress
+    assert "event=source_end source_id=usaspending outcome=EXPECTED_NO_DATA" in rendered_progress
+
+
+def test_usaspending_timeout_reports_current_phase_and_recipient(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import market_relay_engine.context.usaspending_collector as usaspending_module
+
+    configs = _repo_configs()
+    _enable_structured_source(configs, "usaspending")
+
+    class FakeUSAspendingHTTPClient:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = dict(kwargs)
+
+        def fetch_last_updated(self) -> dict[str, object]:
+            return {"last_updated": "2026-07-08"}
+
+        def search_spending_by_award(self, **kwargs: object) -> dict[str, object]:
+            raise AssertionError("budget should stop before the search request")
+
+    class StepClock:
+        def __init__(self) -> None:
+            self.values = [0.0, 0.0, 0.0, 1.0]
+
+        def __call__(self) -> float:
+            if self.values:
+                return self.values.pop(0)
+            return 1.0
+
+    monkeypatch.setattr(
+        usaspending_module,
+        "USAspendingHTTPClient",
+        FakeUSAspendingHTTPClient,
+    )
+    with TemporaryDirectory(prefix=".tmp-smoke-usaspending-timeout-", dir=REPO_ROOT) as temp_dir:
+        map_path = Path(temp_dir) / "recipient_map.yaml"
+        map_path.write_text(
+            "mapping_version: usaspending_recipient_map_v1\n"
+            "recipients:\n"
+            "  - recipient_uei: ABCDEF123456\n"
+            "    recipient_name: EXACT LEGAL NAME\n"
+            "    ticker: LMT\n"
+            "    issuer_name: Lockheed Martin Corporation\n"
+            "    mapping_confidence: confirmed\n"
+            "    economic_beneficiary: prime_recipient\n"
+            "    active: true\n"
+            "    mapping_version: usaspending_recipient_map_v1\n",
+            encoding="utf-8",
+        )
+        _set_usaspending_map_path(configs, map_path)
+        runner = smoke.ContextSourceSmokeRunner(
+            repo_root=REPO_ROOT,
+            usaspending_timeout_seconds=0.5,
+            monotonic=StepClock(),
+        )
+
+        result = runner._probe_usaspending(configs, FIXED_EVALUATION_TIME)
+    outcome = smoke.classify_probe_result(result)
+
+    assert outcome.outcome == smoke.FAILED
+    assert outcome.error_type == "USAspendingSmokeTimeout"
+    assert "phase=award_search" in outcome.message
+    assert "recipient=1/1" in outcome.message
+    assert "ticker=LMT" in outcome.message
+    assert "recipient_uei=ABCDEF123456" in outcome.message
+    assert "secret" not in outcome.message.lower()
+    assert "api_key" not in outcome.message
+
+
+def test_live_main_progress_redacts_env_file_values() -> None:
+    with TemporaryDirectory(prefix=".tmp-smoke-progress-", dir=REPO_ROOT) as temp_dir:
+        env_file = Path(temp_dir) / "server.env"
+        env_file.write_text("FRED_API_KEY=fake-secret-value\n", encoding="utf-8")
+        stdout = StringIO()
+
+        class FakeRunner:
+            def run(self, *, sources: tuple[str, ...] | None = None) -> list[smoke.SmokeOutcome]:
+                return [
+                    smoke.SmokeOutcome(
+                        source_id="fred",
+                        outcome=smoke.EXPECTED_NO_DATA,
+                        status="STALE",
+                        attempted=True,
+                    )
+                ]
+
+        code = smoke.main(
+            ["--live", "--env-file", str(env_file), "--source", "fred"],
+            env_loader=lambda path: None,
+            runner_factory=lambda **kwargs: FakeRunner(),  # type: ignore[arg-type]
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+
+    rendered = stdout.getvalue()
+    assert code == 0
+    assert "event=smoke_start" in rendered
+    assert "event=selected_sources sources=fred" in rendered
+    assert "event=env_file_loaded env_file=redacted" in rendered
+    assert "event=smoke_end total_elapsed_seconds=" in rendered
+    assert "fake-secret-value" not in rendered
+    assert "FRED_API_KEY" not in rendered
+    assert "api_key" not in rendered.lower()
+
+
 def test_source_issue_messages_are_actionable_and_redacted() -> None:
     eia_message = smoke._failure_message_from_issues(
         "eia_wpsr",
