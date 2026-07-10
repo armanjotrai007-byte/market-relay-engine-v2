@@ -197,8 +197,11 @@ class MacroCalendarConfig:
         cls,
         context_sources: Mapping[str, Any],
     ) -> "MacroCalendarConfig":
-        structured = _required_mapping(context_sources, "structured_sources")
-        source = _required_mapping(structured, "macro_calendar")
+        structured = _required_mapping(
+            context_sources.get("structured_sources"),
+            "structured_sources",
+        )
+        source = _required_mapping(structured.get("macro_calendar"), "macro_calendar")
         return cls(
             enabled=_bool(source.get("enabled", False), "macro_calendar.enabled"),
             artifact_path=_required_string(

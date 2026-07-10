@@ -481,6 +481,44 @@ def test_full_collection_publishes_exactly_ten_sector_records() -> None:
     assert all("inventory" not in entry.key.name and "utilization" not in entry.key.name for entry in ticker_entries)
 
 
+def test_numeric_probe_attempts_remote_routes_without_release_window_flags() -> None:
+    cache = ContextStateCache()
+    client = FakeClient()
+    result = EIAWPSRCollector(
+        cache=cache,
+        config=_config(),
+        client=client,
+    ).probe_numeric_source(evaluation_time=RELEASE_AT + timedelta(days=2))
+
+    assert result.status is EIAWPSRCollectionStatus.SUCCESS
+    assert client.calls == [STOCK_ROUTE, UTILIZATION_ROUTE]
+    assert result.context_flags == ()
+    assert result.ledger_write_results == ()
+    assert len(result.indicator_snapshots) == 10
+    assert cache.get_sector(
+        "OIL",
+        "eia_wpsr_v1:commercial_crude_inventory:weekly",
+        now=RELEASE_AT + timedelta(days=2),
+    ) is not None
+
+
+def test_numeric_probe_reports_no_fresh_data_only_after_route_attempts() -> None:
+    stocks = _records("weekly_stocks.json")
+    utilization = _records("refinery_utilization.json")
+    for record in stocks + utilization:
+        record["period"] = "2026-06-04" if record["period"] == "2026-06-12" else "2026-05-28"
+    client = FakeClient(stocks=stocks, utilization=utilization)
+    result = EIAWPSRCollector(
+        cache=ContextStateCache(),
+        config=_config(),
+        client=client,
+    ).probe_numeric_source(evaluation_time=RELEASE_AT + timedelta(seconds=30))
+
+    assert result.status is EIAWPSRCollectionStatus.NO_FRESH_DATA
+    assert client.calls == [STOCK_ROUTE, UTILIZATION_ROUTE]
+    assert result.indicator_snapshots == ()
+
+
 def test_release_window_and_numeric_snapshots_emit_provenance_policy() -> None:
     cache = ContextStateCache()
     release = _release()

@@ -2,17 +2,17 @@
 
 PR 2 organizes the Trading System V2 configuration files under `config/`.
 
-Each file is safe to validate locally without internet access, API keys, broker access, QuestDB, or live market data.
+Each file is safe to load locally without broker access, QuestDB writes, or live market data. Enabled online context sources still require their referenced environment variables and should be validated with the focused source-smoke tools, not by committing secrets.
 
 ## Files
 
 - `symbols.yaml` defines example tradable symbols and separate context symbols. Example tradable symbols are not approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
-- `context_sources.yaml` defines structured and unstructured context source settings. All sources are disabled by default, and `yfinance_dev_only` is explicitly development-only.
+- `context_sources.yaml` defines structured and unstructured context source settings. Built structured sources are allowed to be enabled for functional connectivity, and `yfinance_dev_only` is explicitly development-only and not production-critical.
 - `risk_limits.yaml` defines placeholder paper-trading risk limits. These are not optimized live settings.
 - `questdb.yaml` defines QuestDB connection and health-check defaults and confirms QuestDB is for the bot ledger only, not a historical market-data warehouse.
 - `model_config.yaml` defines placeholder feature, model, calibration, horizon, and label settings. It does not load or train a model.
-- `calendar_events.yaml` defines empty scheduled event windows used as future risk flags, not trade signals.
-- `execution.yaml` defines future execution defaults. Alpaca is disabled by default, paper-only, and cannot place live orders without manual config changes in a future PR.
+- `calendar_events.yaml` defines reviewed scheduled event windows used as future risk flags, not trade signals.
+- `execution.yaml` defines execution defaults. Alpaca may be enabled only in paper-only mode and cannot place live orders without explicit live-trading authorization.
 
 ## Local Validation
 
@@ -31,21 +31,22 @@ The same commands should be run on the separate trading laptop after it pulls fr
 
 ## Safety Rules
 
-- External sources are disabled by default.
+- Online structured context/source connectivity is allowed when configuration is complete.
 - Slow collectors must not run in the per-tick decision loop.
 - AI context output has no direct trade authority.
-- Live trading is disabled by default.
+- Live trading is disabled by default and Alpaca remains paper-only.
 - QuestDB is a bot ledger only.
+- Per-tick/per-signal decisions must read context from in-memory cache, not QuestDB.
 - No V1 raw market-data table names belong in V2 config files.
 
 ## YFinance Development Proxy
 
-`structured_sources.yfinance_dev_only` is a PR25 development-only collector source. It is disabled by default, not production critical, and not used in the per-tick loop.
+`structured_sources.yfinance_dev_only` is a PR25 development-only collector source. It may be enabled for source connectivity, but it is not production critical and is not used in the per-tick loop.
 
 Required settings:
 
 ```yaml
-enabled: false
+enabled: true
 development_only: true
 production_critical: false
 feeds_memory_cache: true

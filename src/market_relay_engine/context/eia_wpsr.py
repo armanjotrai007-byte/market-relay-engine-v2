@@ -403,6 +403,20 @@ def plan_eia_wpsr_action(
     return _plan(release, EIAWPSRActionKind.NO_ACTION, None, delayed_due, EIAWPSRDataStatus.DATA_DELAYED)
 
 
+def _probe_release_index(releases: Sequence[EIARelease], evaluation_time: datetime) -> int:
+    now = ensure_timezone_aware_utc(evaluation_time)
+    ordered = tuple(releases)
+    _validate_release_order(ordered)
+    if not ordered:
+        raise EIAWPSRError("numeric EIA probe requires at least one release")
+    prior_or_current = [
+        index for index, release in enumerate(ordered) if release.release_at <= now
+    ]
+    if prior_or_current:
+        return prior_or_current[-1]
+    return 0
+
+
 class EIAWPSRCollector:
     def __init__(
         self,
@@ -495,6 +509,103 @@ class EIAWPSRCollector:
         release_index = next((index for index, item in enumerate(self.config.releases) if item.release_id == plan.release_id), None)
         if release_index is None:
             raise EIAWPSRError("action plan release is absent from configuration")
+        return self._collect_numeric_report(
+            now=now,
+            plan=plan,
+            release_index=release_index,
+            flags=flags,
+            snapshots=snapshots,
+            cache_results=cache_results,
+            ledger_results=ledger_results,
+            issues=issues,
+            write_questdb=write_questdb,
+            questdb_required=questdb_required,
+            run_id=run_id,
+            session_id=session_id,
+        )
+
+    def probe_numeric_source(
+        self,
+        *,
+        evaluation_time: datetime | None = None,
+        write_questdb: bool = False,
+        questdb_required: bool = False,
+        run_id: str | None = None,
+        session_id: str | None = None,
+    ) -> EIAWPSRCollectionResult:
+        """Read-only numeric EIA probe that always attempts the bounded source routes."""
+        if write_questdb and questdb_required and self.ledger_writer is None:
+            raise EIAWPSRError("QuestDB writes are required but no writer was provided")
+        now = ensure_timezone_aware_utc(evaluation_time or self.clock())
+        if not self.config.numeric_source_enabled:
+            plan = plan_eia_wpsr_action(
+                releases=self.config.releases,
+                evaluation_time=now,
+                last_numeric_attempt_at=None,
+                last_successful_report_period=None,
+            )
+            return EIAWPSRCollectionResult(
+                status=EIAWPSRCollectionStatus.DISABLED,
+                action_plan=plan,
+                expected_report_period=plan.expected_report_period,
+                last_seen_report_period=None,
+                next_retry_at=None,
+                data_status=plan.data_status,
+            )
+        if not self.config.releases:
+            raise EIAWPSRError("enabled numeric EIA probe requires reviewed releases")
+        release_index = _probe_release_index(self.config.releases, now)
+        release = self.config.releases[release_index]
+        next_release = (
+            self.config.releases[release_index + 1]
+            if release_index + 1 < len(self.config.releases)
+            else None
+        )
+        data_status = (
+            EIAWPSRDataStatus.DATA_DELAYED
+            if now > release.fast_retry_end
+            else EIAWPSRDataStatus.WAITING_FOR_DATA
+        )
+        plan = EIAWPSRActionPlan(
+            release_id=release.release_id,
+            action_kind=EIAWPSRActionKind.FETCH_NUMERIC_REPORT,
+            due_at=now,
+            next_action_at=now,
+            expected_report_period=release.report_period,
+            data_status=data_status,
+            next_release_id=None if next_release is None else next_release.release_id,
+        )
+        return self._collect_numeric_report(
+            now=now,
+            plan=plan,
+            release_index=release_index,
+            flags=[],
+            snapshots=[],
+            cache_results=[],
+            ledger_results=[],
+            issues=[],
+            write_questdb=write_questdb,
+            questdb_required=questdb_required,
+            run_id=run_id,
+            session_id=session_id,
+        )
+
+    def _collect_numeric_report(
+        self,
+        *,
+        now: datetime,
+        plan: EIAWPSRActionPlan,
+        release_index: int,
+        flags: list[ContextFlag],
+        snapshots: list[ContextIndicatorSnapshot],
+        cache_results: list[ContextStateUpdateResult],
+        ledger_results: list[object],
+        issues: list[EIAWPSRIssue],
+        write_questdb: bool,
+        questdb_required: bool,
+        run_id: str | None,
+        session_id: str | None,
+    ) -> EIAWPSRCollectionResult:
         release = self.config.releases[release_index]
         next_release = self.config.releases[release_index + 1] if release_index + 1 < len(self.config.releases) else None
         valid_until = next_release.release_at if next_release is not None else release.release_at + timedelta(seconds=self.config.max_staleness_seconds)

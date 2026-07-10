@@ -20,8 +20,9 @@ alignment only and does not guess historical publication times.
 
 ## Reviewed runtime schedule
 
-`config/calendar_events.yaml` is runtime authority. It remains disabled and has
-no tracked real-world releases by default. Each reviewed release has:
+`config/calendar_events.yaml` is runtime authority. PR33 may commit reviewed
+runtime release windows for functional context-source validation. Each reviewed
+release has:
 
 ```yaml
 - release_id: eia_wpsr_YYYY_MM_DD

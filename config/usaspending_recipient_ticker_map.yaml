@@ -1,2 +1,90 @@
 mapping_version: usaspending_recipient_map_v1
-recipients: []
+recipients:
+  - recipient_uei: "G4KDGE4JFFK7"
+    recipient_name: "LOCKHEED MARTIN CORPORATION"
+    ticker: "LMT"
+    issuer_name: "Lockheed Martin Corporation"
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "XFJMYSYFJEK4"
+    recipient_name: "LOCKHEED MARTIN CORPORATION"
+    ticker: "LMT"
+    issuer_name: "Lockheed Martin Corporation"
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "MZK8TCNF24G2"
+    recipient_name: "RAYTHEON COMPANY"
+    ticker: "RTX"
+    issuer_name: "RTX Corporation"
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "J4Q3HP6NHK47"
+    recipient_name: "ROCKWELL COLLINS, INC."
+    ticker: "RTX"
+    issuer_name: "RTX Corporation"
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "SMNWM6HN79X5"
+    recipient_name: "GENERAL DYNAMICS INFORMATION TECHNOLOGY, INC."
+    ticker: "GD"
+    issuer_name: "General Dynamics Corporation"
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "E7BEKJ4V9528"
+    recipient_name: "ELECTRIC BOAT CORPORATION"
+    ticker: "GD"
+    issuer_name: "General Dynamics Corporation"
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "HAWKSQF848W7"
+    recipient_name: "GENERAL DYNAMICS LAND SYSTEMS INC."
+    ticker: "GD"
+    issuer_name: "General Dynamics Corporation"
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "MWKWXVSSC518"
+    recipient_name: "AEROVIRONMENT, INC"
+    ticker: "AVAV"
+    issuer_name: "AeroVironment, Inc."
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "YJG1MDHLBC88"
+    recipient_name: "AEROVIRONMENT, INC."
+    ticker: "AVAV"
+    issuer_name: "AeroVironment, Inc."
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "HNN4F9JZWDY8"
+    recipient_name: "PALANTIR USG INC"
+    ticker: "PLTR"
+    issuer_name: "Palantir Technologies Inc."
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1
+  - recipient_uei: "FSY4LVSBGWB7"
+    recipient_name: "PALANTIR TECHNOLOGIES INC."
+    ticker: "PLTR"
+    issuer_name: "Palantir Technologies Inc."
+    mapping_confidence: confirmed
+    economic_beneficiary: prime_recipient
+    active: true
+    mapping_version: usaspending_recipient_map_v1

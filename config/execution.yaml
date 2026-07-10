@@ -4,7 +4,7 @@ metadata:
 
 broker:
   name: alpaca
-  enabled: false
+  enabled: true
   paper_trading_only: true
   live_trading_enabled: false
   api_key_env: ALPACA_API_KEY

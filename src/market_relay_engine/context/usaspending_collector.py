@@ -223,11 +223,12 @@ class USAspendingRecipientMapping:
     mapping_version: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "recipient_uei",
-            _required_string(self.recipient_uei, "recipient_uei"),
-        )
+        recipient_uei = _required_string(self.recipient_uei, "recipient_uei").upper()
+        if not re.fullmatch(r"[A-Z0-9]{12}", recipient_uei):
+            raise USAspendingCollectorError(
+                "recipient_uei must be a 12-character uppercase alphanumeric UEI"
+            )
+        object.__setattr__(self, "recipient_uei", recipient_uei)
         object.__setattr__(
             self,
             "recipient_name",
