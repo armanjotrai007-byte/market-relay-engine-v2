@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import math
 from pathlib import Path
@@ -9,9 +10,18 @@ import requests
 
 from market_relay_engine.contracts.context import (
     ContextAIEvent,
+    ContextClassificationEventType,
+    ContextClassificationRequest,
+    ContextClassificationResponse,
+    ContextClassificationStatus,
     ContextFlag,
     ContextIndicatorSnapshot,
+    ContextRiskLevel,
     ContextStateSnapshot,
+    ContextUrgency,
+    ContextValidationResult,
+    ShadowContextAction,
+    ShadowContextPolicyEvaluation,
 )
 from market_relay_engine.contracts.execution import (
     FillEvent,
@@ -27,11 +37,14 @@ from market_relay_engine.contracts.risk import RiskDecision, RiskDecisionType
 from market_relay_engine.contracts.system import SystemHealthEvent
 from market_relay_engine.market_data.cost_model import estimate_cost_from_expected_move
 from market_relay_engine.questdb.writer import (
+    ALLOWED_LEDGER_TABLES,
+    TABLE_COLUMNS,
     QuestDBLedgerWriter,
     QuestDBWriteConfig,
     QuestDBWriteError,
     build_insert_sql,
     context_ai_event_to_row,
+    context_classification_attempt_to_row,
     context_flag_to_row,
     context_indicator_snapshot_to_row,
     context_state_snapshot_to_row,
@@ -45,6 +58,7 @@ from market_relay_engine.questdb.writer import (
     order_event_to_row,
     risk_decision_to_row,
     sanitize_sql_string,
+    shadow_context_policy_evaluation_to_row,
     sql_literal,
     system_health_event_to_row,
     timestamp_sql_literal,
@@ -518,7 +532,7 @@ def test_context_records_map_to_context_rows() -> None:
         source="ai",
         source_id="source_1",
         affected_tickers=["XOM"],
-        event_type="headline",
+        event_type=ContextClassificationEventType.OTHER,
         summary="Fed's headline",
     )
     flag = ContextFlag(
@@ -533,9 +547,252 @@ def test_context_records_map_to_context_rows() -> None:
     indicator_row = context_indicator_snapshot_to_row(indicator)
     assert indicator_row["value_json"] == '{"summary":"Fed\'s"}'
     assert indicator_row["details_json"] == '{"nested":{"verified":true},"release_id":"release_1"}'
-    assert context_ai_event_to_row(ai_event)["context_event_id"] == ai_event.context_event_id
-    assert context_flag_to_row(flag)["context_flag_id"] == flag.context_flag_id
+    ai_event_row = context_ai_event_to_row(ai_event)
+    flag_row = context_flag_to_row(flag)
+    assert tuple(ai_event_row) == TABLE_COLUMNS["context_ai_events"]
+    assert ai_event_row["context_event_id"] == ai_event.context_event_id
+    assert ai_event_row["event_type"] == "OTHER"
+    assert tuple(flag_row) == TABLE_COLUMNS["context_flags"]
+    assert flag_row["context_flag_id"] == flag.context_flag_id
+    assert flag_row["reason_codes_json"] == "[]"
     assert context_state_snapshot_to_row(state)["context_snapshot_id"] == state.context_snapshot_id
+
+
+def test_phase7_ledger_table_columns_are_exact_and_metadata_only() -> None:
+    assert TABLE_COLUMNS["context_classification_attempts"] == tuple(
+        "requested_at write_time classification_attempt_id classification_request_id "
+        "raw_input_id source_document_id source source_type source_platform source_uri "
+        "source_locator affected_tickers_json raw_input_hash document_hash "
+        "source_published_at source_updated_at collected_at normalized_at classified_at provider "
+        "model_version prompt_version status event_type risk_level urgency confidence "
+        "summary validation_result_id validation_outcome validation_reason_codes_json "
+        "validator_version validated_at provider_latency_ms safe_failure_category "
+        "safe_failure_summary run_id session_id schema_version trace_id".split()
+    )
+    assert TABLE_COLUMNS["shadow_context_policy_evaluations"] == tuple(
+        "decision_evaluation_time write_time shadow_evaluation_id model_signal_id risk_decision_id "
+        "matched_context_event_ids_json matched_context_flag_ids_json "
+        "shadow_context_fingerprint policy_version policy_config_hash hypothetical_action "
+        "proposed_size_factor reason_codes_json run_id session_id schema_version trace_id".split()
+    )
+    assert ALLOWED_LEDGER_TABLES[-9:-7] == (
+        "context_classification_attempts",
+        "shadow_context_policy_evaluations",
+    )
+    forbidden = {
+        "input_text",
+        "prompt_text",
+        "raw_text",
+        "document_body",
+        "exception",
+        "traceback",
+        "secret",
+        "credential",
+    }
+    for table_name in (
+        "context_ai_events",
+        "context_flags",
+        "context_classification_attempts",
+        "shadow_context_policy_evaluations",
+    ):
+        assert not forbidden.intersection(TABLE_COLUMNS[table_name])
+
+
+def test_context_classification_attempt_maps_trusted_metadata_and_enum_values() -> None:
+    request, response, validation = _classification_records()
+
+    row = context_classification_attempt_to_row(
+        request,
+        response,
+        validation_result=validation,
+        run_id="run_1",
+        session_id="session_1",
+        write_time=EXAMPLE_TIME,
+    )
+
+    assert tuple(row) == TABLE_COLUMNS["context_classification_attempts"]
+    assert row["classification_attempt_id"] == response.classification_attempt_id
+    assert row["write_time"] == EXAMPLE_TIME
+    assert row["classification_request_id"] == request.classification_request_id
+    assert row["affected_tickers_json"] == '["XOM","CVX"]'
+    assert row["status"] == "VALID"
+    assert row["event_type"] == "SEC_8K_RESULTS"
+    assert row["risk_level"] == "MEDIUM"
+    assert row["urgency"] == "HIGH"
+    assert row["validation_outcome"] is True
+    assert row["validation_reason_codes_json"] == "[]"
+    assert row["provider_latency_ms"] == 125.5
+    assert row["safe_failure_category"] is None
+    assert row["safe_failure_summary"] is None
+    assert row["trace_id"] == "trace_phase7"
+    assert "input_text" not in row
+    assert "safe_detail" not in row
+    assert "exception" not in row
+    assert "traceback" not in row
+
+
+def test_context_classification_attempt_without_validation_uses_null_metadata() -> None:
+    request, response, _ = _classification_records()
+
+    row = context_classification_attempt_to_row(request, response)
+
+    assert row["validation_result_id"] is None
+    assert row["validation_outcome"] is None
+    assert row["validation_reason_codes_json"] is None
+    assert row["validator_version"] is None
+    assert row["validated_at"] is None
+
+
+def test_provider_failure_row_keeps_only_safe_failure_fields() -> None:
+    request, _, _ = _classification_records()
+    response = ContextClassificationResponse(
+        classification_request_id=request.classification_request_id,
+        classified_at=EXAMPLE_TIME,
+        provider="gemini",
+        model_version="gemini-model-v1",
+        prompt_version=request.prompt_version,
+        status=ContextClassificationStatus.PROVIDER_FAILED,
+        provider_latency_ms=200.0,
+        safe_failure_category="timeout",
+        safe_failure_summary="Provider timed out before a response was available.",
+        trace_id=request.trace_id,
+    )
+
+    row = context_classification_attempt_to_row(request, response)
+
+    assert row["safe_failure_category"] == "timeout"
+    assert row["safe_failure_summary"] == "Provider timed out before a response was available."
+    assert row["status"] == "PROVIDER_FAILED"
+    assert row["event_type"] == "UNKNOWN"
+    assert row["confidence"] is None
+    assert not {"exception", "traceback", "raw_provider_response"}.intersection(row)
+
+
+@pytest.mark.parametrize(
+    ("response_change", "validation_change", "match"),
+    [
+        ({"classification_request_id": "classification_request_other"}, {}, "response.classification_request_id"),
+        ({"prompt_version": "prompt_other"}, {}, "response.prompt_version"),
+        ({}, {"classification_request_id": "classification_request_other"}, "validation_result.classification_request_id"),
+        ({}, {"classification_attempt_id": "classification_attempt_other"}, "validation_result.classification_attempt_id"),
+        ({"trace_id": "trace_other"}, {}, "trace_id values must match"),
+    ],
+)
+def test_context_classification_attempt_rejects_cross_record_mismatches(
+    response_change: dict[str, object],
+    validation_change: dict[str, object],
+    match: str,
+) -> None:
+    request, response, validation = _classification_records()
+
+    with pytest.raises(QuestDBWriteError, match=match):
+        context_classification_attempt_to_row(
+            request,
+            replace(response, **response_change),
+            validation_result=replace(validation, **validation_change),
+        )
+
+
+def test_shadow_context_policy_evaluation_maps_json_and_enum_values() -> None:
+    evaluation = ShadowContextPolicyEvaluation(
+        model_signal_id="signal_1",
+        risk_decision_id="risk_1",
+        decision_evaluation_time=EXAMPLE_TIME,
+        matched_context_event_ids=["event_1", "event_2"],
+        matched_context_flag_ids=["flag_1"],
+        shadow_context_fingerprint="c" * 64,
+        policy_version="shadow_policy_v1",
+        policy_config_hash="d" * 64,
+        hypothetical_action=ShadowContextAction.REDUCE_SIZE,
+        proposed_size_factor=0.5,
+        reason_codes=["high_context_risk"],
+        trace_id="trace_phase7",
+    )
+
+    row = shadow_context_policy_evaluation_to_row(
+        evaluation,
+        run_id="run_1",
+        session_id="session_1",
+        write_time=EXAMPLE_TIME,
+    )
+
+    assert tuple(row) == TABLE_COLUMNS["shadow_context_policy_evaluations"]
+    assert row["matched_context_event_ids_json"] == '["event_1","event_2"]'
+    assert row["write_time"] == EXAMPLE_TIME
+    assert row["matched_context_flag_ids_json"] == '["flag_1"]'
+    assert row["hypothetical_action"] == "REDUCE_SIZE"
+    assert row["proposed_size_factor"] == 0.5
+    assert row["reason_codes_json"] == '["high_context_risk"]'
+
+
+def test_phase7_writer_convenience_methods_use_canonical_mappers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = QuestDBLedgerWriter(QuestDBWriteConfig())
+    captured: list[tuple[str, dict[str, object]]] = []
+
+    def fake_write_row(table_name: str, row: dict[str, object]) -> str:
+        captured.append((table_name, row))
+        return "written"
+
+    monkeypatch.setattr(writer, "write_row", fake_write_row)
+    request, response, validation = _classification_records()
+    ai_event = ContextAIEvent(
+        event_time=EXAMPLE_TIME,
+        source="sec_edgar",
+        source_id="accession:writer-test",
+        affected_tickers=["XOM"],
+        event_type=ContextClassificationEventType.OTHER,
+    )
+    evaluation = ShadowContextPolicyEvaluation(
+        model_signal_id="signal_1",
+        decision_evaluation_time=EXAMPLE_TIME,
+        shadow_context_fingerprint="c" * 64,
+        policy_version="shadow_policy_v1",
+        policy_config_hash="d" * 64,
+        hypothetical_action=ShadowContextAction.NO_CHANGE,
+    )
+
+    assert writer.write_context_ai_event(ai_event) == "written"
+    assert writer.write_context_classification_attempt(
+        request,
+        response,
+        validation,
+        write_time=EXAMPLE_TIME,
+    ) == "written"
+    assert writer.write_shadow_context_policy_evaluation(
+        evaluation,
+        write_time=EXAMPLE_TIME,
+    ) == "written"
+    assert captured[0] == ("context_ai_events", context_ai_event_to_row(ai_event))
+    assert captured[1] == (
+        "context_classification_attempts",
+        context_classification_attempt_to_row(
+            request,
+            response,
+            validation_result=validation,
+            write_time=EXAMPLE_TIME,
+        ),
+    )
+    assert captured[2] == (
+        "shadow_context_policy_evaluations",
+        shadow_context_policy_evaluation_to_row(
+            evaluation,
+            write_time=EXAMPLE_TIME,
+        ),
+    )
+
+
+def test_phase7_ledger_rejects_unknown_raw_text_columns() -> None:
+    for table_name, timestamp_column in (
+        ("context_classification_attempts", "requested_at"),
+        ("shadow_context_policy_evaluations", "decision_evaluation_time"),
+    ):
+        with pytest.raises(QuestDBWriteError, match="unknown columns"):
+            build_insert_sql(
+                table_name,
+                {timestamp_column: EXAMPLE_TIME, "input_text": "must remain in memory"},
+            )
 
 
 def test_context_indicator_details_column_is_allowed_and_unknown_columns_rejected() -> None:
@@ -665,6 +922,57 @@ def test_context_state_snapshot_contract_rejects_bad_values() -> None:
         )
     with pytest.raises(ValueError, match="ticker"):
         ContextStateSnapshot(snapshot_time=EXAMPLE_TIME, ticker="")
+
+
+def _classification_records() -> tuple[
+    ContextClassificationRequest,
+    ContextClassificationResponse,
+    ContextValidationResult,
+]:
+    request = ContextClassificationRequest(
+        requested_at=EXAMPLE_TIME,
+        source="sec_edgar",
+        source_type="sec_filing",
+        source_platform="sec_edgar",
+        source_uri="https://www.sec.gov/Archives/example",
+        source_locator="accession:0000000000-26-000001",
+        raw_input_id="raw_input_1",
+        source_document_id="source_document_1",
+        raw_input_hash="a" * 64,
+        document_hash="b" * 64,
+        affected_tickers=["XOM", "CVX"],
+        input_text="Bounded filing excerpt for in-memory classification only.",
+        prompt_version="context_prompt_v1",
+        collected_at=EXAMPLE_TIME,
+        normalized_at=EXAMPLE_TIME,
+        source_published_at=EXAMPLE_TIME,
+        trace_id="trace_phase7",
+    )
+    response = ContextClassificationResponse(
+        classification_request_id=request.classification_request_id,
+        classified_at=EXAMPLE_TIME,
+        provider="gemini",
+        model_version="gemini-model-v1",
+        prompt_version=request.prompt_version,
+        status=ContextClassificationStatus.VALID,
+        provider_latency_ms=125.5,
+        event_type=ContextClassificationEventType.SEC_8K_RESULTS,
+        risk_level=ContextRiskLevel.MEDIUM,
+        urgency=ContextUrgency.HIGH,
+        confidence=0.75,
+        summary="Issuer reported material financial results.",
+        trace_id=request.trace_id,
+    )
+    validation = ContextValidationResult(
+        classification_request_id=request.classification_request_id,
+        classification_attempt_id=response.classification_attempt_id,
+        validation_outcome=True,
+        reason_codes=[],
+        validator_version="context_validator_v1",
+        validated_at=EXAMPLE_TIME,
+        trace_id=request.trace_id,
+    )
+    return request, response, validation
 
 
 def _feature_snapshot() -> FeatureSnapshot:

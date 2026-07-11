@@ -2,9 +2,11 @@ from pathlib import Path
 from copy import deepcopy
 
 from market_relay_engine.common.config import EXPECTED_CONFIG_FILES, load_all_configs
+from market_relay_engine.questdb.writer import ALLOWED_LEDGER_TABLES
 from scripts.check_config import (
     FORBIDDEN_V1_TERMS,
     _check_context_sources,
+    _check_questdb_role,
     _check_trading_defaults,
     _find_forbidden_v1_terms,
     _find_secret_issues,
@@ -34,7 +36,23 @@ def test_questdb_config_is_ledger_only_not_market_warehouse() -> None:
     assert questdb["metadata"]["questdb_role"] == "bot_ledger_only"
     assert questdb["metadata"]["not_market_data_warehouse"] is True
     assert "historical_databento_market_warehouse" in questdb["forbidden_uses"]
-    assert "model_signals" in questdb["ledger_tables"]
+    assert questdb["ledger_tables"] == list(ALLOWED_LEDGER_TABLES)
+    assert "context_classification_attempts" in questdb["ledger_tables"]
+    assert "shadow_context_policy_evaluations" in questdb["ledger_tables"]
+
+
+def test_questdb_config_table_order_must_match_writer_exactly() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    configs["questdb"]["ledger_tables"] = list(
+        reversed(configs["questdb"]["ledger_tables"])
+    )
+
+    issues = _check_questdb_role(configs)
+
+    assert (
+        "QuestDB ledger_tables must exactly match writer ALLOWED_LEDGER_TABLES order"
+        in issues
+    )
 
 
 def test_execution_defaults_to_paper_only_broker_without_live_trading() -> None:

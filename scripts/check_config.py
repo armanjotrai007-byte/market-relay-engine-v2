@@ -32,6 +32,7 @@ from market_relay_engine.context.usaspending_collector import (  # noqa: E402
     load_recipient_mappings,
 )
 from market_relay_engine.context.yfinance_proxy import YFinanceProxyConfig, build_proxy_registry  # noqa: E402
+from market_relay_engine.questdb.writer import ALLOWED_LEDGER_TABLES  # noqa: E402
 
 FORBIDDEN_V1_TERMS = (
     "use_for_v1_writes",
@@ -298,7 +299,8 @@ def _check_questdb_role(configs: dict[str, dict[str, Any]]) -> list[str]:
     issues: list[str] = []
     questdb = configs["questdb"]
     metadata = questdb["metadata"]
-    ledger_tables = set(questdb["ledger_tables"])
+    configured_tables = questdb["ledger_tables"]
+    ledger_tables = set(configured_tables)
 
     if metadata.get("questdb_role") != "bot_ledger_only":
         issues.append("QuestDB role must be bot_ledger_only")
@@ -307,6 +309,10 @@ def _check_questdb_role(configs: dict[str, dict[str, Any]]) -> list[str]:
     forbidden_tables = ledger_tables.intersection(FORBIDDEN_V1_TERMS)
     if forbidden_tables:
         issues.append(f"QuestDB ledger tables include forbidden V1 names: {sorted(forbidden_tables)}")
+    if configured_tables != list(ALLOWED_LEDGER_TABLES):
+        issues.append(
+            "QuestDB ledger_tables must exactly match writer ALLOWED_LEDGER_TABLES order"
+        )
 
     return issues
 
