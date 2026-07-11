@@ -21,9 +21,20 @@ from market_relay_engine.common.serialization import (  # noqa: E402
 )
 from market_relay_engine.contracts.context import (  # noqa: E402
     ContextAIEvent,
+    ContextClassificationEventType,
+    ContextClassificationRequest,
+    ContextClassificationResponse,
+    ContextClassificationStatus,
     ContextFlag,
     ContextIndicatorSnapshot,
+    ContextRawInput,
+    ContextRiskLevel,
+    ContextSourceDocument,
     ContextStateSnapshot,
+    ContextUrgency,
+    ContextValidationResult,
+    ShadowContextAction,
+    ShadowContextPolicyEvaluation,
 )
 from market_relay_engine.contracts.execution import (  # noqa: E402
     FillEvent,
@@ -44,7 +55,7 @@ EXAMPLE_TIME = datetime(2026, 5, 18, 14, 30, 0, tzinfo=UTC)
 
 
 def build_contract_examples() -> list[Any]:
-    """Return one representative instance of every PR 3 contract."""
+    """Return one representative instance of every current contract."""
     trace_id = new_trace_id()
     feature_snapshot = FeatureSnapshot(
         snapshot_time=EXAMPLE_TIME,
@@ -119,6 +130,86 @@ def build_contract_examples() -> list[Any]:
         broker_status="filled",
         trace_id=trace_id,
     )
+    raw_input = ContextRawInput(
+        source="manual_test_source",
+        source_type="local_document",
+        source_locator="inbox/example.json",
+        source_uri="https://example.invalid/source/1",
+        raw_input_hash="a" * 64,
+        affected_tickers=["XOM"],
+        source_published_at=EXAMPLE_TIME - timedelta(minutes=5),
+        collected_at=EXAMPLE_TIME,
+        trace_id=trace_id,
+    )
+    source_document = ContextSourceDocument(
+        raw_input_id=raw_input.raw_input_id,
+        source=raw_input.source,
+        source_type=raw_input.source_type,
+        source_locator=raw_input.source_locator,
+        source_uri=raw_input.source_uri,
+        raw_input_hash=raw_input.raw_input_hash,
+        document_hash="b" * 64,
+        affected_tickers=["XOM"],
+        source_published_at=raw_input.source_published_at,
+        collected_at=raw_input.collected_at,
+        normalized_at=EXAMPLE_TIME + timedelta(seconds=1),
+        trace_id=trace_id,
+    )
+    classification_request = ContextClassificationRequest(
+        requested_at=EXAMPLE_TIME + timedelta(seconds=2),
+        source=source_document.source,
+        source_type=source_document.source_type,
+        source_locator=source_document.source_locator,
+        source_uri=source_document.source_uri,
+        raw_input_id=source_document.raw_input_id,
+        source_document_id=source_document.source_document_id,
+        raw_input_hash=source_document.raw_input_hash,
+        document_hash=source_document.document_hash,
+        affected_tickers=["XOM"],
+        input_text="Bounded example excerpt.",
+        prompt_version="context_prompt_v1",
+        source_published_at=source_document.source_published_at,
+        collected_at=source_document.collected_at,
+        normalized_at=source_document.normalized_at,
+        trace_id=trace_id,
+    )
+    classification_response = ContextClassificationResponse(
+        classification_request_id=classification_request.classification_request_id,
+        classified_at=EXAMPLE_TIME + timedelta(seconds=3),
+        provider="provider_placeholder",
+        model_version="model_placeholder",
+        prompt_version=classification_request.prompt_version,
+        status=ContextClassificationStatus.VALID,
+        provider_latency_ms=125.0,
+        event_type=ContextClassificationEventType.SEC_8K_RESULTS,
+        risk_level=ContextRiskLevel.MEDIUM,
+        urgency=ContextUrgency.MEDIUM,
+        confidence=0.7,
+        summary="Example structured context event.",
+        trace_id=trace_id,
+    )
+    validation_result = ContextValidationResult(
+        classification_request_id=classification_request.classification_request_id,
+        classification_attempt_id=classification_response.classification_attempt_id,
+        validation_outcome=True,
+        reason_codes=[],
+        validator_version="context_validator_v1",
+        validated_at=EXAMPLE_TIME + timedelta(seconds=4),
+        trace_id=trace_id,
+    )
+    shadow_evaluation = ShadowContextPolicyEvaluation(
+        model_signal_id=model_signal.signal_id,
+        risk_decision_id=risk_decision.risk_decision_id,
+        decision_evaluation_time=EXAMPLE_TIME + timedelta(seconds=5),
+        matched_context_event_ids=["context_event_example"],
+        matched_context_flag_ids=["context_flag_example"],
+        shadow_context_fingerprint="c" * 64,
+        policy_version="shadow_policy_v1",
+        policy_config_hash="d" * 64,
+        hypothetical_action=ShadowContextAction.WARN_ONLY,
+        reason_codes=["EXAMPLE_ONLY"],
+        trace_id=trace_id,
+    )
 
     return [
         MarketRecord(
@@ -153,23 +244,38 @@ def build_contract_examples() -> list[Any]:
             source_event_time=EXAMPLE_TIME,
             trace_id=trace_id,
         ),
+        raw_input,
+        source_document,
+        classification_request,
+        classification_response,
+        validation_result,
         ContextAIEvent(
             event_time=EXAMPLE_TIME,
             source="ai_context_filter",
             source_id="example_article_1",
             affected_tickers=["XOM"],
             affected_sector="oil",
-            event_type="headline",
+            event_type=classification_response.event_type,
             sentiment="neutral",
-            urgency="low",
-            risk_level="normal",
+            urgency=classification_response.urgency,
+            risk_level=classification_response.risk_level,
             confidence=0.7,
             valid_from=EXAMPLE_TIME,
             valid_until=EXAMPLE_TIME + timedelta(minutes=30),
             summary="Example structured context event.",
             prompt_version="context_filter_v1",
             model_version="model_placeholder",
-            raw_input_hash="abc123",
+            raw_input_hash=classification_request.raw_input_hash,
+            raw_input_id=classification_request.raw_input_id,
+            source_document_id=classification_request.source_document_id,
+            classification_request_id=classification_request.classification_request_id,
+            classification_attempt_id=classification_response.classification_attempt_id,
+            validation_result_id=validation_result.validation_result_id,
+            document_hash=classification_request.document_hash,
+            classified_at=classification_response.classified_at,
+            validated_at=validation_result.validated_at,
+            available_at=raw_input.source_published_at,
+            provider=classification_response.provider,
             trace_id=trace_id,
         ),
         ContextFlag(
@@ -183,6 +289,7 @@ def build_contract_examples() -> list[Any]:
             valid_until=EXAMPLE_TIME + timedelta(minutes=30),
             trace_id=trace_id,
         ),
+        shadow_evaluation,
         order,
         fill,
         TradeOutcome(

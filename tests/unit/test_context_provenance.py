@@ -14,9 +14,10 @@ from market_relay_engine.context.provenance import (
     is_research_asof_eligible_at,
     normalize_provenance,
     semantic_details_for_comparison,
+    validate_context_flag_available_at_alignment,
 )
 from market_relay_engine.context.state_cache import make_global_context_entry
-from market_relay_engine.contracts.context import ContextIndicatorSnapshot
+from market_relay_engine.contracts.context import ContextFlag, ContextIndicatorSnapshot
 
 
 BASE_TIME = datetime(2026, 6, 20, 16, 0, tzinfo=UTC)
@@ -39,6 +40,16 @@ def _provenance(**overrides: object) -> dict[str, object]:
     }
     values.update(overrides)
     return normalize_provenance(values)
+
+
+def _flag(*, available_at: datetime | None) -> ContextFlag:
+    return ContextFlag(
+        event_time=datetime(2026, 6, 20, 14, 25, tzinfo=UTC),
+        source="test",
+        flag_type="event_window",
+        severity="NORMAL",
+        available_at=available_at,
+    )
 
 
 def test_normalizes_aware_datetimes_and_offset_aware_strings_to_utc() -> None:
@@ -140,6 +151,59 @@ def test_snapshot_provenance_source_time_mismatch_is_rejected() -> None:
             value=1.0,
             source_event_time=BASE_TIME,
             details=details,
+        )
+
+
+def test_context_flag_available_at_accepts_matching_and_offset_equivalent_values() -> None:
+    flag = _flag(available_at=datetime(2026, 6, 20, 14, 30, tzinfo=UTC))
+    matching = attach_provenance({}, _provenance())
+    offset_equivalent = json.loads(json.dumps(matching))
+    offset_equivalent["provenance"]["available_at"] = "2026-06-20T10:30:00-04:00"
+
+    validate_context_flag_available_at_alignment(flag, matching)
+    validate_context_flag_available_at_alignment(flag, offset_equivalent)
+    validate_context_flag_available_at_alignment(
+        _flag(available_at=None),
+        attach_provenance({}, _provenance(available_at=None)),
+    )
+
+
+def test_context_flag_available_at_allows_missing_legacy_provenance() -> None:
+    validate_context_flag_available_at_alignment(
+        _flag(available_at=datetime(2026, 6, 20, 14, 30, tzinfo=UTC)),
+        {"legacy": True},
+    )
+
+
+@pytest.mark.parametrize(
+    ("flag_available_at", "provenance_available_at"),
+    [
+        (datetime(2026, 6, 20, 14, 31, tzinfo=UTC), datetime(2026, 6, 20, 14, 30, tzinfo=UTC)),
+        (None, datetime(2026, 6, 20, 14, 30, tzinfo=UTC)),
+        (datetime(2026, 6, 20, 14, 30, tzinfo=UTC), None),
+    ],
+)
+def test_context_flag_available_at_rejects_mismatches(
+    flag_available_at: datetime | None,
+    provenance_available_at: datetime | None,
+) -> None:
+    details = attach_provenance(
+        {},
+        _provenance(available_at=provenance_available_at),
+    )
+
+    with pytest.raises(ContextProvenanceError, match="available_at"):
+        validate_context_flag_available_at_alignment(
+            _flag(available_at=flag_available_at),
+            details,
+        )
+
+
+def test_context_flag_available_at_rejects_malformed_provenance() -> None:
+    with pytest.raises(ContextProvenanceError, match="missing provenance field"):
+        validate_context_flag_available_at_alignment(
+            _flag(available_at=None),
+            {"provenance": {"available_at": None}},
         )
 
 

@@ -20,7 +20,10 @@ from market_relay_engine.common.time import (
     to_utc_iso,
     utc_now,
 )
-from market_relay_engine.context.provenance import attach_provenance
+from market_relay_engine.context.provenance import (
+    attach_provenance,
+    validate_context_flag_available_at_alignment,
+)
 from market_relay_engine.context.state_cache import (
     ContextStateCache,
     ContextStateUpdateResult,
@@ -494,6 +497,7 @@ class EIAWPSRCollector:
                             source_record_id=f"{SOURCE_NAME}:{release.release_id}:event_window:{ticker}",
                         ),
                     )
+                    validate_context_flag_available_at_alignment(flag, details)
                     update = self.cache.update(make_ticker_context_entry(ticker=ticker, name=f"{SOURCE_NAME}:event_window_active:{release.release_id}", value=True, updated_at=flag.event_time, source=SOURCE_NAME, source_event_time=release.release_at, valid_until=release.window_end, details=details))
                     cache_results.append(update)
                     self._write_if_changed(flag, update, ledger_results, issues, write_questdb, questdb_required, run_id, session_id)
@@ -797,7 +801,7 @@ def _select_record(records: Sequence[Mapping[str, object]], spec: EIAMetricSpec,
 
 
 def _build_release_flag(release: EIARelease, ticker: str) -> ContextFlag:
-    return ContextFlag(event_time=release.window_start, source=SOURCE_NAME, flag_type=FLAG_TYPE, severity="NORMAL", context_flag_id=deterministic_context_flag_id(release, ticker), ticker=ticker, sector=SECTOR, valid_until=release.window_end)
+    return ContextFlag(event_time=release.window_start, source=SOURCE_NAME, flag_type=FLAG_TYPE, severity="NORMAL", context_flag_id=deterministic_context_flag_id(release, ticker), ticker=ticker, sector=SECTOR, valid_until=release.window_end, available_at=release.release_at)
 
 
 def _provenance(

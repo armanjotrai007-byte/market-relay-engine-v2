@@ -78,6 +78,15 @@ DATETIME_FIELD_NAMES = {
     "write_time",
     "valid_from",
     "valid_until",
+    "source_published_at",
+    "source_updated_at",
+    "collected_at",
+    "normalized_at",
+    "requested_at",
+    "classified_at",
+    "available_at",
+    "validated_at",
+    "decision_evaluation_time",
 }
 
 

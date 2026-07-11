@@ -1,4 +1,6 @@
-"""Deterministic fake IDs for reusable fixture records."""
+"""Deterministic fake IDs and hashes for reusable fixture records."""
+
+import hashlib
 
 RUN_ID = "FIXTURE-RUN-0001"
 SESSION_ID = "FIXTURE-SESSION-0001"
@@ -26,4 +28,14 @@ def stable_record_id(prefix: str, index: int) -> str:
     if not normalized:
         raise ValueError("Fixture ID prefix must contain at least one valid character")
     return f"FIXTURE-{normalized}-{index:04d}"
+
+
+def stable_sha256(label: str, index: int) -> str:
+    """Return a deterministic lowercase SHA-256 value for fixture metadata."""
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError("Fixture hash label must be a non-empty string")
+    if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+        raise ValueError("Fixture hash index must be a non-negative integer")
+    payload = f"market-relay-engine-fixture:{label.strip()}:{index}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
