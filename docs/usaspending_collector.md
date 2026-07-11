@@ -1,9 +1,10 @@
 # USAspending Contract-Award Collector
 
-PR28 adds a disabled-by-default, one-shot USAspending contract-award collector for
-future profitability research. It records factual contract-award evidence for
-explicitly mapped public-company prime recipients. It does not trade, score,
-approve, block, resize, or route orders.
+PR28 adds a one-shot USAspending contract-award collector for future
+profitability research. Repository configuration intentionally enables it for
+explicit collection outside the per-tick loop. It records factual contract-award
+evidence for explicitly mapped public-company prime recipients. It does not
+trade, score, approve, block, resize, or route orders.
 
 ## Source And Credentials
 
@@ -26,6 +27,10 @@ award-level revision feed, or proof that all awards are complete.
 ## Recipient Mapping
 
 Mappings live in `config/usaspending_recipient_ticker_map.yaml`.
+
+The current mappings cover the final defense-universe tickers `PLTR`, `LMT`,
+`RTX`, `GD`, and `AVAV`. They do not infer mappings for the five oil-universe
+tickers.
 
 ```yaml
 mapping_version: usaspending_recipient_map_v1

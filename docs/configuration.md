@@ -6,8 +6,8 @@ Each file is safe to load locally without broker access, QuestDB writes, or live
 
 ## Files
 
-- `symbols.yaml` defines example tradable symbols and separate context symbols. Example tradable symbols are not approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
-- `context_sources.yaml` defines structured and unstructured context source settings. Built structured sources are allowed to be enabled for functional connectivity, and `yfinance_dev_only` is explicitly development-only and not production-critical.
+- `symbols.yaml` defines the final 10-stock universe (`PLTR`, `LMT`, `RTX`, `GD`, `AVAV`, `XOM`, `OXY`, `SLB`, `COP`, and `VLO`) and separate context symbols. None of the tradable symbols is approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
+- `context_sources.yaml` defines structured and unstructured context source settings. EIA, FRED, USAspending, the local macro calendar, and `yfinance_dev_only` are intentionally enabled for bounded use outside the per-tick loop. Yfinance remains development-only and not production-critical; SEC EDGAR, news, social, and the AI context filter remain disabled.
 - `risk_limits.yaml` defines placeholder paper-trading risk limits. These are not optimized live settings.
 - `questdb.yaml` defines QuestDB connection and health-check defaults and confirms QuestDB is for the bot ledger only, not a historical market-data warehouse.
 - `model_config.yaml` defines placeholder feature, model, calibration, horizon, and label settings. It does not load or train a model.

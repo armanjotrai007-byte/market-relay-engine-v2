@@ -1,8 +1,10 @@
 # EIA Weekly Petroleum Status Report
 
-PR26 adds a disabled-by-default, one-shot EIA WPSR collector for oil-market
-research context. It does not create a scheduler, trading signal, directional
-label, inventory-surprise model, position-sizing rule, or numeric risk limit.
+PR26 adds a one-shot EIA WPSR collector for oil-market research context.
+Repository configuration intentionally enables it for explicit collection, but
+does not schedule or invoke it automatically. It does not create a trading
+signal, directional label, inventory-surprise model, position-sizing rule, or
+numeric risk limit.
 
 ## Timing and look-ahead control
 
@@ -43,7 +45,8 @@ schedules work. It returns one release-window, numeric-fetch, retry, or no-op
 action plus the next action time.
 
 Ticker-level `eia_wpsr_event_window` flags are the only PR26 inputs to the
-existing deterministic risk adapter. Numeric collection begins only after the
+existing deterministic risk adapter. The final configured oil universe is
+`XOM`, `OXY`, `SLB`, `COP`, and `VLO`. Numeric collection begins only after the
 configured delay and stops an unfinished cycle at the next release window with
 `SUPERSEDED`.
 

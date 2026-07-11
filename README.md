@@ -70,7 +70,12 @@ These same commands must be run on the separate trading laptop after it pulls fr
 
 ## Configuration
 
-Trading System V2 config files live under `config/`. They separate tradable symbols from context symbols, keep all external sources disabled by default, mark yfinance as development-only, keep QuestDB ledger-only, and keep live trading disabled by default.
+Trading System V2 config files live under `config/`. They separate the final
+10-stock tradable universe (`PLTR`, `LMT`, `RTX`, `GD`, `AVAV`, `XOM`, `OXY`,
+`SLB`, `COP`, and `VLO`) from context symbols. The built structured sources are
+enabled for bounded, explicit collection outside the per-tick loop; yfinance
+remains development-only, unstructured sources and the AI context filter remain
+disabled, QuestDB remains ledger-only, and live trading remains disabled.
 
 Validate configuration locally with:
 
@@ -80,8 +85,10 @@ python scripts/check_config.py
 
 See `docs/configuration.md` for the config file map and safety rules.
 
-PR26 adds a disabled-by-default EIA WPSR collector for reviewed release-window
-flags and sector-level `OIL` numeric research context. Run
+PR26 adds a one-shot EIA WPSR collector for reviewed release-window flags and
+sector-level `OIL` numeric research context. Repository configuration
+intentionally enables it for explicit collection, but does not schedule it or
+grant it independent trading authority. Run
 `python scripts/check_eia_wpsr.py` for its offline fixture check and see
 `docs/eia_wpsr.md` for schedule, timing, provenance, and live-read guidance.
 

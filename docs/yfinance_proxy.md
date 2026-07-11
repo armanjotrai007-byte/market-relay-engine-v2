@@ -1,6 +1,11 @@
 # YFinance Development Proxy Collector
 
-PR25 adds a disabled-by-default, development-only collector that uses `yfinance` as a simple proxy source for broad-market and sector context indicators. It is not production market truth, not a trading signal, and not a substitute for official market data.
+PR25 adds a development-only collector that uses `yfinance` as a simple proxy
+source for broad-market and sector context indicators. Repository configuration
+intentionally enables it for explicit connectivity and cache/ledger validation,
+but it remains non-required and outside the per-tick loop. It is not production
+market truth, not a trading signal, and not a substitute for official market
+data.
 
 ## Purpose
 
@@ -10,10 +15,10 @@ The collector exists to exercise the PR24 `ContextStateCache` and optional Quest
 
 The source lives at `structured_sources.yfinance_dev_only` in `config/context_sources.yaml`.
 
-Defaults remain development-safe:
+Current repository settings remain development-safe:
 
 ```yaml
-enabled: false
+enabled: true
 development_only: true
 production_critical: false
 feeds_memory_cache: true
@@ -64,7 +69,11 @@ XLI -> SECTOR / INDUSTRIALS
 PPA, ITA -> SECTOR / DEFENSE
 ```
 
-`OIL` matches the configured tradable sector value used for the initial oil names such as XOM and CVX after PR24 sector normalization. Calling `get_sector_proxy_indicators(..., sector="oil", ...)` and `get_sector_proxy_indicators(..., sector="OIL", ...)` resolves the same XLE/XOP/OIH readings.
+`OIL` matches the configured tradable sector value used by the final oil
+universe (`XOM`, `OXY`, `SLB`, `COP`, and `VLO`) after PR24 sector normalization.
+Calling `get_sector_proxy_indicators(..., sector="oil", ...)` and
+`get_sector_proxy_indicators(..., sector="OIL", ...)` resolves the same
+XLE/XOP/OIH readings.
 
 Sector proxies use the existing PR24 `SECTOR` scope. They do not create ticker keys and do not create keys that contain both ticker and sector. Cache entry names include the source proxy symbol, for example:
 

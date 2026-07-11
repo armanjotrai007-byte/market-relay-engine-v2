@@ -1,8 +1,10 @@
 # FRED Treasury-rate collector
 
-PR27 adds a disabled-by-default, one-shot collector for slow daily Treasury-rate
-context. It records evidence for later profitability research; it does not treat
-daily FRED observations as an intraday scalp signal or grant them trading authority.
+PR27 adds a one-shot collector for slow daily Treasury-rate context. Repository
+configuration intentionally enables it for explicit collection outside the
+per-tick loop. It records evidence for later profitability research; it does not
+treat daily FRED observations as an intraday scalp signal or grant them trading
+authority.
 
 ## Source and bounded request policy
 
@@ -12,9 +14,11 @@ The collector requests exactly `DGS3MO`, `DGS2`, and `DGS10` from the official
 (20 by default, valid range 4–50). It never relies on FRED's default limit,
 paginates, performs a historical backfill, or requests a full series history.
 
-`structured_sources.fred.enabled` is false by default. The API key is read only
-from the environment variable named by `api_key_env`, and only during an enabled
-request. Disabled collection requires no key and performs no HTTP.
+`structured_sources.fred.enabled` is `true` in repository configuration. This
+permits an explicit collector invocation; it does not schedule requests or add
+FRED to the per-tick loop. The API key is read only from the environment variable
+named by `api_key_env`, and only during an enabled request. A separately
+constructed disabled `FREDConfig` requires no key and performs no HTTP.
 
 ## Facts and units
 
