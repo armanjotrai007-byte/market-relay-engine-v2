@@ -753,7 +753,7 @@ def test_phase7_writer_convenience_methods_use_canonical_mappers(
         hypothetical_action=ShadowContextAction.NO_CHANGE,
     )
 
-    assert writer.write_context_ai_event(ai_event) == "written"
+    assert writer.write_context_ai_event(ai_event, write_time=EXAMPLE_TIME) == "written"
     assert writer.write_context_classification_attempt(
         request,
         response,
@@ -764,7 +764,10 @@ def test_phase7_writer_convenience_methods_use_canonical_mappers(
         evaluation,
         write_time=EXAMPLE_TIME,
     ) == "written"
-    assert captured[0] == ("context_ai_events", context_ai_event_to_row(ai_event))
+    assert captured[0] == (
+        "context_ai_events",
+        context_ai_event_to_row(ai_event, write_time=EXAMPLE_TIME),
+    )
     assert captured[1] == (
         "context_classification_attempts",
         context_classification_attempt_to_row(

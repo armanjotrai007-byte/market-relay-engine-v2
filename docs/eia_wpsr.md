@@ -20,6 +20,14 @@ and values. They do not expose a publication timestamp or distinguish revisions
 as separate versions. PR26 therefore supports prospective reviewed release
 alignment only and does not guess historical publication times.
 
+PR34 makes availability explicit without changing EIA behavior. For each
+release-window `ContextFlag`, both top-level `available_at` and
+`details["provenance"]["available_at"]` use the reviewed official `release_at`.
+They mean the earliest trusted demonstrable public availability of the report.
+The pre-release `event_time`/window start remains earlier by design and is not
+treated as publication. The adapter validates both availability representations
+and rejects a mismatch or malformed nested timestamp.
+
 ## Reviewed runtime schedule
 
 `config/calendar_events.yaml` is runtime authority. PR33 may commit reviewed
@@ -74,7 +82,9 @@ The cache is updated before the ledger. QuestDB writes occur only after
 
 PR26 adds `details_json` to `context_indicator_snapshots`. Existing servers must
 run `db/schema/questdb_pr26_add_context_indicator_details_json.sql` once before
-enabling EIA ledger writes.
+enabling EIA ledger writes. After PR34 is merged, persistent ledgers must also
+run `db/schema/questdb_pr34_add_phase7_context_ledger.sql` before PR34 writers;
+the destructive reset is not a migration path.
 
 Offline validation uses sanitized fixtures:
 

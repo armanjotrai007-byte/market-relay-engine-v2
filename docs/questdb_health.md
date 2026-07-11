@@ -1,21 +1,13 @@
 # QuestDB Health Check
 
-PR 11 adds the first QuestDB integration foundation for V2. It proves the repo
-can load local QuestDB HTTP settings and check whether QuestDB is ready for the
-future bot ledger.
+QuestDB is the bot ledger and black-box recorder. It stores bot facts such as
+signals, context metadata, risk decisions, orders, fills, outcomes, latency,
+slippage, health, classification attempts, and shadow evaluations. It is not a
+historical market-data warehouse or the per-tick/per-signal context source.
+Raw Databento trades, BBO/MBP/OHLCV, and historical market truth remain in
+official local Databento DBN/Parquet-derived files.
 
-QuestDB remains the bot ledger and black-box recorder only. It is for bot runs,
-feature snapshots, model signals, cost estimates, risk decisions, context flags,
-orders, fills, trade outcomes, latency metrics, system health, and future ledger
-write failures.
-
-QuestDB is not a historical market-data warehouse. Raw Databento trades, BBO,
-MBP, OHLCV, bulk historical market data, and training market truth stay in local
-official Databento DBN/Parquet files.
-
-## Local Defaults
-
-Default values:
+## Local defaults
 
 ```text
 QUESTDB_HTTP_SCHEME=http
@@ -26,85 +18,45 @@ QUESTDB_PG_HOST=localhost
 QUESTDB_PG_PORT=8812
 ```
 
-Configuration precedence is:
+Configuration precedence is explicit overrides, then environment/local `.env`,
+then `config/questdb.yaml`, then hard-coded defaults. Secrets must never be
+printed or committed.
 
-```text
-explicit script/function overrides
--> environment variables / .env
--> config/questdb.yaml
--> hardcoded defaults
-```
+## Health check
 
-## Health Check
-
-Run the optional offline check:
+Config-driven mode (required by current repository configuration):
 
 ```powershell
-python scripts/check_questdb.py
+& ".\.venv\Scripts\python.exe" scripts/check_questdb.py
 ```
 
-Run the required server-laptop integration check with QuestDB running:
+Explicit server-laptop required mode:
 
 ```powershell
-python scripts/check_questdb.py --required
+& ".\.venv\Scripts\python.exe" scripts/check_questdb.py --required
 ```
 
-Codex and offline validation use optional mode because QuestDB may not be
-running. Optional mode exits 0 when QuestDB is unavailable, but it distinguishes
-connection failures from unhealthy responses:
+The health check sends only `SELECT 1` to the HTTP `/exec` SQL endpoint so it
+verifies the SQL query engine needed by ledger components.
+`[SKIP]` and `[WARN]` are possible only when a caller or
+`QUESTDB_HEALTH_REQUIRED=false` explicitly selects optional behavior; `[PASS]`
+means the SQL engine accepted the read-only query. Current config uses
+`health_check.required_by_default: true`.
 
-- `[SKIP]` means QuestDB was not reachable at all.
-- `[WARN]` means QuestDB responded but the `/exec` result was unhealthy.
-- `[PASS]` means the SQL query engine accepted `SELECT 1`.
+## PR34 safety boundary
 
-Required mode exits nonzero with `[FAIL]` for either unreachable or unhealthy
-QuestDB.
+PR34 validation is offline. Its one authorized preflight inspection used only
+read-only version, table-column, and row-count queries; no schema or row was
+mutated. Applying the persistent-ledger upgrade is a deliberate operator action
+after merge, with writers stopped and pre/post row counts recorded.
 
-The health check intentionally uses `/exec` with `SELECT 1` instead of only
-`/health` because the future ledger writer needs the SQL query engine to be
-ready, not merely the HTTP process to be alive.
+Use `db/schema/questdb_pr34_add_phase7_context_ledger.sql` for that additive,
+idempotent upgrade. Never use `db/schema/questdb_ledger_v1.sql` or
+`scripts/check_questdb_schema.py --apply` as a migration path for a ledger whose
+rows must be preserved. The full procedure is in `docs/live_runbook.md` and
+`docs/questdb_schema.md`.
 
-## Not Added In PR 11
-
-PR 11 does not add:
-
-- SQL schema creation
-- table creation
-- inserts or writer classes
-- JSONL fallback writing
-- raw Databento market-data tables
-- historical market-data warehouse behavior
-- Databento API integration
-- Alpaca or broker execution
-- model training or inference
-- risk engine logic
-- live trading
-
-## PR 12 Note
-
-PR 12 is expected to add the QuestDB Ledger Schema SQL. Before PR 13 adds a
-ledger writer, PR 12 should resolve the meaning of
-`risk_decisions.context_snapshot_id`.
-
-If PR 12 only defines `context_indicator_snapshots`, `context_ai_events`, and
-`context_flags`, then `risk_decisions.context_snapshot_id` has no single target
-table. The preferred PR 12 solution is a `context_state_snapshots` table that
-captures one context state for a decision, with fields such as:
-
-```text
-snapshot_time
-context_snapshot_id
-ticker
-active_indicator_ids_json
-active_context_event_ids_json
-active_context_flag_ids_json
-context_summary_json
-valid_until
-run_id
-session_id
-schema_version
-trace_id
-```
-
-PR 11 only carries this warning forward. It does not create the table or any
-other schema.
+`risk_decisions.context_snapshot_id` continues to reference the decision-time
+`context_state_snapshots.context_snapshot_id` ledger record. PR34 adds separate
+research-only classification and shadow metadata tables and does not change
+that real decision-context linkage.

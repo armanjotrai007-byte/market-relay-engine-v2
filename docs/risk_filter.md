@@ -83,6 +83,17 @@ It does not understand EIA, FRED, SEC, USAspending, yfinance, news, social
 feeds, or AI-specific payloads. Future collectors should translate their
 outputs into these generic facts before risk evaluation.
 
+PR34 does not broaden this adapter. Phase 7 `ContextAIEvent`, Phase 7-enriched
+`ContextFlag`, classification, validation, and
+`ShadowContextPolicyEvaluation` records are research-only and are not routed
+into `evaluate_risk(...)` or `approved_risk_context`. A hypothetical shadow
+action such as `BLOCK`, `REDUCE_SIZE`, or `DELAY` records what a future research
+policy would have proposed; it cannot change the real `RiskDecision`.
+
+The existing deterministic EIA release-window flag path remains compatible and
+unchanged. Its `available_at` metadata describes public availability; the
+pre-release active window remains a separate deterministic risk fact.
+
 ## REDUCE_SIZE Contract
 
 `RiskDecisionType.REDUCE_SIZE` uses `approved=True`, but it is not equivalent to

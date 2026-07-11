@@ -1,89 +1,86 @@
 # QuestDB Ledger Schema
 
-PR 12 adds the official QuestDB V2 bot-ledger schema SQL and offline schema
-validation.
-
-The schema file is:
+The canonical fresh-install schema is:
 
 ```text
 db/schema/questdb_ledger_v1.sql
 ```
 
-PR26 adds `details_json STRING` to `context_indicator_snapshots`. Existing
-servers should run the non-destructive one-time migration
-`db/schema/questdb_pr26_add_context_indicator_details_json.sql` before enabling
-live EIA WPSR ledger writes.
+It is a destructive local-development reset: it drops and recreates ledger
+tables. Use it only for a fresh or disposable database whose contents may be
+destroyed. It is never the migration path for a persistent ledger.
 
-It is a destructive local-development reset. It drops old V1/raw/PDF-era table
-names, drops existing V2 ledger tables, and recreates the V2 ledger tables from
-scratch. Do not run it against data you need to preserve.
+QuestDB remains a bot ledger and black-box recorder. It must not contain raw
+Databento market data, full SEC filings, full articles or social posts, full
+normalized context documents, classification request excerpts, raw prompts,
+credentials, secrets, full provider exceptions, or tracebacks.
 
-## Ledger Scope
+## PR34 Phase 7 tables
 
-QuestDB remains the bot ledger and black-box recorder only. It records bot runs,
-sessions, feature snapshots, model signals, cost estimates, context state,
-context events and flags, risk decisions, order and fill events, trade
-outcomes, latency metrics, system health, and future ledger write failures.
+`context_classification_attempts` stores audit metadata for one classification
+attempt: request/attempt/raw/document IDs, source identity and locator, ticker
+list JSON, hashes, source/collection/normalization/request/classification times,
+provider/model/prompt versions, strict status and classification enums,
+confidence, concise summary, validation metadata, provider latency, safe
+failure category/summary, run/session/schema IDs, and trace ID. It contains no
+input text, prompt body, document body, or exception detail.
 
-QuestDB is not a raw historical market-data warehouse. The schema does not
-create raw Databento tables such as `raw_trades`, `raw_bbo`, `raw_tbbo`,
-`raw_ohlcv`, `raw_mbp10`, or `databento_definitions`.
+`shadow_context_policy_evaluations` stores a research-only comparison at one
+`decision_evaluation_time`: evaluation/model-signal/optional-risk-decision IDs,
+matched event and flag ID lists, context fingerprint, policy version and config
+hash, hypothetical action, optional proposed size factor, reason codes,
+run/session/schema IDs, and trace ID. Its action never replaces the real
+`RiskDecision`.
 
-Historical market truth remains official Databento DBN or Parquet files outside
-QuestDB.
+PR34 also appends nullable Phase 7 lineage, source, hash, and UTC timestamp
+columns to the existing `context_ai_events` and `context_flags` tables. Existing
+legacy rows remain valid. `context_flags` additionally stores reason-code JSON
+and a concise summary; neither legacy table gains a raw-text column.
 
-## Context State Snapshots
+## Persistent-ledger migration
 
-PR 12 resolves the `risk_decisions.context_snapshot_id` ambiguity by adding
-`context_state_snapshots`.
+Existing servers must run this additive migration after PR34 is merged and
+before starting a PR34 writer:
 
-`context_state_snapshots` represents the context state seen by the deterministic
-risk gate at decision time. A `risk_decisions.context_snapshot_id` value points
-to a row in `context_state_snapshots`, so future analysis can query the context
-state used for a risk decision.
-
-PR 12 only adds schema. It does not add a context-state writer.
-
-## Validation
-
-Run the default offline schema check:
-
-```powershell
-python scripts/check_questdb_schema.py
+```text
+db/schema/questdb_pr34_add_phase7_context_ledger.sql
 ```
 
-The offline check verifies required table definitions, forbidden raw table
-creation, context snapshot linkage, drop-before-create ordering, and the absence
-of schema test data or retention clauses.
+The file uses one `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statement per new
+legacy-table column and `CREATE TABLE IF NOT EXISTS` for each new table. It has
+no `DROP`, `TRUNCATE`, `RENAME`, `INSERT`, `UPDATE`, or `DELETE` statement, so it
+can be rerun after a partial application and preserves existing rows.
 
-Run the real server-laptop apply validation only with QuestDB running:
+Before applying it, back up the QuestDB volume, stop writers, and record counts
+for `context_ai_events` and `context_flags`. Execute the migration statements in
+file order through the local QuestDB Web Console, rerun them to prove
+idempotency, then verify both legacy counts are unchanged and both new tables
+exist with zero rows. The exact operator checklist and recovery procedure are in
+`docs/live_runbook.md`.
+
+Do not run either of these against a persistent ledger as part of the upgrade:
 
 ```powershell
-python scripts/check_questdb.py --required
-python scripts/check_questdb_schema.py --apply --required
+& ".\.venv\Scripts\python.exe" scripts/check_questdb_schema.py --apply --required
 ```
 
-The apply command uses QuestDB's documented `/exec` GET endpoint, sends one SQL
-statement at a time with `fmt=json`, fails fast on errors, and verifies the
-expected tables exist afterward.
+```text
+db/schema/questdb_ledger_v1.sql
+```
 
-If schema apply fails mid-execution, the reset is destructive and may leave a
-partial schema. For local development, rerun the same schema apply command from
-scratch as the recovery path.
+Both belong to explicit destructive reset workflows, not migration.
 
-## Not Added
+## Offline validation
 
-PR 12 does not add:
+```powershell
+& ".\.venv\Scripts\python.exe" scripts/check_questdb_schema.py
+```
 
-- runtime ledger writers
-- app insert logic
-- JSONL fallback implementation
-- raw Databento market-data tables
-- historical market warehouse behavior
-- Databento API calls
-- Alpaca or broker execution
-- model training or inference
-- risk engine logic
-- live trading
+The checker validates fresh-schema definitions, additive migration safety and
+idempotent forms, exact writer/config table agreement, context-snapshot linkage,
+forbidden raw-data names, and the absence of source/prompt/exception text
+columns. It reads SQL only and does not contact QuestDB.
 
-Next PR: PR 13 - QuestDB Ledger Writer.
+`context_state_snapshots` remains the ledger target referenced by
+`risk_decisions.context_snapshot_id`; PR34 does not change that real
+decision-context architecture.

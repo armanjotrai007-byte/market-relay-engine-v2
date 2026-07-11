@@ -16,7 +16,9 @@ and all timestamps are UTC ISO strings ending in `Z` or `null`.
   public availability.
 - `source_observed_at`: a real source-provided observation timestamp when one
   exists; it is not synthesized from polling time.
-- `available_at`: proven public availability time, or `null` when unknown.
+- `available_at`: the earliest trusted, demonstrable time the underlying fact
+  was publicly available, or `null` when unknown. It is not source event time,
+  collection time, or window activation time.
 - `collected_at`: local collection audit time for the accepted record.
 - `effective_from`: deterministic decision-effect boundary when one exists.
 - `valid_until`: JSON audit mirror of `ContextStateEntry.valid_until`.
@@ -40,6 +42,30 @@ AND available_at <= decision_time
 
 Observation dates, award dates, source business dates, source last-updated dates,
 and collection times are not proof of public availability.
+
+## ContextFlag compatibility
+
+PR34 adds the same canonical meaning as optional top-level
+`ContextFlag.available_at`. The top-level value is the typed Phase 7 contract
+field; the nested provenance value remains the legacy structured-cache audit
+representation. They are two representations of one fact, not independent
+timestamps.
+
+When an adapter publishes a flag alongside cache-entry
+`details["provenance"]`, it calls
+`validate_context_flag_available_at_alignment(flag, details)`. Both
+representations must be present with equivalent UTC instants, or both must be
+`null`. An invalid provenance timestamp, a missing value on only one side, or
+different instants is rejected instead of silently choosing one. Equivalent ISO
+offsets normalize to the same UTC instant.
+
+EIA release-window flags preserve their existing window behavior: flag
+`event_time` and provenance `effective_from` begin before a release for
+deterministic risk protection, while both availability representations use the
+official `release_at`. Thus a pre-release block window does not claim that the
+underlying report was already public. Other legacy `ContextFlag` callers
+without a companion provenance object continue to work with
+`available_at=null`.
 
 Active-window eligibility is inclusive:
 

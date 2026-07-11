@@ -44,7 +44,13 @@ QuestDB after health, schema, and writer validation:
 
 ```powershell
 python scripts/check_questdb.py --required
-python scripts/check_questdb_schema.py --apply --required
 python scripts/check_questdb_writer.py --required
 python scripts/check_questdb_analysis.py --required
 ```
+
+For an existing persistent server, apply the relevant additive migrations
+before writer/readback validation. After PR34, use
+`db/schema/questdb_pr34_add_phase7_context_ledger.sql` with the pre/post count
+procedure in `docs/live_runbook.md`. Do not use the destructive
+`scripts/check_questdb_schema.py --apply` reset as a migration path. That reset
+is limited to a fresh disposable database.

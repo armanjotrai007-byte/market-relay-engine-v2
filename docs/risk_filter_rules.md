@@ -12,3 +12,8 @@ Default posture:
 - block or reduce when data is stale or unsafe
 - never let AI directly approve trades
 - never enable live trading by default
+
+Phase 7 PR34 adds only research and audit contracts. AI-classified events,
+context flags, and hypothetical shadow actions have no direct trade authority
+and do not enter the real risk gate. PR37 may evaluate them in shadow, but the
+deterministic Python risk result remains untouched.

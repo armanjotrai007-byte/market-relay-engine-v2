@@ -26,7 +26,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Write-Host "Running optional QuestDB health validation..."
+Write-Host "Running config-driven QuestDB health validation (currently required)..."
 & $Python scripts/check_questdb.py
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
