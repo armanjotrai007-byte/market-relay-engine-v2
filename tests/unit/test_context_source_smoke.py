@@ -535,6 +535,13 @@ def test_usaspending_mapped_path_emits_progress_messages(
 ) -> None:
     import market_relay_engine.context.usaspending_collector as usaspending_module
 
+    class FixedSmokeDatetime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:
+            return FIXED_EVALUATION_TIME
+
+    monkeypatch.setattr(smoke, "datetime", FixedSmokeDatetime)
+
     configs = _repo_configs()
     _enable_structured_source(configs, "usaspending")
 

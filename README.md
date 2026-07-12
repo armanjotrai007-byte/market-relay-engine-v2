@@ -92,14 +92,14 @@ grant it independent trading authority. Run
 `python scripts/check_eia_wpsr.py` for its offline fixture check and see
 `docs/eia_wpsr.md` for schedule, timing, provenance, and live-read guidance.
 
-## Phase 7 PR34 Contracts
+## Phase 7 PR34 Contracts and PR35 Gemini Classifier
 
 PR34 defines provider-neutral raw-input, source-document, classification,
 validation, research event/flag, and hypothetical shadow-evaluation contracts.
 It also adds metadata-only QuestDB schemas for classification attempts and
-shadow evaluations. The path is research-only: it does not call Gemini or SEC
-EDGAR, archive documents, build a research cache, execute a shadow policy, or
-change a real `RiskDecision`.
+shadow evaluations. PR35 adds the reusable live Gemini implementation for this
+contract boundary; it does not collect SEC or news documents, archive source
+material, execute a shadow policy, or change a real `RiskDecision`.
 
 AI classification uses strict SEC 8-K/general event values. Deterministic Form 4
 purchase/sale values have a separate enum and are not valid classification
@@ -107,6 +107,24 @@ responses. Only a bounded in-memory request may carry an excerpt; QuestDB must
 not store source bodies, request excerpts, prompts, or full provider exceptions.
 
 See `docs/data_contracts.md` and `docs/architecture.md`.
+
+The classifier uses `google-genai==2.10.0`, the Gemini Interactions API,
+`gemini-3.5-flash`, and the versioned `context_filter_v1` prompt. Automatic use
+is disabled. To configure the explicitly gated checker, copy the safe
+`GEMINI_API_KEY=` placeholder from `.env.example` to the ignored repository
+`.env` and supply the real value there. Never commit that file.
+
+```powershell
+python scripts/check_gemini_context.py --help
+python scripts/check_gemini_context.py
+python scripts/check_gemini_context.py --live --required
+```
+
+The default command is offline. `--live` makes one logical classification of
+short synthetic text. Every provider request uses `store=False`, no previous
+interaction, and no tools, browsing, code execution, agents, or server-side
+conversation history. Gemini output remains research context only and has no
+trade, risk, sizing, order, broker, or execution authority.
 
 ## QuestDB Health Check
 

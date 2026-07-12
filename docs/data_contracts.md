@@ -41,15 +41,16 @@ source type, source locator, affected tickers, collection time, and raw-input
 hash. `ContextSourceDocument` adds normalized document identity, document hash,
 and normalization time. Neither contract contains source body text.
 
-`ContextClassificationRequest` is the only PR34 contract allowed to carry a
+`ContextClassificationRequest` is the only Phase 7 contract allowed to carry a
 bounded in-memory excerpt in `input_text`. It also carries deterministic source
 identity, hashes, ticker mappings, source timestamps, request time, and prompt
 version. It is not a durable raw-document record, and the excerpt must never be
-written to QuestDB or emergency ledger rows. PR36 owns the actual bound,
-provider call, queue, retry, rate, budget, deduplication, and backpressure
-policy.
+written to QuestDB or emergency ledger rows. PR35 owns the input/output bounds,
+provider call, retry, local call budgets, and bounded process-local
+deduplication. Persistent caching, queues, and broader pipeline backpressure
+remain deferred.
 
-`ContextClassificationResponse` records one provider attempt without granting
+`ContextClassificationResponse` records one logical classification attempt without granting
 the provider authority to invent source identity, tickers, hashes, timestamps,
 or risk policy. `ContextValidationResult` records the validator outcome,
 machine-readable reason codes, safe detail, validator version, and validation
@@ -63,6 +64,15 @@ and cross-record provenance validation belong to PR35.
 ```text
 UNKNOWN
 OTHER
+GOVERNMENT_CONTRACT
+REGULATORY_POLICY
+GEOPOLITICAL
+SUPPLY_DISRUPTION
+EARNINGS_GUIDANCE
+LEGAL
+CYBERSECURITY
+MANAGEMENT_CHANGE
+SOCIAL_POLITICAL_STATEMENT
 SEC_8K_MATERIAL_AGREEMENT
 SEC_8K_TERMINATION_OF_MATERIAL_AGREEMENT
 SEC_8K_BANKRUPTCY
@@ -110,10 +120,28 @@ values. Deterministic Form 4 parsing and event emission remain deferred to PR38.
   category is required; a safe summary is optional.
 
 Only the safe failure category and summary may enter contracts, QuestDB, or the
-emergency ledger. PR36 must keep the full exception and traceback in retained,
-ignored local structured logs, redact credentials, and correlate the record by
-the same `classification_attempt_id`. PR34 does not implement provider calls or
-runtime logging.
+emergency ledger. Full exceptions, raw responses, headers, source text,
+rendered prompts, and tracebacks are excluded; credentials are always redacted.
+
+## PR35 classification-attempt accounting
+
+One `classify()` invocation creates one logical classification attempt and maps
+to one `context_classification_attempts` ledger row when a caller later writes
+it. Internal HTTP retries never create additional attempt rows. The response
+records `provider_request_count`, `retry_count`, `deduplicated`, and optional
+`reused_classification_attempt_id` with backward-compatible defaults.
+
+- First-call success is one provider request and zero retries.
+- Success or terminal provider failure after two retries is three provider
+  requests and two retries.
+- A local pre-network failure has zero provider requests and zero retries.
+- A deduplication hit has zero provider requests, zero retries,
+  `deduplicated=true`, and references the original cached attempt.
+
+Only `VALID` and `ABSTAINED` results enter the bounded process-local cache.
+`PROVIDER_FAILED` and `VALIDATION_REJECTED` results do not. PR35 updates the
+ledger schema and writer mapping for compatibility but neither the classifier
+nor its checker writes to a live QuestDB.
 
 ## Research-only events and flags
 
@@ -187,6 +215,7 @@ Run contract checks offline with the repository virtual environment:
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_contracts_context.py
 ```
 
-PR34 does not add Gemini, SEC collection, archive writing, manual inbox
-processing, research-cache behavior, real shadow-policy execution, or real risk
-integration. Those remain explicitly assigned to PR35 through PR39.
+PR35 adds live Gemini classification only. SEC collection, news/social
+collection, archive writing, manual inbox processing, persistent research-cache
+behavior, real shadow-policy execution, and real risk integration remain
+deferred.

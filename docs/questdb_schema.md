@@ -25,6 +25,10 @@ confidence, concise summary, validation metadata, provider latency, safe
 failure category/summary, run/session/schema IDs, and trace ID. It contains no
 input text, prompt body, document body, or exception detail.
 
+PR35 appends provider-request count, retry count, deduplication state, and an
+optional reused-attempt ID. One row still represents one logical
+`classify()` attempt; internal Gemini HTTP retries do not create extra rows.
+
 `shadow_context_policy_evaluations` stores a research-only comparison at one
 `decision_evaluation_time`: evaluation/model-signal/optional-risk-decision IDs,
 matched event and flag ID lists, context fingerprint, policy version and config
@@ -50,6 +54,17 @@ The file uses one `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statement per new
 legacy-table column and `CREATE TABLE IF NOT EXISTS` for each new table. It has
 no `DROP`, `TRUNCATE`, `RENAME`, `INSERT`, `UPDATE`, or `DELETE` statement, so it
 can be rerun after a partial application and preserves existing rows.
+
+After the PR34 migration, PR35 deployments must run this second additive,
+idempotent migration before starting a PR35 writer:
+
+```text
+db/schema/questdb_pr35_add_context_classification_accounting.sql
+```
+
+It appends only the four nullable accounting/deduplication columns. PR35 does
+not apply the migration automatically and neither the classifier nor its live
+checker writes to QuestDB.
 
 Before applying it, back up the QuestDB volume, stop writers, and record counts
 for `context_ai_events` and `context_flags`. Execute the migration statements in

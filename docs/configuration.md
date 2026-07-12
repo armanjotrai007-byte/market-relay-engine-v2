@@ -7,7 +7,7 @@ Each file is safe to load locally without broker access, QuestDB writes, or live
 ## Files
 
 - `symbols.yaml` defines the final 10-stock universe (`PLTR`, `LMT`, `RTX`, `GD`, `AVAV`, `XOM`, `OXY`, `SLB`, `COP`, and `VLO`) and separate context symbols. None of the tradable symbols is approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
-- `context_sources.yaml` defines structured and unstructured context source settings. EIA, FRED, USAspending, the local macro calendar, and `yfinance_dev_only` are intentionally enabled for bounded use outside the per-tick loop. Yfinance remains development-only and not production-critical; SEC EDGAR, news, social, and the AI context filter remain disabled.
+- `context_sources.yaml` defines structured and unstructured context source settings. EIA, FRED, USAspending, the local macro calendar, and `yfinance_dev_only` are intentionally enabled for bounded use outside the per-tick loop. Yfinance remains development-only and not production-critical; SEC EDGAR, news, social, and automatic AI-context classification remain disabled. An explicit checker can enable one Gemini classification without changing this default.
 - `risk_limits.yaml` defines placeholder paper-trading risk limits. These are not optimized live settings.
 - `questdb.yaml` defines QuestDB connection/health defaults and the exact ledger
   table allow-list. PR34 adds `context_classification_attempts` and
@@ -45,6 +45,80 @@ The same commands should be run on the separate trading laptop after it pulls fr
   alter real risk, sizing, model, broker, or execution behavior.
 - Full source documents, prompts/request excerpts, credentials, and provider
   exceptions must not appear in QuestDB configuration or schemas.
+
+## Gemini AI Context Filter
+
+PR35 configures the source-neutral classifier under `ai_context_filter`:
+
+```yaml
+enabled: false
+provider: gemini
+model: gemini-3.5-flash
+api_key_env: GEMINI_API_KEY
+prompt_version: context_filter_v1
+response_schema_version: context_classification_response_v1
+timeout_seconds: 30.0
+max_retries: 2
+retry_base_delay_seconds: 0.5
+retry_max_delay_seconds: 4.0
+max_input_characters: 12000
+max_prompt_characters: 30000
+max_summary_characters: 500
+max_output_tokens: 256
+max_provider_calls_per_minute: 6
+max_provider_calls_per_run: 20
+dedup_cache_max_entries: 256
+temperature: 0
+direct_trade_authority: false
+```
+
+The model is configurable without a code change. The loader nevertheless
+requires `provider: gemini`, zero temperature, positive bounds and budgets, no
+more than two repository-owned retries, and `direct_trade_authority: false`.
+The last setting is a hard safety assertion: `true` is invalid configuration,
+not a supported mode.
+
+`GEMINI_API_KEY=` is the only Gemini placeholder in `.env.example`. Put the
+real value in the ignored repository `.env`; the application and explicit live
+checker load that file without displaying it. The key is never part of a
+prompt, result, exception, or normal log field.
+
+Each Interactions request uses JSON MIME output with the contract-derived JSON
+Schema, `store=False`, and no tools, browsing, code execution, agents, previous
+interaction ID, background execution, or conversation history. The SDK is
+configured for one HTTP attempt; the classifier alone owns the bounded custom
+retry loop for timeouts/network interruptions, 429/resource exhaustion, and
+retryable 5xx failures. Two retries permit at most three actual provider calls
+per logical classification. Authentication, permission, safety, validation,
+and local-budget failures are not retried.
+
+The source excerpt and final rendered prompt have separate 12,000- and
+30,000-character limits, so oversized trusted metadata is also rejected before
+network use. The local six-calls-per-minute and 20-calls-per-run guards are conservative
+process limits, not replacements for Google project quotas or billing controls.
+The 256-entry LRU deduplication cache stores only valid or abstained results and
+uses a bounded fingerprint of trusted hashes/IDs, ticker hints, source type,
+prompt, model, and schema versions. It is process-local and disappears on
+restart; persistent research caching is deferred.
+
+The supported future text inputs include SEC filing sections and exhibits,
+news excerpts, social or political statements, contract descriptions,
+government announcements, regulatory/policy and geopolitical developments,
+company disclosures, and manual research documents. FRED observations, EIA
+numbers, calendar timing, proxy bars, structured USAspending award values, and
+deterministic Form 4 transaction facts bypass Gemini.
+
+Offline/default and explicitly gated live checks are:
+
+```powershell
+python scripts/check_gemini_context.py
+python scripts/check_gemini_context.py --live --required
+```
+
+The live checker makes one synthetic request. Free-tier 429 responses receive
+only the configured bounded retries; exhaustion returns a safe structured
+provider failure. Source collectors and pipeline/research-cache integration are
+deferred to later PRs. The classifier never writes QuestDB itself.
 
 ## YFinance Development Proxy
 
