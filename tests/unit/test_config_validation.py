@@ -1,10 +1,19 @@
-from pathlib import Path
 from copy import deepcopy
+from dataclasses import replace
+from pathlib import Path
 
-from market_relay_engine.common.config import EXPECTED_CONFIG_FILES, load_all_configs
+import pytest
+
+from market_relay_engine.ai_context.settings import load_ai_context_filter_settings
+from market_relay_engine.common.config import (
+    EXPECTED_CONFIG_FILES,
+    ConfigValidationError,
+    load_all_configs,
+)
 from market_relay_engine.questdb.writer import ALLOWED_LEDGER_TABLES
 from scripts.check_config import (
     FORBIDDEN_V1_TERMS,
+    _check_ai_context_filter,
     _check_context_sources,
     _check_questdb_role,
     _check_trading_defaults,
@@ -89,8 +98,85 @@ def test_structured_context_sources_are_enabled_and_decision_loop_safe() -> None
         assert source["enabled"] is False
         assert source["direct_trade_authority"] is False
 
-    assert context_sources["ai_context_filter"]["enabled"] is False
-    assert context_sources["ai_context_filter"]["direct_trade_authority"] is False
+    ai_filter = context_sources["ai_context_filter"]
+    assert ai_filter == {
+        "enabled": False,
+        "provider": "gemini",
+        "model": "gemini-3.5-flash",
+        "api_key_env": "GEMINI_API_KEY",
+        "prompt_version": "context_filter_v1",
+        "response_schema_version": "context_classification_response_v1",
+        "timeout_seconds": 30.0,
+        "max_retries": 2,
+        "retry_base_delay_seconds": 0.5,
+        "retry_max_delay_seconds": 4.0,
+        "max_input_characters": 12000,
+        "max_prompt_characters": 30000,
+        "max_summary_characters": 500,
+        "max_output_tokens": 256,
+        "max_provider_calls_per_minute": 6,
+        "max_provider_calls_per_run": 20,
+        "dedup_cache_max_entries": 256,
+        "temperature": 0,
+        "direct_trade_authority": False,
+    }
+
+
+def test_ai_context_filter_direct_trade_authority_true_is_rejected() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    ai_filter = configs["context_sources"]["ai_context_filter"]
+    ai_filter["direct_trade_authority"] = True
+
+    issues = _check_context_sources(configs, base_dir=REPO_ROOT)
+
+    assert "AI context filter must not have direct trade authority" in issues
+
+
+def test_ai_context_filter_false_direct_trade_authority_passes() -> None:
+    ai_filter = deepcopy(
+        load_all_configs(base_dir=REPO_ROOT)["context_sources"]["ai_context_filter"]
+    )
+    issues: list[str] = []
+
+    _check_ai_context_filter(ai_filter, issues)
+
+    assert issues == []
+
+
+def test_ai_context_filter_typed_settings_load_safe_defaults() -> None:
+    settings = load_ai_context_filter_settings(base_dir=REPO_ROOT)
+
+    assert settings.enabled is False
+    assert settings.provider == "gemini"
+    assert settings.model == "gemini-3.5-flash"
+    assert settings.api_key_env == "GEMINI_API_KEY"
+    assert settings.max_retries == 2
+    assert settings.max_provider_calls_per_minute == 6
+    assert settings.max_provider_calls_per_run == 20
+    assert settings.dedup_cache_max_entries == 256
+    assert settings.direct_trade_authority is False
+
+
+def test_ai_context_filter_typed_settings_reject_trade_authority() -> None:
+    settings = load_ai_context_filter_settings(base_dir=REPO_ROOT)
+
+    with pytest.raises(
+        ConfigValidationError,
+        match="direct_trade_authority must be false",
+    ):
+        replace(settings, direct_trade_authority=True)
+
+
+def test_ai_context_filter_missing_or_unsafe_resource_setting_is_rejected() -> None:
+    configs = deepcopy(load_all_configs(base_dir=REPO_ROOT))
+    ai_filter = configs["context_sources"]["ai_context_filter"]
+    ai_filter["max_provider_calls_per_run"] = 0
+    del ai_filter["max_output_tokens"]
+
+    issues = _check_context_sources(configs, base_dir=REPO_ROOT)
+
+    assert "ai_context_filter max_provider_calls_per_run must be a positive integer" in issues
+    assert "ai_context_filter max_output_tokens must be a positive integer" in issues
 
 
 def test_enabled_structured_sources_pass_validation_when_complete() -> None:

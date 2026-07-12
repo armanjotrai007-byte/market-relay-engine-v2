@@ -110,8 +110,21 @@ unstructured_sources:
 
 ai_context_filter:
   enabled: false
-  direct_trade_authority: false
-  required_output_schema: context_flag_v1
+  provider: gemini
+  model: gemini-3.5-flash
+  api_key_env: GEMINI_API_KEY
   prompt_version: context_filter_v1
+  response_schema_version: context_classification_response_v1
+  timeout_seconds: 30.0
+  max_retries: 2
+  retry_base_delay_seconds: 0.5
+  retry_max_delay_seconds: 4.0
+  max_input_characters: 12000
+  max_prompt_characters: 30000
+  max_summary_characters: 500
+  max_output_tokens: 256
+  max_provider_calls_per_minute: 6
+  max_provider_calls_per_run: 20
+  dedup_cache_max_entries: 256
   temperature: 0
-  require_valid_until: true
+  direct_trade_authority: false
