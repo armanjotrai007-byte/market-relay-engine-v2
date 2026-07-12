@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from threading import Barrier
 from typing import Any
 
-from google.genai import errors
+from google.genai import errors, interactions as interaction_types
 from google.genai._gaos.lib import compat_errors as interaction_errors
 import httpx
 import pytest
@@ -22,6 +22,7 @@ import pytest
 from market_relay_engine.ai_context.classifier import (
     GeminiContextClassifier,
     GeminiInteractionTransport,
+    _extract_interaction_output_text,
     contains_trading_instruction,
 )
 from market_relay_engine.ai_context.runtime_guards import (
@@ -116,19 +117,28 @@ def _provider_payload(**overrides: object) -> dict[str, object]:
 def _interaction(
     payload: object | None = None,
     *,
-    output_text: object = _UNSET,
+    text: object = _UNSET,
+    outputs: object = _UNSET,
     status: str = "completed",
     steps: list[object] | None = None,
 ) -> object:
-    if output_text is _UNSET:
-        output_text = json.dumps(
+    if text is _UNSET:
+        text = json.dumps(
             _provider_payload() if payload is None else payload,
             separators=(",", ":"),
         )
-    return SimpleNamespace(
-        output_text=output_text,
+    if outputs is _UNSET:
+        text_output = (
+            interaction_types.TextContent(type="text", text=text)
+            if isinstance(text, str)
+            else SimpleNamespace(type="text", text=text)
+        )
+        outputs = [text_output]
+    return interaction_types.Interaction(
         status=status,
-        steps=[] if steps is None else steps,
+        model="gemini-3.5-flash",
+        steps=steps,
+        outputs=outputs,
     )
 
 
@@ -272,7 +282,7 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
     assert captured_factory["api_key"] == API_KEY_SENTINEL
     assert http_options.timeout == 12_500  # type: ignore[union-attr]
     assert http_options.retry_options.attempts == 1  # type: ignore[union-attr]
-    assert response.output_text
+    assert response.outputs
     assert captured_create == [
         {
             "model": "gemini-3.5-flash",
@@ -302,6 +312,139 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
         "code_execution",
     }
     assert forbidden.isdisjoint(request_body)
+
+
+def test_extracts_one_outputs_compatibility_text_from_real_sdk_interaction() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = _interaction(text=expected)
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert isinstance(interaction, interaction_types.Interaction)
+    assert interaction.model_extra is not None
+    assert interaction.model_extra["outputs"] is interaction.outputs
+    assert isinstance(interaction.outputs[0], interaction_types.TextContent)
+    assert interaction.outputs[0].type == "text"
+    assert output_text == expected
+    assert failure is None
+
+
+def test_extracts_declared_sdk_210_model_output_step_shape() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = interaction_types.Interaction(
+        status="completed",
+        model="gemini-3.5-flash",
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[interaction_types.TextContent(type="text", text=expected)],
+            )
+        ],
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert interaction.output_text is None
+    assert output_text == expected
+    assert failure is None
+
+
+def test_empty_interaction_outputs_are_safe_empty_response() -> None:
+    output_text, failure = _extract_interaction_output_text(_interaction(outputs=[]))
+
+    assert output_text is None
+    assert failure is not None
+    assert failure.category == "EMPTY_RESPONSE"
+
+
+def test_missing_interaction_outputs_and_steps_are_safe_provider_error() -> None:
+    output_text, failure = _extract_interaction_output_text(
+        SimpleNamespace(status="completed")
+    )
+
+    assert output_text is None
+    assert failure is not None
+    assert failure.category == "PROVIDER_ERROR"
+
+
+def test_interaction_outputs_with_no_text_are_safe_empty_response() -> None:
+    interaction = _interaction(
+        outputs=[interaction_types.ImageContent(type="image", data="unused")]
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text is None
+    assert failure is not None
+    assert failure.category == "EMPTY_RESPONSE"
+
+
+@pytest.mark.parametrize("text", ["", "   ", None, 123])
+def test_blank_or_non_string_interaction_text_is_safe_empty_response(
+    text: object,
+) -> None:
+    output_text, failure = _extract_interaction_output_text(_interaction(text=text))
+
+    assert output_text is None
+    assert failure is not None
+    assert failure.category == "EMPTY_RESPONSE"
+
+
+def test_one_text_output_is_selected_without_concatenating_non_text_outputs() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = _interaction(
+        outputs=[
+            interaction_types.ImageContent(type="image", data="unused"),
+            interaction_types.TextContent(type="text", text=expected),
+            SimpleNamespace(type="function_call", text="must not be parsed"),
+        ]
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
+def test_multiple_text_outputs_are_rejected_without_concatenation() -> None:
+    interaction = _interaction(
+        outputs=[
+            interaction_types.TextContent(type="text", text='{"first":true}'),
+            interaction_types.TextContent(type="text", text='{"second":true}'),
+        ]
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text is None
+    assert failure is not None
+    assert failure.category == "PROVIDER_ERROR"
+
+
+def test_extraction_never_inspects_invented_top_level_output_text() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+
+    class InteractionWithOutputTextTrap:
+        status = "completed"
+        outputs = [interaction_types.TextContent(type="text", text=expected)]
+
+        @property
+        def output_text(self) -> str:
+            raise AssertionError("top-level output_text must not be inspected")
+
+    output_text, failure = _extract_interaction_output_text(
+        InteractionWithOutputTextTrap()
+    )
+
+    assert output_text == expected
+    assert failure is None
+
+
+def test_realistic_interactions_outputs_shape_reaches_valid() -> None:
+    result = _classifier(FakeTransport(_interaction())).classify(_request())
+
+    assert result.response.status is ContextClassificationStatus.VALID
+    assert result.response.safe_failure_category is None
 
 
 def test_one_classifier_provider_attempt_is_one_transport_invocation() -> None:
@@ -396,7 +539,7 @@ def test_malformed_json_is_rejected_without_recovery_or_retry(
     output_text: str,
     reason_code: str,
 ) -> None:
-    transport = FakeTransport(_interaction(output_text=output_text))
+    transport = FakeTransport(_interaction(text=output_text))
 
     result = _classifier(transport).classify(_request())
 
@@ -449,7 +592,7 @@ def test_schema_and_contract_invalid_payloads_are_not_retried(
 
 def test_empty_provider_output_is_provider_failure_without_retry() -> None:
     for output in (None, "", "   ", 123):
-        transport = FakeTransport(_interaction(output_text=output))
+        transport = FakeTransport(_interaction(text=output))
         result = _classifier(transport).classify(_request(str(output)))
 
         assert result.response.status is ContextClassificationStatus.PROVIDER_FAILED
@@ -460,11 +603,15 @@ def test_empty_provider_output_is_provider_failure_without_retry() -> None:
 
 
 def test_safety_block_is_non_retryable_provider_failure() -> None:
-    step = SimpleNamespace(
-        error=SimpleNamespace(code=3, message="SAFETY policy blocked the content")
+    step = interaction_types.ModelOutputStep(
+        type="model_output",
+        error=interaction_types.Status(
+            code=3,
+            message="SAFETY policy blocked the content",
+        ),
     )
     transport = FakeTransport(
-        _interaction(output_text="", status="failed", steps=[step])
+        _interaction(text="", status="failed", steps=[step])
     )
 
     result = _classifier(transport).classify(_request())
@@ -683,7 +830,7 @@ def test_provider_failure_is_not_cached() -> None:
 
 
 def test_validation_rejection_is_not_cached() -> None:
-    transport = FakeTransport(_interaction(output_text="bad json"), _interaction())
+    transport = FakeTransport(_interaction(text="bad json"), _interaction())
     classifier = _classifier(transport)
     request = _request()
 

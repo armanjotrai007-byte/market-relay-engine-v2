@@ -300,6 +300,83 @@ class _Failure:
     retryable: bool
 
 
+_MISSING_INTERACTION_FIELD = object()
+
+
+def _interaction_field(value: object, name: str) -> object:
+    if isinstance(value, Mapping):
+        return value.get(name, _MISSING_INTERACTION_FIELD)
+    return getattr(value, name, _MISSING_INTERACTION_FIELD)
+
+
+def _invalid_interaction_output_failure() -> _Failure:
+    return _Failure(
+        "PROVIDER_ERROR",
+        "Gemini returned an invalid interaction output shape.",
+        False,
+    )
+
+
+def _empty_interaction_output_failure() -> _Failure:
+    return _Failure(
+        "EMPTY_RESPONSE",
+        "Gemini returned no structured classification output.",
+        False,
+    )
+
+
+def _extract_interaction_output_text(
+    interaction: object,
+) -> tuple[str | None, _Failure | None]:
+    """Select one typed text output without reading SDK convenience properties."""
+
+    try:
+        output_items = _interaction_field(interaction, "outputs")
+        if output_items is _MISSING_INTERACTION_FIELD:
+            # google-genai 2.10.0 declares model output content under
+            # Interaction.steps; some Interactions responses expose the same
+            # typed content blocks as an extra top-level outputs collection.
+            steps = _interaction_field(interaction, "steps")
+            if steps is _MISSING_INTERACTION_FIELD:
+                return None, _invalid_interaction_output_failure()
+            if steps is None:
+                output_items = []
+            elif not isinstance(steps, (list, tuple)):
+                return None, _invalid_interaction_output_failure()
+            else:
+                nested_outputs: list[object] = []
+                for step in steps:
+                    if _interaction_field(step, "type") != "model_output":
+                        continue
+                    content = _interaction_field(step, "content")
+                    if content is None:
+                        continue
+                    if not isinstance(content, (list, tuple)):
+                        return None, _invalid_interaction_output_failure()
+                    nested_outputs.extend(content)
+                output_items = nested_outputs
+
+        if not isinstance(output_items, (list, tuple)):
+            return None, _invalid_interaction_output_failure()
+
+        text_outputs = [
+            output
+            for output in output_items
+            if _interaction_field(output, "type") == "text"
+        ]
+        if not text_outputs:
+            return None, _empty_interaction_output_failure()
+        if len(text_outputs) != 1:
+            return None, _invalid_interaction_output_failure()
+
+        text = _interaction_field(text_outputs[0], "text")
+        if not isinstance(text, str) or not text.strip():
+            return None, _empty_interaction_output_failure()
+        return text, None
+    except Exception:
+        return None, _invalid_interaction_output_failure()
+
+
 class GeminiContextClassifier:
     """Classify bounded untrusted text without granting trade authority."""
 
@@ -532,16 +609,12 @@ class GeminiContextClassifier:
                 )
             break
 
-        output_text = getattr(interaction, "output_text", None)
-        if not isinstance(output_text, str) or not output_text.strip():
+        output_text, output_failure = _extract_interaction_output_text(interaction)
+        if output_failure is not None or output_text is None:
             return self._provider_failed(
                 request,
                 attempt_id=attempt_id,
-                failure=_Failure(
-                    "EMPTY_RESPONSE",
-                    "Gemini returned no structured classification output.",
-                    False,
-                ),
+                failure=output_failure or _invalid_interaction_output_failure(),
                 provider_request_count=provider_request_count,
                 started=started,
             )
