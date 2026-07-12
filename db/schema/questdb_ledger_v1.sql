@@ -319,7 +319,11 @@ CREATE TABLE context_classification_attempts (
     run_id STRING,
     session_id STRING,
     schema_version SYMBOL,
-    trace_id STRING
+    trace_id STRING,
+    provider_request_count LONG,
+    retry_count LONG,
+    deduplicated BOOLEAN,
+    reused_classification_attempt_id STRING
 ) TIMESTAMP(requested_at) PARTITION BY DAY;
 
 CREATE TABLE shadow_context_policy_evaluations (

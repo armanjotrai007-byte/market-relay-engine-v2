@@ -200,6 +200,7 @@ def make_context_classification_response(
         prompt_version=request.prompt_version,
         status=ContextClassificationStatus.VALID,
         provider_latency_ms=12.5,
+        provider_request_count=1,
         event_type=ContextClassificationEventType.SEC_8K_RESULTS,
         risk_level=ContextRiskLevel.MEDIUM,
         urgency=ContextUrgency.MEDIUM,

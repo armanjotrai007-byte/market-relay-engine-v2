@@ -40,6 +40,12 @@ PR26_MIGRATION_PATH = (
 PR34_MIGRATION_PATH = (
     REPO_ROOT / "db" / "schema" / "questdb_pr34_add_phase7_context_ledger.sql"
 )
+PR35_MIGRATION_PATH = (
+    REPO_ROOT
+    / "db"
+    / "schema"
+    / "questdb_pr35_add_context_classification_accounting.sql"
+)
 QUESTDB_CONFIG_PATH = REPO_ROOT / "config" / "questdb.yaml"
 
 OLD_TABLES = (
@@ -208,6 +214,15 @@ PR34_NEW_TABLE_DEFINITIONS = {
 PR34_DESIGNATED_TIMESTAMPS = {
     "context_classification_attempts": "requested_at",
     "shadow_context_policy_evaluations": "decision_evaluation_time",
+}
+
+PR35_EXISTING_TABLE_ADDITIONS = {
+    "context_classification_attempts": (
+        ("provider_request_count", "LONG"),
+        ("retry_count", "LONG"),
+        ("deduplicated", "BOOLEAN"),
+        ("reused_classification_attempt_id", "STRING"),
+    ),
 }
 
 FORBIDDEN_CONTEXT_LEDGER_COLUMNS = {
@@ -438,6 +453,41 @@ def validate_pr34_migration_file(
     return failures
 
 
+def validate_pr35_migration_file(
+    migration_path: Path = PR35_MIGRATION_PATH,
+) -> list[str]:
+    if not migration_path.is_file():
+        return [f"PR35 migration file not found: {migration_path}"]
+    cleaned = strip_sql_line_comments(
+        migration_path.read_text(encoding="utf-8")
+    ).strip()
+    statements = split_sql_statements(cleaned)
+    failures: list[str] = []
+
+    forbidden = re.findall(
+        r"\b(DROP|RENAME|TRUNCATE|CREATE|INSERT|UPDATE|DELETE|SELECT)\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if forbidden:
+        failures.append(
+            "PR35 migration contains destructive, DDL-create, or DML "
+            f"operations: {forbidden}"
+        )
+
+    expected_alters = [
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {column_type}"
+        for table, additions in PR35_EXISTING_TABLE_ADDITIONS.items()
+        for column, column_type in additions
+    ]
+    if statements != expected_alters:
+        failures.append(
+            "PR35 migration statements must exactly match the ordered, "
+            "one-column IF NOT EXISTS accounting additions"
+        )
+    return failures
+
+
 def validate_questdb_config_table_order(
     config_path: Path = QUESTDB_CONFIG_PATH,
 ) -> list[str]:
@@ -527,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
         failures = validate_schema_text(sql_text)
         failures.extend(validate_pr26_migration_file())
         failures.extend(validate_pr34_migration_file())
+        failures.extend(validate_pr35_migration_file())
         failures.extend(validate_questdb_config_table_order())
         if failures:
             for failure in failures:
@@ -695,9 +746,12 @@ def _schema_writer_column_failures(sql_text: str) -> list[str]:
             )
 
     for table, expected_definitions in PR34_NEW_TABLE_DEFINITIONS.items():
-        if _table_column_definitions(sql_text, table) != expected_definitions:
+        expected_reset_definitions = (
+            expected_definitions + PR35_EXISTING_TABLE_ADDITIONS.get(table, ())
+        )
+        if _table_column_definitions(sql_text, table) != expected_reset_definitions:
             failures.append(
-                f"reset schema columns/types differ from PR34 contract for {table}"
+                f"reset schema columns/types differ from current contract for {table}"
             )
 
     for table, timestamp in PR34_DESIGNATED_TIMESTAMPS.items():

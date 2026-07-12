@@ -567,7 +567,9 @@ def test_phase7_ledger_table_columns_are_exact_and_metadata_only() -> None:
         "model_version prompt_version status event_type risk_level urgency confidence "
         "summary validation_result_id validation_outcome validation_reason_codes_json "
         "validator_version validated_at provider_latency_ms safe_failure_category "
-        "safe_failure_summary run_id session_id schema_version trace_id".split()
+        "safe_failure_summary run_id session_id schema_version trace_id "
+        "provider_request_count retry_count deduplicated "
+        "reused_classification_attempt_id".split()
     )
     assert TABLE_COLUMNS["shadow_context_policy_evaluations"] == tuple(
         "decision_evaluation_time write_time shadow_evaluation_id model_signal_id risk_decision_id "
@@ -624,6 +626,10 @@ def test_context_classification_attempt_maps_trusted_metadata_and_enum_values() 
     assert row["provider_latency_ms"] == 125.5
     assert row["safe_failure_category"] is None
     assert row["safe_failure_summary"] is None
+    assert row["provider_request_count"] == 1
+    assert row["retry_count"] == 0
+    assert row["deduplicated"] is False
+    assert row["reused_classification_attempt_id"] is None
     assert row["trace_id"] == "trace_phase7"
     assert "input_text" not in row
     assert "safe_detail" not in row
@@ -641,6 +647,32 @@ def test_context_classification_attempt_without_validation_uses_null_metadata() 
     assert row["validation_reason_codes_json"] is None
     assert row["validator_version"] is None
     assert row["validated_at"] is None
+
+
+def test_context_classification_attempt_maps_retry_and_deduplication_accounting() -> None:
+    request, response, _ = _classification_records()
+    retried = replace(response, provider_request_count=3, retry_count=2)
+    deduplicated = replace(
+        response,
+        provider_request_count=0,
+        retry_count=0,
+        deduplicated=True,
+        reused_classification_attempt_id="classification_attempt_original",
+    )
+
+    retried_row = context_classification_attempt_to_row(request, retried)
+    deduplicated_row = context_classification_attempt_to_row(request, deduplicated)
+
+    assert retried_row["provider_request_count"] == 3
+    assert retried_row["retry_count"] == 2
+    assert retried_row["deduplicated"] is False
+    assert deduplicated_row["provider_request_count"] == 0
+    assert deduplicated_row["retry_count"] == 0
+    assert deduplicated_row["deduplicated"] is True
+    assert (
+        deduplicated_row["reused_classification_attempt_id"]
+        == "classification_attempt_original"
+    )
 
 
 def test_provider_failure_row_keeps_only_safe_failure_fields() -> None:
@@ -959,6 +991,7 @@ def _classification_records() -> tuple[
         prompt_version=request.prompt_version,
         status=ContextClassificationStatus.VALID,
         provider_latency_ms=125.5,
+        provider_request_count=1,
         event_type=ContextClassificationEventType.SEC_8K_RESULTS,
         risk_level=ContextRiskLevel.MEDIUM,
         urgency=ContextUrgency.HIGH,

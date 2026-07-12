@@ -73,6 +73,15 @@ def test_phase7_enum_value_sets_are_exact() -> None:
     assert [item.value for item in ContextClassificationEventType] == [
         "UNKNOWN",
         "OTHER",
+        "GOVERNMENT_CONTRACT",
+        "REGULATORY_POLICY",
+        "GEOPOLITICAL",
+        "SUPPLY_DISRUPTION",
+        "EARNINGS_GUIDANCE",
+        "LEGAL",
+        "CYBERSECURITY",
+        "MANAGEMENT_CHANGE",
+        "SOCIAL_POLITICAL_STATEMENT",
         "SEC_8K_MATERIAL_AGREEMENT",
         "SEC_8K_TERMINATION_OF_MATERIAL_AGREEMENT",
         "SEC_8K_BANKRUPTCY",
@@ -280,6 +289,90 @@ def test_classification_response_rejects_invalid_provider_latency(
 ) -> None:
     with pytest.raises((TypeError, ValueError), match="provider_latency_ms"):
         replace(make_context_classification_response(), provider_latency_ms=latency)
+
+
+def test_classification_response_defaults_preserve_attempt_accounting_compatibility() -> None:
+    response = ContextClassificationResponse(
+        classification_request_id="classification_request_legacy",
+        classified_at=datetime(2026, 7, 1, 14, 0, tzinfo=UTC),
+        provider="legacy_provider",
+        model_version="legacy_model_v1",
+        prompt_version="legacy_prompt_v1",
+        status=ContextClassificationStatus.PROVIDER_FAILED,
+        provider_latency_ms=0.0,
+        safe_failure_category="LOCAL_FAILURE",
+    )
+
+    assert response.provider_request_count == 0
+    assert response.retry_count == 0
+    assert response.deduplicated is False
+    assert response.reused_classification_attempt_id is None
+
+
+@pytest.mark.parametrize(
+    ("changes", "match"),
+    [
+        ({"provider_request_count": -1}, "provider_request_count"),
+        ({"provider_request_count": True}, "provider_request_count"),
+        ({"provider_request_count": 1.0}, "provider_request_count"),
+        ({"retry_count": -1}, "retry_count"),
+        ({"retry_count": True}, "retry_count"),
+        ({"provider_request_count": 1, "retry_count": 1}, "retry_count"),
+        ({"provider_request_count": 2, "retry_count": 0}, "retry_count"),
+        ({"provider_request_count": 2, "retry_count": 2}, "retry_count"),
+        ({"provider_request_count": 3, "retry_count": 1}, "retry_count"),
+        ({"deduplicated": "false"}, "deduplicated"),
+        (
+            {
+                "provider_request_count": 0,
+                "retry_count": 0,
+                "deduplicated": True,
+            },
+            "reused_classification_attempt_id",
+        ),
+        (
+            {
+                "deduplicated": True,
+                "reused_classification_attempt_id": "classification_attempt_original",
+                "provider_request_count": 1,
+            },
+            "deduplicated responses",
+        ),
+        (
+            {"reused_classification_attempt_id": "classification_attempt_original"},
+            "only valid for deduplicated",
+        ),
+    ],
+)
+def test_classification_response_rejects_invalid_attempt_accounting(
+    changes: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises((TypeError, ValueError), match=match):
+        replace(make_context_classification_response(), **changes)
+
+
+def test_classification_response_accepts_retry_and_deduplication_accounting() -> None:
+    retried = replace(
+        make_context_classification_response(),
+        provider_request_count=3,
+        retry_count=2,
+    )
+    deduplicated = replace(
+        make_context_classification_response(),
+        provider_request_count=0,
+        retry_count=0,
+        deduplicated=True,
+        reused_classification_attempt_id="classification_attempt_original",
+    )
+
+    assert retried.provider_request_count == 3
+    assert retried.retry_count == 2
+    assert deduplicated.deduplicated is True
+    assert (
+        deduplicated.reused_classification_attempt_id
+        == "classification_attempt_original"
+    )
 
 
 @pytest.mark.parametrize("confidence", [-0.01, 1.01, float("nan"), float("inf"), True])
