@@ -46,6 +46,8 @@ ledger_tables:
   - context_indicator_snapshots
   - context_ai_events
   - context_flags
+  - context_classification_attempts
+  - shadow_context_policy_evaluations
   - order_events
   - fill_events
   - trade_outcomes

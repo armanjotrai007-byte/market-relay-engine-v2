@@ -33,6 +33,8 @@ DROP TABLE IF EXISTS risk_decisions;
 DROP TABLE IF EXISTS context_indicator_snapshots;
 DROP TABLE IF EXISTS context_ai_events;
 DROP TABLE IF EXISTS context_flags;
+DROP TABLE IF EXISTS context_classification_attempts;
+DROP TABLE IF EXISTS shadow_context_policy_evaluations;
 DROP TABLE IF EXISTS order_events;
 DROP TABLE IF EXISTS fill_events;
 DROP TABLE IF EXISTS trade_outcomes;
@@ -221,7 +223,25 @@ CREATE TABLE context_ai_events (
     run_id STRING,
     session_id STRING,
     schema_version SYMBOL,
-    trace_id STRING
+    trace_id STRING,
+    raw_input_id STRING,
+    source_document_id STRING,
+    classification_request_id STRING,
+    classification_attempt_id STRING,
+    validation_result_id STRING,
+    source_type SYMBOL,
+    source_platform SYMBOL,
+    source_uri STRING,
+    source_locator STRING,
+    document_hash STRING,
+    source_published_at TIMESTAMP,
+    source_updated_at TIMESTAMP,
+    collected_at TIMESTAMP,
+    normalized_at TIMESTAMP,
+    classified_at TIMESTAMP,
+    available_at TIMESTAMP,
+    validated_at TIMESTAMP,
+    provider SYMBOL
 ) TIMESTAMP(event_time) PARTITION BY DAY;
 
 CREATE TABLE context_flags (
@@ -238,8 +258,89 @@ CREATE TABLE context_flags (
     run_id STRING,
     session_id STRING,
     schema_version SYMBOL,
-    trace_id STRING
+    trace_id STRING,
+    context_event_id STRING,
+    raw_input_id STRING,
+    source_document_id STRING,
+    classification_request_id STRING,
+    classification_attempt_id STRING,
+    validation_result_id STRING,
+    source_type SYMBOL,
+    source_id STRING,
+    source_platform SYMBOL,
+    source_uri STRING,
+    source_locator STRING,
+    document_hash STRING,
+    raw_input_hash STRING,
+    valid_from TIMESTAMP,
+    available_at TIMESTAMP,
+    validated_at TIMESTAMP,
+    reason_codes_json STRING,
+    summary STRING
 ) TIMESTAMP(event_time) PARTITION BY DAY;
+
+CREATE TABLE context_classification_attempts (
+    requested_at TIMESTAMP,
+    write_time TIMESTAMP,
+    classification_attempt_id STRING,
+    classification_request_id STRING,
+    raw_input_id STRING,
+    source_document_id STRING,
+    source SYMBOL,
+    source_type SYMBOL,
+    source_platform SYMBOL,
+    source_uri STRING,
+    source_locator STRING,
+    affected_tickers_json STRING,
+    raw_input_hash STRING,
+    document_hash STRING,
+    source_published_at TIMESTAMP,
+    source_updated_at TIMESTAMP,
+    collected_at TIMESTAMP,
+    normalized_at TIMESTAMP,
+    classified_at TIMESTAMP,
+    provider SYMBOL,
+    model_version SYMBOL,
+    prompt_version SYMBOL,
+    status SYMBOL,
+    event_type SYMBOL,
+    risk_level SYMBOL,
+    urgency SYMBOL,
+    confidence DOUBLE,
+    summary STRING,
+    validation_result_id STRING,
+    validation_outcome BOOLEAN,
+    validation_reason_codes_json STRING,
+    validator_version SYMBOL,
+    validated_at TIMESTAMP,
+    provider_latency_ms DOUBLE,
+    safe_failure_category SYMBOL,
+    safe_failure_summary STRING,
+    run_id STRING,
+    session_id STRING,
+    schema_version SYMBOL,
+    trace_id STRING
+) TIMESTAMP(requested_at) PARTITION BY DAY;
+
+CREATE TABLE shadow_context_policy_evaluations (
+    decision_evaluation_time TIMESTAMP,
+    write_time TIMESTAMP,
+    shadow_evaluation_id STRING,
+    model_signal_id STRING,
+    risk_decision_id STRING,
+    matched_context_event_ids_json STRING,
+    matched_context_flag_ids_json STRING,
+    shadow_context_fingerprint STRING,
+    policy_version SYMBOL,
+    policy_config_hash STRING,
+    hypothetical_action SYMBOL,
+    proposed_size_factor DOUBLE,
+    reason_codes_json STRING,
+    run_id STRING,
+    session_id STRING,
+    schema_version SYMBOL,
+    trace_id STRING
+) TIMESTAMP(decision_evaluation_time) PARTITION BY DAY;
 
 CREATE TABLE order_events (
     order_time TIMESTAMP,

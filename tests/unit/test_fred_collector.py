@@ -102,11 +102,11 @@ def _values(result: object) -> dict[str, object]:
     return {item.indicator_name: item.value for item in result.indicator_snapshots}
 
 
-def test_repository_configuration_is_exact_and_disabled_by_default() -> None:
+def test_repository_config_intentionally_enables_fred() -> None:
     loaded = yaml.safe_load((REPO_ROOT / "config" / "context_sources.yaml").read_text(encoding="utf-8"))
     config = FREDConfig.from_repository_config(loaded)
 
-    assert config.enabled is False
+    assert config.enabled is True
     assert config.api_key_env == "FRED_API_KEY"
     assert config.observation_fetch_limit == 20
     assert config.max_observation_age_calendar_days == 5

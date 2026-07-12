@@ -1,248 +1,155 @@
-# handoff.md - Trading System V2 Clean Handoff
+# Market Relay Engine V2 Handoff
 
-## Current Status
+## Current work
 
 Repository: `armanjotrai007-byte/market-relay-engine-v2`
 
-Canonical source of truth: GitHub `main`.
-
-Latest confirmed merged base:
-
-- **PR 24 - In-Memory ContextState Cache**
-- Merge commit: `942b5a99c485240f8716e0bec4785290dbdf221a`
-- Result: merged into `main` with `GLOBAL`, `TICKER`, and `SECTOR` cache scopes and normal update outcomes for written, replaced, stale, and duplicate updates.
-
-Current active PR:
-
-- **PR 25 - YFinance Development Proxy Collector**
-- Branch: `pr25-yfinance-dev-sector-proxy`
-- Purpose: add a disabled-by-default, development-only, one-shot yfinance proxy collector that feeds PR24 `ContextStateCache` entries and can optionally write context indicator ledger rows.
-- Safety exclusions: no trading signals, no risk approval changes, no order submission, no Alpaca calls, no Databento calls, no QuestDB reads, no scheduler, no background service, no AI/model calls, and no production market-data claims.
-- Next likely PR after merge: deterministic numeric context-rule integration that consumes PR25 proxy readings for sector confirmation or other explicit rules.
-
-Local workspace and publishing note:
-
-- This local workspace may not be a usable Git checkout for publishing work.
-- PR25 was prepared with the GitHub connector.
-- Run validation on the server laptop before merging.
-
----
-
-## Project Summary
-
-This repo builds a local AI-assisted trading research and paper/live execution system.
-
-Core flow:
+PR34 review branch:
 
 ```text
-Databento market data
--> normalized MarketRecord
--> canonical feature builder
--> model signal
--> deterministic risk filter
--> local order intent
--> future Alpaca paper/live execution
--> QuestDB bot ledger
+pr34-phase7-contracts-repository-consistency
 ```
 
-QuestDB is only the bot ledger. It must not be used as a historical market-data warehouse or as the hot-path source for live context reads.
-
-Historical market truth comes from official Databento historical DBN/Parquet files, not QuestDB.
-
----
-
-## Non-Negotiable Rules
-
-1. GitHub is the official project filesystem.
-2. Test every PR on the server laptop before merging.
-3. Keep raw Databento files local and ignored.
-4. Do not commit `.dbn`, `.dbn.zst`, `.parquet`, logs, `.env`, or API keys.
-5. Do not use QuestDB as historical market-data storage.
-6. Use one canonical feature builder for historical and live paths.
-7. AI context may produce structured risk flags only; it must not directly trade.
-8. The deterministic Python risk filter is the final gate before local order intent creation.
-9. Alpaca starts as paper trading only; live trading remains out of scope.
-10. Keep PRs small, simple, testable, and reviewable.
-
----
-
-## Compatibility Notes
-
-PR8 feature parity note: historical batch sorting vs live arrival order must remain documented because historical replay sorts by event_time while live processing preserves arrival order.
-
-PR19 owns local position accounting and duplicate fill protection through `PortfolioState.applied_fill_ids`.
-
-PR20 submits Alpaca paper orders only when explicitly enabled.
-
-PR21 captures order-submission results and optional submit-time `arrival_midprice`.
-
-PR22 converts execution-level fill payloads into `FillEvent`, applies them to `PortfolioState`, calculates slippage, and compares local signed quantity against broker signed quantity.
-
-PR23 proves the local fake paper execution wiring without broker calls, QuestDB writes, model inference, AI calls, or external collectors.
-
-PR24 owns the in-memory context state cache. Expired entries are hidden from default reads, removed only by explicit `purge_expired(...)`, or removed indirectly by bounded capacity eviction when writes exceed `max_entries`.
-
----
-
-## Current PR
-
-### PR 25 - YFinance Development Proxy Collector
-
-Branch:
+Base `main` SHA:
 
 ```text
-pr25-yfinance-dev-sector-proxy
+0f79eda1170237666a61fe2f2767e7eb5141200d
 ```
 
-Purpose:
+PR34 reconciles current source configuration and documentation, defines the
+Phase 7 provider-neutral context contracts and strict enums, and adds QuestDB
+metadata schemas for classification attempts and hypothetical shadow policy
+evaluations. It is an offline foundational-contract PR: it does not implement
+Gemini, SEC collection, a research cache, a shadow-policy runtime, or manual
+news/social ingress.
 
-Add a simple development-only proxy collector that can populate broad-market and sector context entries from yfinance for local integration testing. It remains disabled by default and does not become a production data source.
+## Non-negotiable boundaries
 
-Key behavior:
+- Historical market truth is official Databento DBN/Parquet-derived data, not
+  QuestDB.
+- Historical and live paths use the same canonical feature builder.
+- Live decisions read context from memory, never QuestDB in the per-tick or
+  per-signal loop.
+- QuestDB stores bot facts and audit metadata, not raw market or context bodies.
+- AI context is structured and research-only. It cannot approve, block, resize,
+  delay, or place a real trade.
+- The deterministic Python risk filter remains the final pre-trade authority.
+- Alpaca remains paper-first; live trading is disabled.
+- yfinance remains development-only and non-production-critical.
+- No credentials, `.env`, generated data, full provider exceptions/tracebacks,
+  or raw source documents belong in Git or QuestDB. Safe failure
+  category/summary metadata is allowed.
 
-- Pins `yfinance==1.4.1` and `pandas>=2.2,<3`.
-- Uses one batch yfinance request with one individual fallback pass only for affected symbols.
-- Supports only five-minute bars.
-- Drops incomplete bars using a configurable bar-completion grace.
-- Enforces `max_staleness_seconds >= 300 + bar_completion_grace_seconds`.
-- Calculates only `latest_close`, `return_5m`, `return_15m`, and `return_60m`.
-- Requires exact timestamp lookbacks and finite positive denominator closes for returns.
-- Stores sector proxy ETF entries under existing `SECTOR` scope with names that include the proxy symbol.
-- Stores XLE, XOP, and OIH under `SECTOR/OIL`, matching the configured `oil` tradable-sector label after cache normalization.
-- Uses `severity=INFO` for all raw measurements.
-- Adds read-only numeric retrieval helpers without QuestDB reads or risk thresholds.
-- Adds deterministic `context_indicator_id` values for PR25-generated context indicator snapshots.
-- Writes QuestDB rows only after cache updates return `WRITTEN` or `REPLACED`.
-- Makes `--live --write-questdb` require successful QuestDB writes for produced indicators and fail on ledger write issues or zero successful rows when valid indicators exist.
-- Adds `NO_FRESH_DATA` to distinguish reachable source/no fresh completed bars from source or schema failures.
+Historical replay still uses batch sorting vs live arrival order: historical
+feature replay sorts by event time, while live processing preserves arrival
+order. Both paths continue to use the same canonical feature builder.
 
-Explicitly not added:
+## Current configuration
 
-- trading rules
-- risk approval changes
-- external scheduler
-- background service
-- QuestDB reads
-- new QuestDB tables
-- AI or model calls
-- Alpaca calls
-- Databento calls
-- generic collector framework
+The final tradable universe is:
 
----
+```text
+PLTR LMT RTX GD AVAV XOM OXY SLB COP VLO
+```
 
-## Standard Server-Laptop Validation
+EIA, FRED, USAspending, the local macro calendar, and the yfinance development
+proxy are intentionally enabled for bounded explicit collection outside the
+decision loop. Enablement does not grant trading authority or schedule calls.
+SEC EDGAR, news, social, and the AI context filter remain disabled in repository
+configuration.
 
-Run from the repo root after checking out the PR branch:
+Repository history shows FRED was intentionally enabled with the other built
+structured sources. PR34 therefore repairs the stale disabled-by-default unit
+test rather than disabling valid current configuration.
+
+## Phase 7 contract flow
+
+```text
+ContextRawInput
+-> ContextSourceDocument
+-> ContextClassificationRequest
+-> ContextClassificationResponse
+-> ContextValidationResult
+-> research-only ContextAIEvent / ContextFlag
+-> future research cache
+-> ShadowContextPolicyEvaluation
+```
+
+Gemini-classification event types contain `UNKNOWN`, `OTHER`, and the bounded
+SEC 8-K values, with `UNKNOWN` reserved for non-valid response shapes. Form 4
+open-market purchase/sale values use a separate deterministic enum and cannot
+enter the classification response; their parser remains PR38 work.
+
+`available_at` means the earliest trusted demonstrable public availability of
+the underlying fact. When both top-level `ContextFlag.available_at` and legacy
+`details["provenance"]["available_at"]` exist, adapters require equal UTC
+instants. EIA preserves its existing pre-release risk window while placing the
+official release time in both availability representations.
+
+Only a safe provider failure category/summary may enter contracts and QuestDB.
+PR36 must retain full exceptions locally in ignored structured logs correlated
+by the same classification attempt ID.
+
+## QuestDB deployment
+
+PR34 adds:
+
+```text
+context_classification_attempts
+shadow_context_policy_evaluations
+```
+
+It also appends nullable lineage/source/hash/timestamp metadata to
+`context_ai_events` and `context_flags`. The committed reset schema is
+destructive and must not be used to upgrade a persistent server.
+
+After merge and before starting a PR34 writer, stop writers and apply:
+
+```text
+db/schema/questdb_pr34_add_phase7_context_ledger.sql
+```
+
+The migration is additive and idempotent. Back up first, record legacy table
+row counts and columns, run the migration in file order, rerun it, confirm the
+legacy counts are unchanged, and confirm both new tables exist with zero rows
+before restarting writers. Partial application is recovered by rerunning this
+migration, never by executing the destructive reset. See
+`docs/live_runbook.md` and `docs/questdb_schema.md`.
+
+During PR34 preflight, the running local QuestDB was inspected read-only. Its
+`context_ai_events` and `context_flags` columns matched the pre-PR34 committed
+schema and both tables contained zero rows at that moment. No live mutation was
+performed.
+
+## Validation
+
+Use only the repository interpreter:
 
 ```powershell
-python scripts/check_environment.py
-python scripts/check_config.py
-python scripts/check_questdb.py
-python scripts/check_questdb_schema.py
-python scripts/check_questdb_writer.py
-python scripts/check_questdb_analysis.py
-python scripts/check_contracts.py
-python scripts/check_fixtures.py
-python scripts/check_historical_parquet.py
-python scripts/check_dbn_inspector.py
-python scripts/check_feature_builder.py
-python scripts/check_feature_parity.py
-python scripts/check_cost_model.py
-python scripts/check_label_builder.py
-python scripts/check_risk_filter.py
-python scripts/check_risk_logging.py
-python scripts/check_order_manager.py
-python scripts/check_position_state.py
-python scripts/check_alpaca_paper.py
-python scripts/check_execution_metrics.py
-python scripts/check_fill_reconciliation.py
-python scripts/check_fake_paper_loop.py
-python scripts/check_context_state_cache.py
-python scripts/check_yfinance_proxy.py
-python -m pytest
-powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
+& ".\.venv\Scripts\python.exe" scripts/check_config.py
+& ".\.venv\Scripts\python.exe" scripts/check_contracts.py
+& ".\.venv\Scripts\python.exe" scripts/check_questdb_schema.py
+& ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_fred_collector.py
+& ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_contracts_context.py
+& ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_questdb_writer.py
+& ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_decision_context.py
+& ".\.venv\Scripts\python.exe" -m pytest
+git diff --check
 ```
 
-Optional live yfinance validation:
+PR34 validation must stay offline. Do not run live context-source, broker,
+Gemini, SEC, or QuestDB write tests for this PR.
 
-```powershell
-python scripts/check_yfinance_proxy.py --live
-python scripts/check_yfinance_proxy.py --live --require-fresh
-python scripts/check_yfinance_proxy.py --live --write-questdb
-```
+## Explicit follow-ups
 
-Optional real Alpaca paper account validation on the server laptop:
-
-```powershell
-python scripts/check_alpaca_paper.py --required
-```
-
-The required Alpaca check must only call `GET /v2/account`. It must not submit a paper order.
-
-With QuestDB running on the server laptop, also run:
-
-```powershell
-python scripts/check_questdb.py --required
-python scripts/check_questdb_schema.py --apply --required
-python scripts/check_questdb_writer.py --required
-python scripts/check_questdb_analysis.py --required
-```
-
----
-
-## Files To Know
-
-YFinance proxy:
-
-```text
-src/market_relay_engine/context/yfinance_proxy.py
-docs/yfinance_proxy.md
-scripts/check_yfinance_proxy.py
-tests/unit/test_yfinance_proxy.py
-```
-
-Context state cache:
-
-```text
-src/market_relay_engine/context/state_cache.py
-docs/context_state_cache.md
-scripts/check_context_state_cache.py
-tests/unit/test_context_state_cache.py
-```
-
-Execution:
-
-```text
-src/market_relay_engine/execution/order_manager.py
-src/market_relay_engine/execution/position_state.py
-src/market_relay_engine/execution/alpaca_paper.py
-src/market_relay_engine/execution/execution_metrics.py
-src/market_relay_engine/execution/fill_reconciliation.py
-src/market_relay_engine/execution/fake_paper_loop.py
-```
-
-Core contracts:
-
-```text
-src/market_relay_engine/contracts/
-```
-
-QuestDB:
-
-```text
-src/market_relay_engine/questdb/health.py
-src/market_relay_engine/questdb/writer.py
-src/market_relay_engine/questdb/analysis.py
-```
-
----
-
-## Next Steps
-
-1. Review PR25 on GitHub after it is opened.
-2. Check out or pull branch `pr25-yfinance-dev-sector-proxy` on the server laptop.
-3. Run the full validation commands from the Standard Server-Laptop Validation section.
-4. Optionally run the live yfinance smoke command during market hours.
-5. Merge PR25 only if review and server-laptop validation are clean.
-6. Start the deterministic numeric context-rule PR that consumes the PR25 retrieval helpers.
+- PR35: trusted-source registry, timestamp/hash enforcement, cross-record
+  provenance, as-of validation, abstention/rejection policy, and prompt-injection
+  safety.
+- PR36: Gemini provider and bounded queue, timeouts/retries/rates/budgets,
+  deduplication/backpressure, plus correlated retained local full-exception logs.
+- PR37: research cache, as-of selection, and real shadow-policy evaluator that
+  never changes the real risk result.
+- PR38: SEC EDGAR collector, immutable local archive, bounded 8-K sections, and
+  deterministic Form 4 P/S parsing.
+- PR39: provider-neutral manual news/social inbox ingestion through the same
+  validation and research-only pipeline.

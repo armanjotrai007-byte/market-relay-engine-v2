@@ -71,3 +71,15 @@ serializes them through the PR 3 JSON helpers, checks UTC `Z` timestamp strings,
 checks non-empty IDs, and statically rejects direct imports of obvious
 external-service/client modules.
 
+PR34 context fixtures construct classification event type, risk level, urgency,
+status, and shadow action fields with their strict enum types rather than loose
+strings. Tests cover generated IDs, UTC enforcement, defensive collection
+copies, exact enum serialization, status-specific response shapes, validation
+results, and shadow size-factor rules. Form 4 purchase/sale values use the
+separate deterministic enum and are rejected by AI-classification contracts;
+the actual deterministic parser remains deferred to PR38.
+
+All Phase 7 fixture source text, IDs, and hashes are synthetic. Fixtures do not
+contain real filings, articles, social posts, API output, credentials, or
+provider exceptions.
+

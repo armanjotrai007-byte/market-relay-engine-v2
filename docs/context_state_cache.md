@@ -11,8 +11,8 @@ The cache stores latest facts only. QuestDB remains the ledger and history store
 Context entries use one of three scopes:
 
 - `GLOBAL`: broad market, macro, calendar, or regime facts.
-- `TICKER`: ticker-specific facts such as earnings risk for `AAPL`.
-- `SECTOR`: sector or proxy facts such as `TECH` sector weakness.
+- `TICKER`: ticker-specific facts such as an `XOM` release-window flag.
+- `SECTOR`: sector or proxy facts such as `OIL` or `DEFENSE` context.
 
 Future sector proxy collectors should write sector facts under `SECTOR` scope. They should not invent a separate sector-proxy convention.
 
@@ -100,6 +100,21 @@ Risk level mapping for fresh entries:
 - `INFO` or no entries: `None`
 
 PR24 does not integrate this bridge into `evaluate_risk(...)`. A future PR can wire it into live risk decisions.
+
+## Phase 7 Separation
+
+PR34 does not place AI-classified context into this existing structured cache.
+It defines research-only raw-input, document, classification, validation,
+event/flag, and shadow-evaluation contracts plus ledger metadata. PR37 will own
+a separate research cache and as-of shadow evaluator. That future path must use
+canonical `available_at` and cannot alter the real `RiskDecision`.
+
+Legacy EIA `ContextFlag` records keep their existing cache/risk behavior. The
+flag's new optional top-level `available_at` and the companion cache entry's
+`details["provenance"]["available_at"]` describe the same earliest trusted
+public-availability instant and are validated for equality by the publishing
+adapter. Pre-release `event_time` and validity-window timestamps remain
+separate risk-window facts.
 
 ## Thread Safety
 

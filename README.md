@@ -57,7 +57,7 @@ python scripts/check_environment.py
 ```
 
 The full local validation runner executes the environment health check, config
-validation, optional QuestDB health check, QuestDB schema validation, QuestDB
+validation, config-required QuestDB health check, QuestDB schema validation, QuestDB
 writer validation, QuestDB analysis validation, contract validation, fixture
 validation, local market-data checks, feature builder checks, feature parity
 checks, cost model checks, label builder checks, and then pytest:
@@ -70,7 +70,12 @@ These same commands must be run on the separate trading laptop after it pulls fr
 
 ## Configuration
 
-Trading System V2 config files live under `config/`. They separate tradable symbols from context symbols, keep all external sources disabled by default, mark yfinance as development-only, keep QuestDB ledger-only, and keep live trading disabled by default.
+Trading System V2 config files live under `config/`. They separate the final
+10-stock tradable universe (`PLTR`, `LMT`, `RTX`, `GD`, `AVAV`, `XOM`, `OXY`,
+`SLB`, `COP`, and `VLO`) from context symbols. The built structured sources are
+enabled for bounded, explicit collection outside the per-tick loop; yfinance
+remains development-only, unstructured sources and the AI context filter remain
+disabled, QuestDB remains ledger-only, and live trading remains disabled.
 
 Validate configuration locally with:
 
@@ -80,29 +85,47 @@ python scripts/check_config.py
 
 See `docs/configuration.md` for the config file map and safety rules.
 
-PR26 adds a disabled-by-default EIA WPSR collector for reviewed release-window
-flags and sector-level `OIL` numeric research context. Run
+PR26 adds a one-shot EIA WPSR collector for reviewed release-window flags and
+sector-level `OIL` numeric research context. Repository configuration
+intentionally enables it for explicit collection, but does not schedule it or
+grant it independent trading authority. Run
 `python scripts/check_eia_wpsr.py` for its offline fixture check and see
 `docs/eia_wpsr.md` for schedule, timing, provenance, and live-read guidance.
+
+## Phase 7 PR34 Contracts
+
+PR34 defines provider-neutral raw-input, source-document, classification,
+validation, research event/flag, and hypothetical shadow-evaluation contracts.
+It also adds metadata-only QuestDB schemas for classification attempts and
+shadow evaluations. The path is research-only: it does not call Gemini or SEC
+EDGAR, archive documents, build a research cache, execute a shadow policy, or
+change a real `RiskDecision`.
+
+AI classification uses strict SEC 8-K/general event values. Deterministic Form 4
+purchase/sale values have a separate enum and are not valid classification
+responses. Only a bounded in-memory request may carry an excerpt; QuestDB must
+not store source bodies, request excerpts, prompts, or full provider exceptions.
+
+See `docs/data_contracts.md` and `docs/architecture.md`.
 
 ## QuestDB Health Check
 
 The QuestDB health check validates the local HTTP `/exec` endpoint with
-`SELECT 1`. It is optional by default so Codex and offline validation can pass
-without QuestDB running:
+`SELECT 1`. Repository configuration intentionally requires the local service
+by default:
 
 ```powershell
 python scripts/check_questdb.py
 ```
 
-On the server laptop, run the required integration check with QuestDB running:
+`--required` makes that intent explicit on the server laptop:
 
 ```powershell
 python scripts/check_questdb.py --required
 ```
 
-See `docs/questdb_health.md` for the bot-ledger-only scope and PR 12 schema
-note.
+See `docs/questdb_health.md` for the bot-ledger-only scope and PR34 migration
+boundary.
 
 ## QuestDB Ledger Schema
 
@@ -123,18 +146,22 @@ Run the offline schema validation without QuestDB:
 python scripts/check_questdb_schema.py
 ```
 
-On the server laptop, with QuestDB running, apply and validate the schema with:
+Do not use the reset against a persistent ledger. After PR34 is merged, stop
+writers and upgrade an existing server with the idempotent additive migration:
 
-```powershell
-python scripts/check_questdb_schema.py --apply --required
+```text
+db/schema/questdb_pr34_add_phase7_context_ledger.sql
 ```
 
-See `docs/questdb_schema.md` for the table categories, context snapshot link,
-and scope restrictions.
+Record pre/post counts for `context_ai_events` and `context_flags`, rerun the
+migration to prove idempotency, and confirm the counts are unchanged before
+restarting writers. Never use `scripts/check_questdb_schema.py --apply` as a
+persistent-ledger migration. See `docs/live_runbook.md` and
+`docs/questdb_schema.md` for the exact operator procedure.
 
 ## QuestDB Ledger Writer
 
-The QuestDB ledger writer maps existing project records into PR 12 V2 ledger
+The QuestDB ledger writer maps project records into the current V2 ledger
 tables and writes one safe `INSERT` at a time through the documented `/exec` GET
 path. Offline validation does not require QuestDB:
 
@@ -155,7 +182,7 @@ fallback notes.
 ## QuestDB Ledger Analysis
 
 The QuestDB ledger analysis reader is read-only. It runs small `SELECT`/`WITH`
-queries against existing PR 12 ledger tables through the documented `/exec` GET
+queries against existing V2 ledger tables through the documented `/exec` GET
 path and produces basic counts, slippage, PnL, risk, and system health
 summaries. It does not modify schema, write rows, tune risk, train models, or
 trade.
@@ -176,7 +203,11 @@ See `docs/questdb_analysis.md` for read-only SQL guardrails and scope.
 
 ## Core Contracts
 
-Core dataclass contracts now live under `src/market_relay_engine/contracts`. They define lightweight record shapes, UTC timestamp standards, UUID-based IDs, and JSON serialization helpers for future market, feature, model, risk, context, execution, ledger, and system health layers.
+Core dataclass contracts live under `src/market_relay_engine/contracts`. They
+define lightweight frozen record shapes, strict string enums, UTC timestamp
+standards, UUID-based IDs, hash references, defensive collection copying, and
+JSON serialization for market, feature, model, risk, context, execution,
+ledger, and system-health layers.
 
 Validate contract examples locally with:
 
@@ -286,4 +317,13 @@ python scripts/check_label_builder.py
 
 The repository defaults to local development and future paper trading. `.env.example` contains placeholder variable names only. Do not commit real secrets, live credentials, logs, Databento DBN files, Parquet data, QuestDB data folders, or generated API exports.
 
-QuestDB is reserved for the bot ledger and black-box recorder: signals, risk decisions, context flags, orders, fills, slippage, latency, PnL, outcomes, and system health. It must not be used as a historical market-data warehouse.
+QuestDB is reserved for the bot ledger and black-box recorder: signals, risk
+decisions, context metadata and flags, classification attempts, hypothetical
+shadow evaluations, orders, fills, slippage, latency, PnL, outcomes, and system
+health. It must not be used as a historical market-data warehouse or store full
+filings, articles, social posts, normalized documents, prompts, request excerpts,
+credentials, or full provider exceptions.
+
+AI and external context have no direct trade, block, delay, or sizing authority.
+The deterministic Python risk filter remains the final pre-trade authority, and
+Alpaca remains paper-first.

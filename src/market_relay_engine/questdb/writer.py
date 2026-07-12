@@ -45,8 +45,10 @@ cost_estimates: estimate_time write_time cost_estimate_id ticker signal_id featu
 context_state_snapshots: snapshot_time write_time context_snapshot_id ticker sector active_indicator_ids_json active_context_event_ids_json active_context_flag_ids_json context_summary_json highest_severity risk_level valid_until run_id session_id schema_version trace_id
 risk_decisions: decision_time write_time risk_decision_id ticker model_signal_id cost_estimate_id context_snapshot_id decision approved risk_version reduce_size_factor reasons_json thresholds_used_json run_id session_id schema_version trace_id
 context_indicator_snapshots: snapshot_time write_time context_indicator_id source ticker_or_sector indicator_name value_json window units freshness_seconds source_event_time details_json run_id session_id schema_version trace_id
-context_ai_events: event_time write_time context_event_id source source_id affected_tickers_json affected_sector event_type sentiment urgency risk_level confidence valid_from valid_until summary prompt_version model_version raw_input_hash run_id session_id schema_version trace_id
-context_flags: event_time write_time context_flag_id source flag_type severity ticker sector confidence valid_until run_id session_id schema_version trace_id
+context_ai_events: event_time write_time context_event_id source source_id affected_tickers_json affected_sector event_type sentiment urgency risk_level confidence valid_from valid_until summary prompt_version model_version raw_input_hash run_id session_id schema_version trace_id raw_input_id source_document_id classification_request_id classification_attempt_id validation_result_id source_type source_platform source_uri source_locator document_hash source_published_at source_updated_at collected_at normalized_at classified_at available_at validated_at provider
+context_flags: event_time write_time context_flag_id source flag_type severity ticker sector confidence valid_until run_id session_id schema_version trace_id context_event_id raw_input_id source_document_id classification_request_id classification_attempt_id validation_result_id source_type source_id source_platform source_uri source_locator document_hash raw_input_hash valid_from available_at validated_at reason_codes_json summary
+context_classification_attempts: requested_at write_time classification_attempt_id classification_request_id raw_input_id source_document_id source source_type source_platform source_uri source_locator affected_tickers_json raw_input_hash document_hash source_published_at source_updated_at collected_at normalized_at classified_at provider model_version prompt_version status event_type risk_level urgency confidence summary validation_result_id validation_outcome validation_reason_codes_json validator_version validated_at provider_latency_ms safe_failure_category safe_failure_summary run_id session_id schema_version trace_id
+shadow_context_policy_evaluations: decision_evaluation_time write_time shadow_evaluation_id model_signal_id risk_decision_id matched_context_event_ids_json matched_context_flag_ids_json shadow_context_fingerprint policy_version policy_config_hash hypothetical_action proposed_size_factor reason_codes_json run_id session_id schema_version trace_id
 order_events: order_time write_time order_id ticker side order_type quantity status expected_price submitted_price broker broker_order_id paper_trading model_signal_id risk_decision_id feature_snapshot_id run_id session_id schema_version trace_id
 fill_events: fill_time write_time fill_id order_id ticker side quantity fill_price expected_price slippage slippage_bps broker_status broker_fill_id model_signal_id risk_decision_id run_id session_id schema_version trace_id
 trade_outcomes: entry_time write_time outcome_id signal_id order_id fill_id ticker exit_time entry_price exit_price quantity realized_pnl return_1m return_5m return_15m max_favorable_excursion max_adverse_excursion result run_id session_id schema_version trace_id
@@ -267,8 +269,36 @@ class QuestDBLedgerWriter:
     def write_context_indicator_snapshot(self, snapshot: Any, **kwargs: Any) -> QuestDBWriteResult:
         return self.write_row('context_indicator_snapshots', context_indicator_snapshot_to_row(snapshot, **kwargs))
 
+    def write_context_ai_event(self, event: Any, **kwargs: Any) -> QuestDBWriteResult:
+        return self.write_row('context_ai_events', context_ai_event_to_row(event, **kwargs))
+
     def write_context_flag(self, flag: Any, **kwargs: Any) -> QuestDBWriteResult:
         return self.write_row('context_flags', context_flag_to_row(flag, **kwargs))
+
+    def write_context_classification_attempt(
+        self,
+        request: Any,
+        response: Any,
+        validation_result: Any | None = None,
+        **kwargs: Any,
+    ) -> QuestDBWriteResult:
+        row = context_classification_attempt_to_row(
+            request,
+            response,
+            validation_result=validation_result,
+            **kwargs,
+        )
+        return self.write_row('context_classification_attempts', row)
+
+    def write_shadow_context_policy_evaluation(
+        self,
+        evaluation: Any,
+        **kwargs: Any,
+    ) -> QuestDBWriteResult:
+        return self.write_row(
+            'shadow_context_policy_evaluations',
+            shadow_context_policy_evaluation_to_row(evaluation, **kwargs),
+        )
 
     def write_risk_decision(self, decision: Any, **kwargs: Any) -> QuestDBWriteResult:
         return self.write_row('risk_decisions', risk_decision_to_row(decision, **kwargs))
@@ -412,10 +442,10 @@ def context_ai_event_to_row(record: Any, *, run_id: str | None = None, session_i
         'source_id': record.source_id,
         'affected_tickers_json': to_json_string(record.affected_tickers),
         'affected_sector': record.affected_sector,
-        'event_type': record.event_type,
+        'event_type': _enum_value(record.event_type),
         'sentiment': record.sentiment,
-        'urgency': record.urgency,
-        'risk_level': record.risk_level,
+        'urgency': _enum_value(record.urgency),
+        'risk_level': _enum_value(record.risk_level),
         'confidence': record.confidence,
         'valid_from': record.valid_from,
         'valid_until': record.valid_until,
@@ -427,6 +457,24 @@ def context_ai_event_to_row(record: Any, *, run_id: str | None = None, session_i
         'session_id': session_id,
         'schema_version': record.schema_version,
         'trace_id': record.trace_id,
+        'raw_input_id': record.raw_input_id,
+        'source_document_id': record.source_document_id,
+        'classification_request_id': record.classification_request_id,
+        'classification_attempt_id': record.classification_attempt_id,
+        'validation_result_id': record.validation_result_id,
+        'source_type': record.source_type,
+        'source_platform': record.source_platform,
+        'source_uri': record.source_uri,
+        'source_locator': record.source_locator,
+        'document_hash': record.document_hash,
+        'source_published_at': record.source_published_at,
+        'source_updated_at': record.source_updated_at,
+        'collected_at': record.collected_at,
+        'normalized_at': record.normalized_at,
+        'classified_at': record.classified_at,
+        'available_at': record.available_at,
+        'validated_at': record.validated_at,
+        'provider': record.provider,
     }
 
 
@@ -442,6 +490,133 @@ def context_flag_to_row(record: Any, *, run_id: str | None = None, session_id: s
         'sector': record.sector,
         'confidence': record.confidence,
         'valid_until': record.valid_until,
+        'run_id': run_id,
+        'session_id': session_id,
+        'schema_version': record.schema_version,
+        'trace_id': record.trace_id,
+        'context_event_id': record.context_event_id,
+        'raw_input_id': record.raw_input_id,
+        'source_document_id': record.source_document_id,
+        'classification_request_id': record.classification_request_id,
+        'classification_attempt_id': record.classification_attempt_id,
+        'validation_result_id': record.validation_result_id,
+        'source_type': record.source_type,
+        'source_id': record.source_id,
+        'source_platform': record.source_platform,
+        'source_uri': record.source_uri,
+        'source_locator': record.source_locator,
+        'document_hash': record.document_hash,
+        'raw_input_hash': record.raw_input_hash,
+        'valid_from': record.valid_from,
+        'available_at': record.available_at,
+        'validated_at': record.validated_at,
+        'reason_codes_json': to_json_string(record.reason_codes),
+        'summary': record.summary,
+    }
+
+
+def context_classification_attempt_to_row(
+    request: Any,
+    response: Any,
+    *,
+    validation_result: Any | None = None,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    write_time: datetime | None = None,
+) -> dict[str, Any]:
+    _require_matching_reference(
+        request.classification_request_id,
+        response.classification_request_id,
+        'response.classification_request_id',
+    )
+    _require_matching_reference(
+        request.prompt_version,
+        response.prompt_version,
+        'response.prompt_version',
+    )
+    if validation_result is not None:
+        _require_matching_reference(
+            request.classification_request_id,
+            validation_result.classification_request_id,
+            'validation_result.classification_request_id',
+        )
+        _require_matching_reference(
+            response.classification_attempt_id,
+            validation_result.classification_attempt_id,
+            'validation_result.classification_attempt_id',
+        )
+
+    trace_id = _coalesce_matching_optional(
+        'trace_id',
+        request.trace_id,
+        response.trace_id,
+        None if validation_result is None else validation_result.trace_id,
+    )
+    return {
+        'requested_at': request.requested_at,
+        'write_time': _resolve_write_time(write_time),
+        'classification_attempt_id': response.classification_attempt_id,
+        'classification_request_id': request.classification_request_id,
+        'raw_input_id': request.raw_input_id,
+        'source_document_id': request.source_document_id,
+        'source': request.source,
+        'source_type': request.source_type,
+        'source_platform': request.source_platform,
+        'source_uri': request.source_uri,
+        'source_locator': request.source_locator,
+        'affected_tickers_json': to_json_string(request.affected_tickers),
+        'raw_input_hash': request.raw_input_hash,
+        'document_hash': request.document_hash,
+        'source_published_at': request.source_published_at,
+        'source_updated_at': request.source_updated_at,
+        'collected_at': request.collected_at,
+        'normalized_at': request.normalized_at,
+        'classified_at': response.classified_at,
+        'provider': response.provider,
+        'model_version': response.model_version,
+        'prompt_version': response.prompt_version,
+        'status': _enum_value(response.status),
+        'event_type': _enum_value(response.event_type),
+        'risk_level': _enum_value(response.risk_level),
+        'urgency': _enum_value(response.urgency),
+        'confidence': response.confidence,
+        'summary': response.summary,
+        'validation_result_id': None if validation_result is None else validation_result.validation_result_id,
+        'validation_outcome': None if validation_result is None else validation_result.validation_outcome,
+        'validation_reason_codes_json': None if validation_result is None else to_json_string(validation_result.reason_codes),
+        'validator_version': None if validation_result is None else validation_result.validator_version,
+        'validated_at': None if validation_result is None else validation_result.validated_at,
+        'provider_latency_ms': response.provider_latency_ms,
+        'safe_failure_category': response.safe_failure_category,
+        'safe_failure_summary': response.safe_failure_summary,
+        'run_id': run_id,
+        'session_id': session_id,
+        'schema_version': response.schema_version,
+        'trace_id': trace_id,
+    }
+
+
+def shadow_context_policy_evaluation_to_row(
+    record: Any,
+    *,
+    run_id: str | None = None,
+    session_id: str | None = None,
+    write_time: datetime | None = None,
+) -> dict[str, Any]:
+    return {
+        'decision_evaluation_time': record.decision_evaluation_time,
+        'write_time': _resolve_write_time(write_time),
+        'shadow_evaluation_id': record.shadow_evaluation_id,
+        'model_signal_id': record.model_signal_id,
+        'risk_decision_id': record.risk_decision_id,
+        'matched_context_event_ids_json': to_json_string(record.matched_context_event_ids),
+        'matched_context_flag_ids_json': to_json_string(record.matched_context_flag_ids),
+        'shadow_context_fingerprint': record.shadow_context_fingerprint,
+        'policy_version': record.policy_version,
+        'policy_config_hash': record.policy_config_hash,
+        'hypothetical_action': _enum_value(record.hypothetical_action),
+        'proposed_size_factor': record.proposed_size_factor,
+        'reason_codes_json': to_json_string(record.reason_codes),
         'run_id': run_id,
         'session_id': session_id,
         'schema_version': record.schema_version,
@@ -593,6 +768,26 @@ def _resolve_write_time(value: datetime | None) -> datetime:
         return ensure_timezone_aware_utc(value)
     except (TypeError, ValueError) as exc:
         raise QuestDBWriteError('write_time must be timezone-aware UTC') from exc
+
+
+def _enum_value(value: Any) -> Any:
+    return value.value if isinstance(value, Enum) else value
+
+
+def _require_matching_reference(expected: Any, actual: Any, field_name: str) -> None:
+    if actual != expected:
+        raise QuestDBWriteError(
+            f'{field_name} must match the classification request/response linkage'
+        )
+
+
+def _coalesce_matching_optional(field_name: str, *values: Any) -> Any:
+    present = [value for value in values if value is not None]
+    if not present:
+        return None
+    if any(value != present[0] for value in present[1:]):
+        raise QuestDBWriteError(f'{field_name} values must match across linked records')
+    return present[0]
 
 
 def _resolve_config_path(config_path: str | Path | None) -> Path:

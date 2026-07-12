@@ -9,6 +9,7 @@ import sys
 from typing import Any
 
 import requests
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -26,12 +27,20 @@ from market_relay_engine.questdb.health import (  # noqa: E402
     format_questdb_health_result,
     load_questdb_health_config,
 )
+from market_relay_engine.questdb.writer import (  # noqa: E402
+    ALLOWED_LEDGER_TABLES,
+    TABLE_COLUMNS,
+)
 
 
 SCHEMA_PATH = REPO_ROOT / "db" / "schema" / "questdb_ledger_v1.sql"
 PR26_MIGRATION_PATH = (
     REPO_ROOT / "db" / "schema" / "questdb_pr26_add_context_indicator_details_json.sql"
 )
+PR34_MIGRATION_PATH = (
+    REPO_ROOT / "db" / "schema" / "questdb_pr34_add_phase7_context_ledger.sql"
+)
+QUESTDB_CONFIG_PATH = REPO_ROOT / "config" / "questdb.yaml"
 
 OLD_TABLES = (
     "raw_trades",
@@ -64,6 +73,8 @@ REQUIRED_TABLES = (
     "context_indicator_snapshots",
     "context_ai_events",
     "context_flags",
+    "context_classification_attempts",
+    "shadow_context_policy_evaluations",
     "order_events",
     "fill_events",
     "trade_outcomes",
@@ -82,6 +93,163 @@ FORBIDDEN_RAW_TABLES = (
     "databento_definitions",
 )
 
+PR34_EXISTING_TABLE_ADDITIONS = {
+    "context_ai_events": (
+        ("raw_input_id", "STRING"),
+        ("source_document_id", "STRING"),
+        ("classification_request_id", "STRING"),
+        ("classification_attempt_id", "STRING"),
+        ("validation_result_id", "STRING"),
+        ("source_type", "SYMBOL"),
+        ("source_platform", "SYMBOL"),
+        ("source_uri", "STRING"),
+        ("source_locator", "STRING"),
+        ("document_hash", "STRING"),
+        ("source_published_at", "TIMESTAMP"),
+        ("source_updated_at", "TIMESTAMP"),
+        ("collected_at", "TIMESTAMP"),
+        ("normalized_at", "TIMESTAMP"),
+        ("classified_at", "TIMESTAMP"),
+        ("available_at", "TIMESTAMP"),
+        ("validated_at", "TIMESTAMP"),
+        ("provider", "SYMBOL"),
+    ),
+    "context_flags": (
+        ("context_event_id", "STRING"),
+        ("raw_input_id", "STRING"),
+        ("source_document_id", "STRING"),
+        ("classification_request_id", "STRING"),
+        ("classification_attempt_id", "STRING"),
+        ("validation_result_id", "STRING"),
+        ("source_type", "SYMBOL"),
+        ("source_id", "STRING"),
+        ("source_platform", "SYMBOL"),
+        ("source_uri", "STRING"),
+        ("source_locator", "STRING"),
+        ("document_hash", "STRING"),
+        ("raw_input_hash", "STRING"),
+        ("valid_from", "TIMESTAMP"),
+        ("available_at", "TIMESTAMP"),
+        ("validated_at", "TIMESTAMP"),
+        ("reason_codes_json", "STRING"),
+        ("summary", "STRING"),
+    ),
+}
+
+PR34_NEW_TABLES = (
+    "context_classification_attempts",
+    "shadow_context_policy_evaluations",
+)
+
+PR34_NEW_TABLE_DEFINITIONS = {
+    "context_classification_attempts": (
+        ("requested_at", "TIMESTAMP"),
+        ("write_time", "TIMESTAMP"),
+        ("classification_attempt_id", "STRING"),
+        ("classification_request_id", "STRING"),
+        ("raw_input_id", "STRING"),
+        ("source_document_id", "STRING"),
+        ("source", "SYMBOL"),
+        ("source_type", "SYMBOL"),
+        ("source_platform", "SYMBOL"),
+        ("source_uri", "STRING"),
+        ("source_locator", "STRING"),
+        ("affected_tickers_json", "STRING"),
+        ("raw_input_hash", "STRING"),
+        ("document_hash", "STRING"),
+        ("source_published_at", "TIMESTAMP"),
+        ("source_updated_at", "TIMESTAMP"),
+        ("collected_at", "TIMESTAMP"),
+        ("normalized_at", "TIMESTAMP"),
+        ("classified_at", "TIMESTAMP"),
+        ("provider", "SYMBOL"),
+        ("model_version", "SYMBOL"),
+        ("prompt_version", "SYMBOL"),
+        ("status", "SYMBOL"),
+        ("event_type", "SYMBOL"),
+        ("risk_level", "SYMBOL"),
+        ("urgency", "SYMBOL"),
+        ("confidence", "DOUBLE"),
+        ("summary", "STRING"),
+        ("validation_result_id", "STRING"),
+        ("validation_outcome", "BOOLEAN"),
+        ("validation_reason_codes_json", "STRING"),
+        ("validator_version", "SYMBOL"),
+        ("validated_at", "TIMESTAMP"),
+        ("provider_latency_ms", "DOUBLE"),
+        ("safe_failure_category", "SYMBOL"),
+        ("safe_failure_summary", "STRING"),
+        ("run_id", "STRING"),
+        ("session_id", "STRING"),
+        ("schema_version", "SYMBOL"),
+        ("trace_id", "STRING"),
+    ),
+    "shadow_context_policy_evaluations": (
+        ("decision_evaluation_time", "TIMESTAMP"),
+        ("write_time", "TIMESTAMP"),
+        ("shadow_evaluation_id", "STRING"),
+        ("model_signal_id", "STRING"),
+        ("risk_decision_id", "STRING"),
+        ("matched_context_event_ids_json", "STRING"),
+        ("matched_context_flag_ids_json", "STRING"),
+        ("shadow_context_fingerprint", "STRING"),
+        ("policy_version", "SYMBOL"),
+        ("policy_config_hash", "STRING"),
+        ("hypothetical_action", "SYMBOL"),
+        ("proposed_size_factor", "DOUBLE"),
+        ("reason_codes_json", "STRING"),
+        ("run_id", "STRING"),
+        ("session_id", "STRING"),
+        ("schema_version", "SYMBOL"),
+        ("trace_id", "STRING"),
+    ),
+}
+
+PR34_DESIGNATED_TIMESTAMPS = {
+    "context_classification_attempts": "requested_at",
+    "shadow_context_policy_evaluations": "decision_evaluation_time",
+}
+
+FORBIDDEN_CONTEXT_LEDGER_COLUMNS = {
+    "input_text",
+    "source_text",
+    "source_body",
+    "full_text",
+    "raw_document",
+    "raw_document_json",
+    "raw_prompt",
+    "raw_prompt_contents",
+    "prompt",
+    "prompt_json",
+    "prompt_body",
+    "prompt_text",
+    "prompt_contents",
+    "raw_text",
+    "document_text",
+    "normalized_document",
+    "normalized_text",
+    "normalized_body",
+    "document_body",
+    "filing_body",
+    "filing_text",
+    "article_body",
+    "article_text",
+    "social_post_body",
+    "social_post_text",
+    "provider_response",
+    "raw_provider_response",
+    "exception",
+    "exception_text",
+    "exception_message",
+    "traceback",
+    "stack_trace",
+    "secret",
+    "credential",
+    "api_key",
+    "access_token",
+    "password",
+}
+
 
 class QuestDBSchemaError(RuntimeError):
     """Raised when QuestDB schema validation or apply fails."""
@@ -99,7 +267,7 @@ def strip_sql_line_comments(sql_text: str) -> str:
 
 
 def split_sql_statements(sql_text: str) -> list[str]:
-    """Split simple PR12 schema SQL into statements."""
+    """Split the repository's simple schema or migration SQL into statements."""
     no_comments = strip_sql_line_comments(sql_text)
     return [
         statement.strip()
@@ -115,7 +283,7 @@ def load_schema_text(schema_path: Path = SCHEMA_PATH) -> str:
 
 
 def validate_schema_text(sql_text: str) -> list[str]:
-    """Validate the PR12 QuestDB schema without contacting QuestDB."""
+    """Validate the current QuestDB reset schema without contacting QuestDB."""
     failures: list[str] = []
     cleaned = strip_sql_line_comments(sql_text)
 
@@ -161,6 +329,8 @@ def validate_schema_text(sql_text: str) -> list[str]:
 
     ordering_failures = _drop_create_order_failures(cleaned)
     failures.extend(ordering_failures)
+    failures.extend(_schema_writer_column_failures(cleaned))
+    failures.extend(_context_ledger_raw_text_failures())
 
     return failures
 
@@ -183,6 +353,109 @@ def validate_pr26_migration_file(
     if re.search(r"\b(DROP|CREATE|INSERT|SELECT)\b", cleaned, flags=re.IGNORECASE):
         failures.append("PR26 migration must be non-destructive")
     return failures
+
+
+def validate_pr34_migration_file(
+    migration_path: Path = PR34_MIGRATION_PATH,
+) -> list[str]:
+    if not migration_path.is_file():
+        return [f"PR34 migration file not found: {migration_path}"]
+    cleaned = strip_sql_line_comments(
+        migration_path.read_text(encoding="utf-8")
+    ).strip()
+    statements = split_sql_statements(cleaned)
+    failures: list[str] = []
+
+    forbidden = re.findall(
+        r"\b(DROP|RENAME|TRUNCATE|INSERT|UPDATE|DELETE|SELECT)\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if forbidden:
+        failures.append(
+            f"PR34 migration contains destructive or DML operations: {forbidden}"
+        )
+
+    expected_alters = [
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {column_type}"
+        for table, additions in PR34_EXISTING_TABLE_ADDITIONS.items()
+        for column, column_type in additions
+    ]
+    actual_alters = [
+        statement
+        for statement in statements
+        if re.match(r"^ALTER\s+TABLE\b", statement, flags=re.IGNORECASE)
+    ]
+    if actual_alters != expected_alters:
+        failures.append(
+            "PR34 migration ALTER statements must exactly match the ordered, "
+            "one-column IF NOT EXISTS additions"
+        )
+
+    create_statements = [
+        statement
+        for statement in statements
+        if re.match(r"^CREATE\s+TABLE\b", statement, flags=re.IGNORECASE)
+    ]
+    if len(create_statements) != len(PR34_NEW_TABLES):
+        failures.append("PR34 migration must create exactly the two new ledger tables")
+    for table in PR34_NEW_TABLES:
+        statement = next(
+            (
+                candidate
+                for candidate in create_statements
+                if re.match(
+                    rf"^CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+{re.escape(table)}\b",
+                    candidate,
+                    flags=re.IGNORECASE,
+                )
+            ),
+            None,
+        )
+        if statement is None:
+            failures.append(
+                f"PR34 migration missing CREATE TABLE IF NOT EXISTS for {table}"
+            )
+            continue
+        columns = _column_definitions_from_create(statement, table)
+        expected_columns = PR34_NEW_TABLE_DEFINITIONS[table]
+        if columns != expected_columns:
+            failures.append(
+                f"PR34 migration columns/types differ from PR34 contract for {table}"
+            )
+        timestamp = PR34_DESIGNATED_TIMESTAMPS[table]
+        if not re.search(
+            rf"\)\s*TIMESTAMP\s*\(\s*{re.escape(timestamp)}\s*\)\s*PARTITION\s+BY\s+DAY$",
+            statement,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            failures.append(
+                f"PR34 migration {table} must designate {timestamp} and partition by DAY"
+            )
+
+    if len(statements) != len(expected_alters) + len(PR34_NEW_TABLES):
+        failures.append("PR34 migration contains unexpected statements")
+    return failures
+
+
+def validate_questdb_config_table_order(
+    config_path: Path = QUESTDB_CONFIG_PATH,
+) -> list[str]:
+    if not config_path.is_file():
+        return [f"QuestDB config file not found: {config_path}"]
+    try:
+        loaded = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        return [f"QuestDB config is invalid YAML: {exc}"]
+    if not isinstance(loaded, dict):
+        return ["QuestDB config must be a mapping"]
+    tables = loaded.get("ledger_tables")
+    if tables != list(ALLOWED_LEDGER_TABLES):
+        return [
+            "config/questdb.yaml ledger_tables must exactly match writer "
+            "ALLOWED_LEDGER_TABLES order"
+        ]
+    return []
 
 
 def apply_schema_statements(
@@ -253,6 +526,8 @@ def main(argv: list[str] | None = None) -> int:
         sql_text = load_schema_text()
         failures = validate_schema_text(sql_text)
         failures.extend(validate_pr26_migration_file())
+        failures.extend(validate_pr34_migration_file())
+        failures.extend(validate_questdb_config_table_order())
         if failures:
             for failure in failures:
                 print(f"[FAIL] {failure}")
@@ -361,6 +636,98 @@ def _table_body(sql_text: str, table_name: str) -> str | None:
     if match is None:
         return None
     return match.group(1)
+
+
+def _column_definitions_from_create(
+    create_statement: str,
+    table_name: str,
+) -> tuple[tuple[str, str], ...]:
+    match = re.search(
+        rf"^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{re.escape(table_name)}\s*\((.*?)\)\s*TIMESTAMP\s*\(",
+        create_statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match is None:
+        return ()
+    return _parse_column_definitions(match.group(1))
+
+
+def _table_column_definitions(
+    sql_text: str,
+    table_name: str,
+) -> tuple[tuple[str, str], ...]:
+    body = _table_body(sql_text, table_name)
+    if body is None:
+        return ()
+    return _parse_column_definitions(body)
+
+
+def _parse_column_definitions(body: str) -> tuple[tuple[str, str], ...]:
+    definitions: list[tuple[str, str]] = []
+    for raw_definition in body.split(","):
+        definition = raw_definition.strip()
+        match = re.fullmatch(
+            r"([A-Z_][A-Z0-9_]*)\s+([A-Z][A-Z0-9_]*)",
+            definition,
+            flags=re.IGNORECASE,
+        )
+        if match is None:
+            return ()
+        definitions.append((match.group(1).lower(), match.group(2).upper()))
+    return tuple(definitions)
+
+
+def _schema_writer_column_failures(sql_text: str) -> list[str]:
+    failures: list[str] = []
+    for table, expected_columns in TABLE_COLUMNS.items():
+        definitions = _table_column_definitions(sql_text, table)
+        actual_columns = tuple(column for column, _ in definitions)
+        if actual_columns != expected_columns:
+            failures.append(
+                f"reset schema columns must exactly match writer TABLE_COLUMNS for {table}"
+            )
+
+    for table, additions in PR34_EXISTING_TABLE_ADDITIONS.items():
+        definitions = _table_column_definitions(sql_text, table)
+        if definitions[-len(additions) :] != additions:
+            failures.append(
+                f"reset schema must append PR34 columns after trace_id for {table}"
+            )
+
+    for table, expected_definitions in PR34_NEW_TABLE_DEFINITIONS.items():
+        if _table_column_definitions(sql_text, table) != expected_definitions:
+            failures.append(
+                f"reset schema columns/types differ from PR34 contract for {table}"
+            )
+
+    for table, timestamp in PR34_DESIGNATED_TIMESTAMPS.items():
+        if not re.search(
+            rf"CREATE\s+TABLE\s+{re.escape(table)}\s*\(.*?\)\s*TIMESTAMP\s*\(\s*{re.escape(timestamp)}\s*\)\s*PARTITION\s+BY\s+DAY\s*;",
+            sql_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ):
+            failures.append(
+                f"reset schema {table} must designate {timestamp} and partition by DAY"
+            )
+    return failures
+
+
+def _context_ledger_raw_text_failures() -> list[str]:
+    failures: list[str] = []
+    for table in (
+        "context_ai_events",
+        "context_flags",
+        "context_classification_attempts",
+        "shadow_context_policy_evaluations",
+    ):
+        forbidden = FORBIDDEN_CONTEXT_LEDGER_COLUMNS.intersection(
+            TABLE_COLUMNS.get(table, ())
+        )
+        if forbidden:
+            failures.append(
+                f"{table} contains forbidden raw-text/secret columns: {sorted(forbidden)}"
+            )
+    return failures
 
 
 def _drop_create_order_failures(sql_text: str) -> list[str]:

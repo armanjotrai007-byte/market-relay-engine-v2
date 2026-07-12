@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from market_relay_engine.common.serialization import to_json_dict
 from market_relay_engine.common.time import (
@@ -13,6 +13,9 @@ from market_relay_engine.common.time import (
     parse_utc_iso,
     to_utc_iso,
 )
+
+if TYPE_CHECKING:
+    from market_relay_engine.contracts.context import ContextFlag
 
 
 CONTEXT_PROVENANCE_VERSION = "context_provenance_v1"
@@ -209,6 +212,29 @@ def validate_snapshot_provenance_alignment(snapshot: object) -> None:
     )
 
 
+def validate_context_flag_available_at_alignment(
+    flag: ContextFlag,
+    details: Mapping[str, object] | None,
+) -> None:
+    """Require typed and persisted ``available_at`` values to agree exactly.
+
+    ``available_at`` means the earliest trusted, demonstrable public-availability
+    time of the underlying source fact.  The typed field is the canonical
+    contract value and ``details['provenance']['available_at']`` is its cache and
+    audit mirror.  Legacy details with no provenance remain valid, but whenever
+    provenance is present both representations must be equal (including both
+    being ``None``); neither silently takes precedence.
+    """
+    provenance = _strict_persisted_provenance_from_details(details)
+    if provenance is None:
+        return
+    _assert_timestamp_alignment(
+        provenance.get("available_at"),
+        getattr(flag, "available_at", None),
+        "available_at",
+    )
+
+
 def _normalize_persisted_provenance(raw: Mapping[str, object]) -> dict[str, object]:
     if set(raw) != set(_PROVENANCE_FIELDS):
         missing = sorted(set(_PROVENANCE_FIELDS).difference(raw))
@@ -342,5 +368,6 @@ __all__ = [
     "normalize_provenance",
     "semantic_details_for_comparison",
     "validate_provenance_entry_alignment",
+    "validate_context_flag_available_at_alignment",
     "validate_snapshot_provenance_alignment",
 ]

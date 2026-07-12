@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 
 import pytest
 import requests
@@ -12,6 +13,9 @@ from scripts import check_questdb_schema
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "db" / "schema" / "questdb_ledger_v1.sql"
 MIGRATION_PATH = REPO_ROOT / "db" / "schema" / "questdb_pr26_add_context_indicator_details_json.sql"
+PR34_MIGRATION_PATH = (
+    REPO_ROOT / "db" / "schema" / "questdb_pr34_add_phase7_context_ledger.sql"
+)
 
 
 class FakeResponse:
@@ -28,6 +32,7 @@ class FakeResponse:
 def test_schema_file_exists() -> None:
     assert SCHEMA_PATH.is_file()
     assert MIGRATION_PATH.is_file()
+    assert PR34_MIGRATION_PATH.is_file()
 
 
 def test_offline_schema_validation_passes() -> None:
@@ -84,6 +89,67 @@ def test_context_indicator_details_schema_and_migration_are_valid() -> None:
     migration = MIGRATION_PATH.read_text(encoding="utf-8").upper()
     assert "ALTER TABLE CONTEXT_INDICATOR_SNAPSHOTS ADD COLUMN DETAILS_JSON STRING" in migration
     assert "DROP TABLE" not in migration
+
+
+def test_pr34_additive_migration_is_exact_idempotent_and_non_destructive() -> None:
+    assert check_questdb_schema.validate_pr34_migration_file(PR34_MIGRATION_PATH) == []
+
+    cleaned = check_questdb_schema.strip_sql_line_comments(
+        PR34_MIGRATION_PATH.read_text(encoding="utf-8")
+    )
+    statements = check_questdb_schema.split_sql_statements(cleaned)
+    alters = [statement for statement in statements if statement.startswith("ALTER TABLE")]
+    creates = [statement for statement in statements if statement.startswith("CREATE TABLE")]
+
+    assert len(alters) == 36
+    assert len(creates) == 2
+    assert all(" ADD COLUMN IF NOT EXISTS " in statement for statement in alters)
+    assert all(
+        statement.startswith("CREATE TABLE IF NOT EXISTS ") for statement in creates
+    )
+    for forbidden in ("DROP", "RENAME", "TRUNCATE", "INSERT", "UPDATE", "DELETE", "SELECT"):
+        assert re.search(rf"\b{forbidden}\b", cleaned, flags=re.IGNORECASE) is None
+
+
+def test_pr34_migration_rejects_missing_idempotency_and_destructive_sql(tmp_path: Path) -> None:
+    migration = tmp_path / "bad.sql"
+    migration.write_text(
+        "ALTER TABLE context_ai_events ADD COLUMN raw_input_id STRING;\n"
+        "DROP TABLE context_flags;\n",
+        encoding="utf-8",
+    )
+
+    failures = check_questdb_schema.validate_pr34_migration_file(migration)
+
+    assert any("destructive or DML" in failure for failure in failures)
+    assert any("ALTER statements" in failure for failure in failures)
+
+
+def test_reset_schema_columns_exactly_match_writer_tables() -> None:
+    cleaned = check_questdb_schema.strip_sql_line_comments(
+        SCHEMA_PATH.read_text(encoding="utf-8")
+    )
+
+    assert check_questdb_schema._schema_writer_column_failures(cleaned) == []
+    assert check_questdb_schema.validate_questdb_config_table_order() == []
+
+
+def test_phase7_context_ledger_has_no_raw_text_or_exception_columns() -> None:
+    assert check_questdb_schema._context_ledger_raw_text_failures() == []
+
+    columns = {
+        column
+        for table in (
+            "context_ai_events",
+            "context_flags",
+            "context_classification_attempts",
+            "shadow_context_policy_evaluations",
+        )
+        for column in check_questdb_schema.TABLE_COLUMNS[table]
+    }
+    assert "safe_failure_category" in columns
+    assert "safe_failure_summary" in columns
+    assert not columns.intersection(check_questdb_schema.FORBIDDEN_CONTEXT_LEDGER_COLUMNS)
 
 
 @pytest.mark.parametrize("forbidden", ["TTL", "INSERT", "SELECT"])

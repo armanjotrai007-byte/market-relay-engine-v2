@@ -106,9 +106,25 @@ risk filter or change any trade outcome.
 the existing `RiskDecision.context_snapshot_id` field. PR32 does not modify
 `RiskDecision`, risk logging, risk rules, orders, execution, AI, or model code.
 
+## Phase 7 Boundary
+
+PR34 does not add Phase 7 AI records to this assembler or its policy. New
+`ContextRawInput`, `ContextSourceDocument`, classification, validation,
+`ContextAIEvent`, `ContextFlag`, and `ShadowContextPolicyEvaluation` contracts
+form a separate research-only audit path. They do not enter
+`approved_risk_context` and cannot approve, block, reduce, delay, or otherwise
+change the real decision.
+
+PR37 will own a separate research cache and decision-time shadow evaluator. It
+must select only validated records whose canonical `available_at` is no later
+than the explicit `decision_evaluation_time`; PR34 merely defines the durable
+language and ledger shape. Existing structured-context selection and real
+`RiskDecision` results are unchanged.
+
 ## Deferred Work
 
 The audit payload is returned by `DecisionContext.to_audit_payload()` and is
 JSON-safe, but PR32 does not persist it to QuestDB, JSONL, disk, or any external
-system. Runner persistence, historical replay, risk-policy integration, and raw
-`ContextFlag` or `ContextAIEvent` assembly are deferred to later reviewed work.
+system. Runner persistence, historical replay, and real risk-policy integration
+remain deferred. PR34 defines Phase 7 event/flag contracts, but it does not
+assemble or consume them here.

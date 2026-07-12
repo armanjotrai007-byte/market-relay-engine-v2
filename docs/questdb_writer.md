@@ -1,92 +1,78 @@
 # QuestDB Ledger Writer
 
-PR 13 adds the first simple QuestDB writer for the V2 bot ledger. It maps
-existing project records into rows for the official PR 12 ledger tables and
-sends one `INSERT` at a time through QuestDB's documented `/exec` GET endpoint.
+`QuestDBLedgerWriter` maps typed project records into the bot-ledger tables and
+sends one bounded SQL insert at a time through the configured QuestDB HTTP
+endpoint. It does not create a market-data warehouse, query QuestDB inside a
+decision loop, call providers, or make risk/trading decisions.
 
-QuestDB remains bot ledger only. The writer does not create or write raw market
-data tables, Databento warehouse tables, live trading records outside the ledger,
-or training data.
+## Safety guards
 
-## Write Path
+The writer checks the encoded `/exec` URL against
+`QuestDBWriteConfig.max_sql_length_chars` before sending. Oversized rows are
+rejected rather than truncated. Strings remove null bytes, replace ASCII
+control characters, and escape apostrophes; JSON fields are stably serialized
+before SQL quoting.
 
-The writer uses:
+The separate emergency JSONL fallback preserves a versioned attempted ledger
+row after a primary write failure. It is not a successful QuestDB insert and
+does not add replay, retry, batching, or transaction semantics. The same raw
+content restrictions apply to fallback rows.
 
-```text
-GET /exec?query=...&fmt=json
-```
+## Phase 7 mappings
 
-In Python this is:
+PR34 adds mappings and writer methods for:
 
-```python
-requests.get(exec_url, params={"query": sql, "fmt": "json"}, timeout=...)
-```
+- `ContextClassificationRequest` + `ContextClassificationResponse` + optional
+  `ContextValidationResult` -> `context_classification_attempts`
+- `ShadowContextPolicyEvaluation` ->
+  `shadow_context_policy_evaluations`
+- enriched `ContextAIEvent` -> `context_ai_events`
+- enriched or legacy `ContextFlag` -> `context_flags`
 
-PR 13 intentionally does not switch to POST because the local QuestDB version
-has not been proven to support POST for this path.
+Cross-record request/attempt IDs must agree. Enum fields are written as their
+stable strings, ticker/event/flag/reason-code lists are compact JSON arrays,
+and UTC timestamps remain explicit. Unknown columns are rejected against the
+exact `TABLE_COLUMNS` definition.
 
-## Safety Guards
+The classification mapper never copies `ContextClassificationRequest.input_text`
+to a row. It writes only IDs, hashes, source metadata, concise output,
+validation facts, latency, and safe failure fields. Full documents, excerpts,
+prompts, exceptions, tracebacks, secrets, and credentials are prohibited.
 
-`QuestDBWriteConfig.max_sql_length_chars` defaults to `7000`. The guard is
-checked against the encoded `/exec` GET URL, not just the raw SQL string,
-because spaces, quotes, JSON punctuation, and timestamps expand when sent as
-query parameters. If the encoded request is larger than the configured limit,
-the writer raises `QuestDBWriteError` before sending the request. Oversized rows
-are not truncated, and JSON fields are not dropped.
+Provider failures expose only `safe_failure_category` and optional
+`safe_failure_summary`. PR36 must record the full exception and traceback in
+retained ignored local structured logs, redact credentials, and correlate those
+logs with the same `classification_attempt_id`; PR34 does not implement that
+runtime logging.
 
-The shared emergency JSONL fallback helper is separate from the writer. Callers
-that request a primary QuestDB write can append a versioned preservation record
-under the configured `jsonl_fallback.directory` after a failed write. The
-fallback row is durable emergency evidence, not a successful QuestDB insert, and
-it does not provide retries, replay, batching, or distributed transaction
-semantics. A future bulk ingestion or manual reconciliation path can handle
-larger or spooled payloads later.
+Shadow rows contain hypothetical research output only. A `BLOCK`,
+`REDUCE_SIZE`, or `DELAY` value cannot alter a real `RiskDecision` or execution
+path.
 
-String literals are sanitized before SQL quoting:
+## Existing-row compatibility
 
-- null bytes are removed
-- ASCII control characters are replaced with spaces
-- apostrophes are escaped by doubling
-
-JSON fields are serialized to stable JSON first and then passed through the same
-SQL string literal path. For example, `{"summary": "Fed's rate hike"}` is emitted
-with `Fed''s` inside the SQL string literal.
-
-## Supported Rows
-
-PR 13 adds explicit mappers for feature snapshots, model signals, cost estimates,
-risk decisions, context indicators, AI context events, context flags, context
-state snapshots, orders, fills, trade outcomes, latency metrics, and system
-health events.
-
-`ContextStateSnapshot` is now the typed target for the
-`context_state_snapshots` table. It captures the context state seen by the
-deterministic risk gate without adding a future context-state cache.
-
-Mappers generate `write_time` once when a row is built. If a caller passes an
-explicit `write_time`, that exact UTC-aware value is preserved. `write_row()`
-does not mutate or replace it, so future fallback replay can keep the original
-attempted write time.
+Existing event/flag field sets and legacy ledger rows remain supported while
+PR35 is pending; `ContextAIEvent` callers must now use the strict event, risk,
+and urgency enums. Nullable Phase 7 metadata maps to SQL null, and legacy EIA
+flags continue to populate established columns. When legacy provenance is
+present, the publishing adapter validates top-level and companion
+cache-provenance `available_at` values before it calls the writer; the writer
+itself receives the typed flag, not cache details.
 
 ## Validation
 
-Default offline validation does not require QuestDB:
+Offline validation requires no QuestDB connection:
 
 ```powershell
-python scripts/check_questdb_writer.py
+& ".\.venv\Scripts\python.exe" scripts/check_questdb_writer.py
+& ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_questdb_writer.py
 ```
 
-Required server-laptop validation writes tiny test rows after health and schema
-validation:
+Before using a PR34 writer against an existing persistent server, apply the
+idempotent additive migration in
+`db/schema/questdb_pr34_add_phase7_context_ledger.sql` using the procedure in
+`docs/live_runbook.md`. Never use the destructive reset as an upgrade.
 
-```powershell
-python scripts/check_questdb.py --required
-python scripts/check_questdb_schema.py --apply --required
-python scripts/check_questdb_writer.py --required
-```
-
-## Not Added
-
-The QuestDB writer itself does not add retries, queues, background writing,
-batching, raw market-data writes, Databento API calls, Alpaca integration, model
-training, risk engine logic, or live trading.
+The writer still does not add provider calls, queues, background writing,
+collector networking, model behavior, real risk integration, broker behavior,
+or live trading.

@@ -6,10 +6,13 @@ Each file is safe to load locally without broker access, QuestDB writes, or live
 
 ## Files
 
-- `symbols.yaml` defines example tradable symbols and separate context symbols. Example tradable symbols are not approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
-- `context_sources.yaml` defines structured and unstructured context source settings. Built structured sources are allowed to be enabled for functional connectivity, and `yfinance_dev_only` is explicitly development-only and not production-critical.
+- `symbols.yaml` defines the final 10-stock universe (`PLTR`, `LMT`, `RTX`, `GD`, `AVAV`, `XOM`, `OXY`, `SLB`, `COP`, and `VLO`) and separate context symbols. None of the tradable symbols is approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
+- `context_sources.yaml` defines structured and unstructured context source settings. EIA, FRED, USAspending, the local macro calendar, and `yfinance_dev_only` are intentionally enabled for bounded use outside the per-tick loop. Yfinance remains development-only and not production-critical; SEC EDGAR, news, social, and the AI context filter remain disabled.
 - `risk_limits.yaml` defines placeholder paper-trading risk limits. These are not optimized live settings.
-- `questdb.yaml` defines QuestDB connection and health-check defaults and confirms QuestDB is for the bot ledger only, not a historical market-data warehouse.
+- `questdb.yaml` defines QuestDB connection/health defaults and the exact ledger
+  table allow-list. PR34 adds `context_classification_attempts` and
+  `shadow_context_policy_evaluations`; both store metadata only. QuestDB remains
+  a bot ledger, not a historical market-data or raw-context warehouse.
 - `model_config.yaml` defines placeholder feature, model, calibration, horizon, and label settings. It does not load or train a model.
 - `calendar_events.yaml` defines reviewed scheduled event windows used as future risk flags, not trade signals.
 - `execution.yaml` defines execution defaults. Alpaca may be enabled only in paper-only mode and cannot place live orders without explicit live-trading authorization.
@@ -38,6 +41,10 @@ The same commands should be run on the separate trading laptop after it pulls fr
 - QuestDB is a bot ledger only.
 - Per-tick/per-signal decisions must read context from in-memory cache, not QuestDB.
 - No V1 raw market-data table names belong in V2 config files.
+- Phase 7 classifications and shadow actions remain research-only and cannot
+  alter real risk, sizing, model, broker, or execution behavior.
+- Full source documents, prompts/request excerpts, credentials, and provider
+  exceptions must not appear in QuestDB configuration or schemas.
 
 ## YFinance Development Proxy
 
@@ -74,7 +81,9 @@ max_staleness_seconds >= 300 + bar_completion_grace_seconds
 
 The collector stores `valid_until = source_event_time + max_staleness_seconds`. That keeps the previous completed bar usable while the newest five-minute bar is still inside the completion grace period.
 
-Oil proxy ETFs XLE, XOP, and OIH are stored under `SECTOR/OIL`, matching the configured `oil` sector used by the initial tradable oil names after cache key normalization.
+Oil proxy ETFs XLE, XOP, and OIH are stored under `SECTOR/OIL`, matching the
+configured `oil` sector used by `XOM`, `OXY`, `SLB`, `COP`, and `VLO` after
+cache key normalization.
 
 Offline smoke, no internet or QuestDB:
 
@@ -105,8 +114,10 @@ explicit script/function overrides
 -> hardcoded defaults
 ```
 
-The default check uses `http://localhost:9000/exec?query=SELECT 1`. Offline
-validation uses optional mode, while the server laptop should run:
+The default check uses `http://localhost:9000/exec?query=SELECT 1`. Current
+repository configuration sets health, writer, and analysis
+`required_by_default: true`; a plain health command therefore fails if the
+local service is unavailable. The server laptop may make that explicit with:
 
 ```powershell
 python scripts/check_questdb.py --required

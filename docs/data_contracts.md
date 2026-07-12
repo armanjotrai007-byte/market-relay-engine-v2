@@ -1,96 +1,192 @@
 # Data Contracts
 
-PR 3 defines the first internal record shapes for Market Relay Engine V2. These
-contracts are intentionally lightweight frozen dataclasses with explicit fields.
-They are stable shapes for future components, not a framework, registry, ORM, or
-schema engine.
+Market Relay Engine V2 uses frozen standard-library dataclasses, string-backed
+enums, generated record IDs, and explicit UTC timestamps. The contracts are
+transport and audit shapes; they are not an ORM, provider client, source
+registry, or trading policy.
 
-## Purpose
+## Common rules
 
-The contracts standardize how future layers will pass and log facts:
+- Datetimes must be timezone-aware. Aware offsets are normalized to UTC, naive
+  values are rejected, and JSON serialization emits UTC ISO strings ending in
+  `Z`.
+- Required identities and text fields are non-empty strings.
+- SHA-256 references are 64-character lowercase hexadecimal strings. PR34
+  validates their representation but does not read files or recompute hashes.
+- Mutable input collections are defensively copied.
+- Confidence is finite and in the inclusive range `[0, 1]`.
+- Enums serialize to their stable string values.
+- `schema_version` and `trace_id` travel with records for evolution and
+  correlation. Record IDs are generated when callers do not supply them.
 
-- market records from future Databento adapters
-- feature snapshots from the future canonical feature builder
-- model signals, including blocked or ignored signals
-- deterministic risk decisions
-- structured context indicators, AI context events, and context flags
-- context state snapshots seen by the deterministic risk gate
-- order and fill events for paper execution metrics
-- trade outcomes, latency metrics, and system health records
+Existing market, feature, signal, risk, context-state, execution, outcome,
+latency, and system-health contracts keep their established behavior. PR34 does
+not change `RiskDecision`, model inference, sizing, broker, or execution logic.
 
-PR 3 does not implement live integrations, broker execution, feature
-calculations, model inference, risk logic, QuestDB writes, or AI calls.
+## Phase 7 source lineage
 
-## Timestamp Standard
+Phase 7 uses a provider-neutral lineage:
 
-All datetime values must be timezone-aware UTC. Naive datetimes are rejected so
-records cannot silently mix local time and UTC. JSON serialization emits UTC ISO
-strings ending in `Z`.
+```text
+ContextRawInput.raw_input_id + raw_input_hash
+-> ContextSourceDocument.source_document_id + document_hash
+-> ContextClassificationRequest.classification_request_id
+-> ContextClassificationResponse.classification_attempt_id
+-> ContextValidationResult.validation_result_id
+-> research-only ContextAIEvent / ContextFlag
+```
 
-Common timestamp meanings:
+`ContextRawInput` identifies a trusted-code ingress envelope by source,
+source type, source locator, affected tickers, collection time, and raw-input
+hash. `ContextSourceDocument` adds normalized document identity, document hash,
+and normalization time. Neither contract contains source body text.
 
-- `event_time`: canonical time for the record or event.
-- `source_event_time`: timestamp from the upstream source, if different.
-- `local_receive_time`: when the local process received the upstream event.
-- `snapshot_time`: when a feature or context snapshot was created.
-- `signal_time`: when a model signal was produced.
-- `decision_time`: when the deterministic risk decision was produced.
-- `order_time` and `fill_time`: execution event timestamps.
-- `measured_time`: when a latency metric was measured.
-- `write_time`: future ledger write timestamp, not implemented in PR 3.
+`ContextClassificationRequest` is the only PR34 contract allowed to carry a
+bounded in-memory excerpt in `input_text`. It also carries deterministic source
+identity, hashes, ticker mappings, source timestamps, request time, and prompt
+version. It is not a durable raw-document record, and the excerpt must never be
+written to QuestDB or emergency ledger rows. PR36 owns the actual bound,
+provider call, queue, retry, rate, budget, deduplication, and backpressure
+policy.
 
-## IDs and Tracing
+`ContextClassificationResponse` records one provider attempt without granting
+the provider authority to invent source identity, tickers, hashes, timestamps,
+or risk policy. `ContextValidationResult` records the validator outcome,
+machine-readable reason codes, safe detail, validator version, and validation
+time. Trusted-source enforcement, hash recomputation, prompt-injection checks,
+and cross-record provenance validation belong to PR35.
 
-Runtime IDs and contract record IDs are standard-library UUID strings with short
-log-safe prefixes. Callers may pass IDs explicitly, or contract defaults create
-the record IDs that are needed later for ledger joins and weekly analysis.
+## Classification vocabulary
 
-- `run_id`: one process or validation run.
-- `session_id`: one paper/live session.
-- `trace_id`: correlates related records across components.
-- Record IDs include `feature_snapshot_id`, `signal_id`, `risk_decision_id`,
-  `context_snapshot_id`, `context_event_id`, `context_flag_id`, `order_id`,
-  `fill_id`, `outcome_id`, `latency_metric_id`, and `health_event_id`.
+`ContextClassificationEventType` limits Gemini-classifiable event values to:
 
-## Contract List
+```text
+UNKNOWN
+OTHER
+SEC_8K_MATERIAL_AGREEMENT
+SEC_8K_TERMINATION_OF_MATERIAL_AGREEMENT
+SEC_8K_BANKRUPTCY
+SEC_8K_CYBERSECURITY_INCIDENT
+SEC_8K_ACQUISITION
+SEC_8K_RESULTS
+SEC_8K_DIRECT_FINANCIAL_OBLIGATION
+SEC_8K_DEBT_DEFAULT
+SEC_8K_EXIT_OR_DISPOSAL_COSTS
+SEC_8K_MATERIAL_IMPAIRMENT
+SEC_8K_DELISTING
+SEC_8K_AUDITOR_CHANGE
+SEC_8K_NON_RELIANCE
+SEC_8K_CHANGE_IN_CONTROL
+SEC_8K_EXECUTIVE_OR_DIRECTOR_CHANGE
+SEC_8K_REGULATION_FD
+SEC_8K_OTHER_EVENT
+```
 
-- `MarketRecord`: generic market record for future Databento-derived adapters.
-- `FeatureSnapshot`: feature dictionary output shape, without calculations.
-- `ModelSignal`: model output shape, without inference.
-- `RiskDecision`: deterministic risk decision shape, without risk logic.
-- `ContextIndicatorSnapshot`: structured context indicator snapshot.
-- `ContextAIEvent`: structured AI-context output shape, without AI calls.
-- `ContextFlag`: risk flag shape for future context and risk layers.
-- `ContextStateSnapshot`: typed context state row for the QuestDB
-  `context_state_snapshots` ledger table, without building a context cache.
-- `OrderEvent`: order event shape, without broker placement.
-- `FillEvent`: fill event shape, without broker integration.
-- `TradeOutcome`: future trade result and return measurement shape.
-- `LatencyMetric`: component latency measurement shape.
-- `SystemHealthEvent`: system health record shape, without monitoring loops.
+Risk levels are `UNKNOWN`, `LOW`, `MEDIUM`, `HIGH`, and `CRITICAL`. Urgency is
+`UNKNOWN`, `LOW`, `MEDIUM`, or `HIGH`.
 
-## Serialization
+Form 4 open-market purchase and sale values are deliberately separate:
 
-`market_relay_engine.common.serialization` provides simple JSON helpers:
+```text
+SEC_FORM4_OPEN_MARKET_PURCHASE
+SEC_FORM4_OPEN_MARKET_SALE
+```
 
-- dataclasses serialize to dictionaries
-- enums serialize to readable values
-- datetimes serialize to UTC ISO strings
-- nested lists and dictionaries are supported
-- `from_json_string()` returns a plain dictionary only
+They belong to `DeterministicContextEventType`, not the AI classification enum.
+`ContextClassificationResponse` and AI-derived `ContextAIEvent` reject those
+values. Deterministic Form 4 parsing and event emission remain deferred to PR38.
 
-PR 3 intentionally does not reconstruct dataclass instances from JSON. That
-would add enum mapping and datetime parsing policy before those requirements are
-needed.
+## Classification statuses
 
-## Validation
+`ContextClassificationStatus` has exactly four values:
 
-Run local validation with:
+- `VALID`: non-unknown event type, risk level, urgency, confidence, and concise
+  summary are present; provider-failure fields are absent.
+- `ABSTAINED`: classification fields remain unknown, confidence is absent, and
+  an optional safe summary may explain the abstention.
+- `VALIDATION_REJECTED`: classification and provider-failure payloads are
+  absent; rejection reasons are recorded by `ContextValidationResult`.
+- `PROVIDER_FAILED`: classification payload is absent and a safe failure
+  category is required; a safe summary is optional.
+
+Only the safe failure category and summary may enter contracts, QuestDB, or the
+emergency ledger. PR36 must keep the full exception and traceback in retained,
+ignored local structured logs, redact credentials, and correlate the record by
+the same `classification_attempt_id`. PR34 does not implement provider calls or
+runtime logging.
+
+## Research-only events and flags
+
+`ContextAIEvent` and `ContextFlag` remain the single canonical event and flag
+contracts; PR34 evolves them rather than creating competing copies. They can
+carry source/document/request/attempt/validation lineage, hashes, affected
+tickers, availability, provider metadata, and concise structured output.
+
+`ContextAIEvent` uses only the AI-classifiable event enum. `ContextFlag` keeps
+its legacy generic flag and severity fields so existing EIA and deterministic
+risk adapters remain compatible. Phase 7 metadata is optional until PR35
+enforces complete trusted lineage.
+
+`available_at` means the earliest trusted, demonstrable time the underlying
+fact was publicly available. It is not the local collection time, the source
+event time, or the start of a pre-release risk window. When a `ContextFlag` and
+its legacy `details["provenance"]` both represent availability, their values
+must agree exactly after UTC normalization; malformed values or mismatches are
+rejected. EIA continues to use its reviewed official release time in both
+locations.
+
+These records are research-only in PR34. They do not enter
+`approved_risk_context`, approve or block a real trade, resize or delay a real
+trade, or modify a `RiskDecision`.
+
+## Shadow policy evaluations
+
+`ShadowContextPolicyEvaluation` joins a model signal and optional risk decision
+to matched context event/flag IDs at one explicit
+`decision_evaluation_time`. It records a deterministic context fingerprint,
+policy version, policy-config hash, reason codes, and one hypothetical action:
+
+```text
+NO_CHANGE
+BLOCK
+REDUCE_SIZE
+DELAY
+WARN_ONLY
+```
+
+`proposed_size_factor` is required only for `REDUCE_SIZE` and must satisfy
+`0 < factor <= 1`; every other action rejects a size factor. This is audit-only
+hypothetical output. PR37 owns the research cache, as-of selection, and actual
+shadow evaluator and must never alter the real risk decision.
+
+## Timestamp meanings
+
+- `source_published_at` / `source_updated_at`: source-declared document times.
+- `collected_at`: when trusted local code accepted the raw input.
+- `normalized_at`: when source document metadata was normalized.
+- `requested_at`: when a classification request was created.
+- `classified_at`: when one classification attempt completed.
+- `available_at`: earliest trusted demonstrable public availability.
+- `validated_at`: when validation completed.
+- `event_time`: canonical time of an event or flag record.
+- `valid_from` / `valid_until`: event or policy window bounds; they are not
+  proof that the underlying fact was publicly available.
+- `decision_evaluation_time`: the explicit as-of time of a shadow comparison.
+- `write_time`: local ledger write-attempt time.
+
+## Serialization and validation
+
+`market_relay_engine.common.serialization` converts dataclasses, enums,
+datetimes, lists, and dictionaries to JSON-safe values. It does not reconstruct
+dataclass instances from untrusted JSON.
+
+Run contract checks offline with the repository virtual environment:
 
 ```powershell
-python scripts/check_environment.py
-python scripts/check_config.py
-python scripts/check_contracts.py
-python -m pytest
-powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
+& ".\.venv\Scripts\python.exe" scripts/check_contracts.py
+& ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_contracts_context.py
 ```
+
+PR34 does not add Gemini, SEC collection, archive writing, manual inbox
+processing, research-cache behavior, real shadow-policy execution, or real risk
+integration. Those remain explicitly assigned to PR35 through PR39.

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from market_relay_engine.common.time import to_utc_iso
 from market_relay_engine.context.eia_wpsr import (
     EIARelease,
     EIAWPSRActionKind,
@@ -537,6 +538,12 @@ def test_release_window_and_numeric_snapshots_emit_provenance_policy() -> None:
     assert flag_provenance["research_asof_eligible"] is True
     assert flag_provenance["effective_from"] == "2026-06-17T14:25:00Z"
     assert flag_provenance["valid_until"] == "2026-06-17T14:45:00Z"
+    release_flag = next(
+        item for item in window_result.context_flags if item.ticker == "XOM"
+    )
+    assert release_flag.event_time == release.window_start
+    assert release_flag.available_at == release.release_at
+    assert flag_provenance["available_at"] == to_utc_iso(release_flag.available_at)
     assert is_active_in_time_window(cached_flag.details, release.window_start)
     assert is_research_asof_eligible_at(cached_flag.details, release.release_at)
     assert window_result.context_flags

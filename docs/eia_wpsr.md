@@ -1,8 +1,10 @@
 # EIA Weekly Petroleum Status Report
 
-PR26 adds a disabled-by-default, one-shot EIA WPSR collector for oil-market
-research context. It does not create a scheduler, trading signal, directional
-label, inventory-surprise model, position-sizing rule, or numeric risk limit.
+PR26 adds a one-shot EIA WPSR collector for oil-market research context.
+Repository configuration intentionally enables it for explicit collection, but
+does not schedule or invoke it automatically. It does not create a trading
+signal, directional label, inventory-surprise model, position-sizing rule, or
+numeric risk limit.
 
 ## Timing and look-ahead control
 
@@ -17,6 +19,14 @@ The official API records expose weekly periods, series/facet identity, units,
 and values. They do not expose a publication timestamp or distinguish revisions
 as separate versions. PR26 therefore supports prospective reviewed release
 alignment only and does not guess historical publication times.
+
+PR34 makes availability explicit without changing EIA behavior. For each
+release-window `ContextFlag`, both top-level `available_at` and
+`details["provenance"]["available_at"]` use the reviewed official `release_at`.
+They mean the earliest trusted demonstrable public availability of the report.
+The pre-release `event_time`/window start remains earlier by design and is not
+treated as publication. The adapter validates both availability representations
+and rejects a mismatch or malformed nested timestamp.
 
 ## Reviewed runtime schedule
 
@@ -43,7 +53,8 @@ schedules work. It returns one release-window, numeric-fetch, retry, or no-op
 action plus the next action time.
 
 Ticker-level `eia_wpsr_event_window` flags are the only PR26 inputs to the
-existing deterministic risk adapter. Numeric collection begins only after the
+existing deterministic risk adapter. The final configured oil universe is
+`XOM`, `OXY`, `SLB`, `COP`, and `VLO`. Numeric collection begins only after the
 configured delay and stops an unfinished cycle at the next release window with
 `SUPERSEDED`.
 
@@ -71,7 +82,9 @@ The cache is updated before the ledger. QuestDB writes occur only after
 
 PR26 adds `details_json` to `context_indicator_snapshots`. Existing servers must
 run `db/schema/questdb_pr26_add_context_indicator_details_json.sql` once before
-enabling EIA ledger writes.
+enabling EIA ledger writes. After PR34 is merged, persistent ledgers must also
+run `db/schema/questdb_pr34_add_phase7_context_ledger.sql` before PR34 writers;
+the destructive reset is not a migration path.
 
 Offline validation uses sanitized fixtures:
 
