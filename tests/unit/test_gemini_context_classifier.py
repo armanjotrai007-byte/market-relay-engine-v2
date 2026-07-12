@@ -117,28 +117,27 @@ def _provider_payload(**overrides: object) -> dict[str, object]:
 def _interaction(
     payload: object | None = None,
     *,
-    text: object = _UNSET,
-    outputs: object = _UNSET,
+    output_text: object = _UNSET,
     status: str = "completed",
     steps: list[object] | None = None,
 ) -> object:
-    if text is _UNSET:
-        text = json.dumps(
+    if output_text is _UNSET:
+        output_text = json.dumps(
             _provider_payload() if payload is None else payload,
             separators=(",", ":"),
         )
-    if outputs is _UNSET:
-        text_output = (
-            interaction_types.TextContent(type="text", text=text)
-            if isinstance(text, str)
-            else SimpleNamespace(type="text", text=text)
+    if isinstance(output_text, str) or output_text is None:
+        return interaction_types.Interaction(
+            status=status,
+            model="gemini-3.5-flash",
+            output_text=output_text,
+            steps=steps,
         )
-        outputs = [text_output]
-    return interaction_types.Interaction(
+    return SimpleNamespace(
         status=status,
         model="gemini-3.5-flash",
+        output_text=output_text,
         steps=steps,
-        outputs=outputs,
     )
 
 
@@ -282,7 +281,7 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
     assert captured_factory["api_key"] == API_KEY_SENTINEL
     assert http_options.timeout == 12_500  # type: ignore[union-attr]
     assert http_options.retry_options.attempts == 1  # type: ignore[union-attr]
-    assert response.outputs
+    assert response.output_text
     assert captured_create == [
         {
             "model": "gemini-3.5-flash",
@@ -314,22 +313,243 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
     assert forbidden.isdisjoint(request_body)
 
 
-def test_extracts_one_outputs_compatibility_text_from_real_sdk_interaction() -> None:
+def test_extracts_actual_sdk_interaction_output_text_without_steps() -> None:
     expected = json.dumps(_provider_payload(), separators=(",", ":"))
-    interaction = _interaction(text=expected)
+    interaction = _interaction(output_text=expected)
 
     output_text, failure = _extract_interaction_output_text(interaction)
 
     assert isinstance(interaction, interaction_types.Interaction)
-    assert interaction.model_extra is not None
-    assert interaction.model_extra["outputs"] is interaction.outputs
-    assert isinstance(interaction.outputs[0], interaction_types.TextContent)
-    assert interaction.outputs[0].type == "text"
+    assert interaction.steps is None
     assert output_text == expected
     assert failure is None
 
 
-def test_extracts_declared_sdk_210_model_output_step_shape() -> None:
+def test_actual_sdk_output_text_is_preferred_when_steps_also_exist() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    conflicting = '{"status":"ABSTAINED"}'
+    interaction = interaction_types.Interaction(
+        status="completed",
+        model="gemini-3.5-flash",
+        output_text=expected,
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[
+                    interaction_types.TextContent(type="text", text=conflicting)
+                ],
+            )
+        ],
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
+def test_primary_output_text_mapping_field_is_supported() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = {
+        "status": "completed",
+        "output_text": expected,
+        "steps": "must not be inspected",
+    }
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
+def test_primary_output_text_is_read_once_without_inspecting_steps() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+
+    class OutputTextFirstInteraction:
+        reads = 0
+
+        @property
+        def output_text(self) -> str:
+            self.reads += 1
+            return expected
+
+        @property
+        def steps(self) -> object:
+            raise AssertionError("steps must not be inspected after usable output_text")
+
+    interaction = OutputTextFirstInteraction()
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert interaction.reads == 1
+    assert output_text == expected
+    assert failure is None
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+def test_raw_steps_only_mapping_or_object_response_is_supported(
+    as_mapping: bool,
+) -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    step = {
+        "type": "model_output",
+        "content": [{"type": "text", "text": expected}],
+    }
+    interaction: object = (
+        {"status": "completed", "steps": [step]}
+        if as_mapping
+        else SimpleNamespace(
+            status="completed",
+            steps=[
+                SimpleNamespace(
+                    type="model_output",
+                    content=[SimpleNamespace(type="text", text=expected)],
+                )
+            ],
+        )
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
+def test_steps_fallback_concatenates_ordered_text_blocks_without_separator() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    cut = len(expected) // 2
+    interaction = interaction_types.Interaction(
+        status="completed",
+        model="gemini-3.5-flash",
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[
+                    interaction_types.TextContent(type="text", text=expected[:cut]),
+                    interaction_types.TextContent(type="text", text=expected[cut:]),
+                ],
+            )
+        ],
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert interaction.output_text is None
+    assert output_text == expected
+    assert failure is None
+
+
+def test_steps_fallback_uses_only_response_after_latest_user_input() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = interaction_types.Interaction(
+        status="completed",
+        model="gemini-3.5-flash",
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[
+                    interaction_types.TextContent(
+                        type="text",
+                        text="older response must not be concatenated",
+                    )
+                ],
+            ),
+            interaction_types.UserInputStep(type="user_input", content=[]),
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[interaction_types.TextContent(type="text", text=expected)],
+            ),
+        ],
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
+def test_steps_fallback_ignores_non_text_blocks() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    cut = len(expected) // 2
+    interaction = interaction_types.Interaction(
+        status="completed",
+        model="gemini-3.5-flash",
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[
+                    interaction_types.ImageContent(type="image", data="unused"),
+                    interaction_types.TextContent(type="text", text=expected[:cut]),
+                    interaction_types.TextContent(type="text", text=expected[cut:]),
+                    interaction_types.ImageContent(type="image", data="unused"),
+                ],
+            )
+        ],
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
+def test_blank_output_text_falls_back_to_steps() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = interaction_types.Interaction(
+        status="completed",
+        model="gemini-3.5-flash",
+        output_text="   ",
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[interaction_types.TextContent(type="text", text=expected)],
+            )
+        ],
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
+@pytest.mark.parametrize(
+    ("interaction", "category"),
+    [
+        (SimpleNamespace(status="completed"), "PROVIDER_ERROR"),
+        (_interaction(output_text=None), "EMPTY_RESPONSE"),
+        (_interaction(output_text=""), "EMPTY_RESPONSE"),
+        (_interaction(output_text="   "), "EMPTY_RESPONSE"),
+        (_interaction(output_text=123), "PROVIDER_ERROR"),
+    ],
+)
+def test_missing_or_unusable_output_is_a_safe_failure(
+    interaction: object,
+    category: str,
+) -> None:
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text is None
+    assert failure is not None
+    assert failure.category == category
+
+
+def test_pinned_interaction_requires_no_invented_top_level_outputs() -> None:
+    interaction = _interaction()
+
+    assert "output_text" in interaction_types.Interaction.model_fields
+    assert "steps" in interaction_types.Interaction.model_fields
+    assert "outputs" not in interaction_types.Interaction.model_fields
+    assert not hasattr(interaction, "outputs")
+
+
+def test_realistic_sdk_output_text_shape_reaches_valid() -> None:
+    result = _classifier(FakeTransport(_interaction())).classify(_request())
+
+    assert result.response.status is ContextClassificationStatus.VALID
+    assert result.response.safe_failure_category is None
+
+
+def test_realistic_sdk_steps_fallback_shape_reaches_valid() -> None:
     expected = json.dumps(_provider_payload(), separators=(",", ":"))
     interaction = interaction_types.Interaction(
         status="completed",
@@ -342,106 +562,7 @@ def test_extracts_declared_sdk_210_model_output_step_shape() -> None:
         ],
     )
 
-    output_text, failure = _extract_interaction_output_text(interaction)
-
-    assert interaction.output_text is None
-    assert output_text == expected
-    assert failure is None
-
-
-def test_empty_interaction_outputs_are_safe_empty_response() -> None:
-    output_text, failure = _extract_interaction_output_text(_interaction(outputs=[]))
-
-    assert output_text is None
-    assert failure is not None
-    assert failure.category == "EMPTY_RESPONSE"
-
-
-def test_missing_interaction_outputs_and_steps_are_safe_provider_error() -> None:
-    output_text, failure = _extract_interaction_output_text(
-        SimpleNamespace(status="completed")
-    )
-
-    assert output_text is None
-    assert failure is not None
-    assert failure.category == "PROVIDER_ERROR"
-
-
-def test_interaction_outputs_with_no_text_are_safe_empty_response() -> None:
-    interaction = _interaction(
-        outputs=[interaction_types.ImageContent(type="image", data="unused")]
-    )
-
-    output_text, failure = _extract_interaction_output_text(interaction)
-
-    assert output_text is None
-    assert failure is not None
-    assert failure.category == "EMPTY_RESPONSE"
-
-
-@pytest.mark.parametrize("text", ["", "   ", None, 123])
-def test_blank_or_non_string_interaction_text_is_safe_empty_response(
-    text: object,
-) -> None:
-    output_text, failure = _extract_interaction_output_text(_interaction(text=text))
-
-    assert output_text is None
-    assert failure is not None
-    assert failure.category == "EMPTY_RESPONSE"
-
-
-def test_one_text_output_is_selected_without_concatenating_non_text_outputs() -> None:
-    expected = json.dumps(_provider_payload(), separators=(",", ":"))
-    interaction = _interaction(
-        outputs=[
-            interaction_types.ImageContent(type="image", data="unused"),
-            interaction_types.TextContent(type="text", text=expected),
-            SimpleNamespace(type="function_call", text="must not be parsed"),
-        ]
-    )
-
-    output_text, failure = _extract_interaction_output_text(interaction)
-
-    assert output_text == expected
-    assert failure is None
-
-
-def test_multiple_text_outputs_are_rejected_without_concatenation() -> None:
-    interaction = _interaction(
-        outputs=[
-            interaction_types.TextContent(type="text", text='{"first":true}'),
-            interaction_types.TextContent(type="text", text='{"second":true}'),
-        ]
-    )
-
-    output_text, failure = _extract_interaction_output_text(interaction)
-
-    assert output_text is None
-    assert failure is not None
-    assert failure.category == "PROVIDER_ERROR"
-
-
-def test_extraction_never_inspects_invented_top_level_output_text() -> None:
-    expected = json.dumps(_provider_payload(), separators=(",", ":"))
-
-    class InteractionWithOutputTextTrap:
-        status = "completed"
-        outputs = [interaction_types.TextContent(type="text", text=expected)]
-
-        @property
-        def output_text(self) -> str:
-            raise AssertionError("top-level output_text must not be inspected")
-
-    output_text, failure = _extract_interaction_output_text(
-        InteractionWithOutputTextTrap()
-    )
-
-    assert output_text == expected
-    assert failure is None
-
-
-def test_realistic_interactions_outputs_shape_reaches_valid() -> None:
-    result = _classifier(FakeTransport(_interaction())).classify(_request())
+    result = _classifier(FakeTransport(interaction)).classify(_request())
 
     assert result.response.status is ContextClassificationStatus.VALID
     assert result.response.safe_failure_category is None
@@ -539,7 +660,7 @@ def test_malformed_json_is_rejected_without_recovery_or_retry(
     output_text: str,
     reason_code: str,
 ) -> None:
-    transport = FakeTransport(_interaction(text=output_text))
+    transport = FakeTransport(_interaction(output_text=output_text))
 
     result = _classifier(transport).classify(_request())
 
@@ -547,6 +668,48 @@ def test_malformed_json_is_rejected_without_recovery_or_retry(
     assert result.response.provider_request_count == 1
     assert result.response.retry_count == 0
     assert len(transport.calls) == 1
+
+
+def test_malformed_json_from_steps_fallback_remains_validation_rejected() -> None:
+    interaction = interaction_types.Interaction(
+        status="completed",
+        model="gemini-3.5-flash",
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[interaction_types.TextContent(type="text", text="not json")],
+            )
+        ],
+    )
+
+    result = _classifier(FakeTransport(interaction)).classify(_request())
+
+    _assert_rejected(result, "MALFORMED_JSON")
+    assert result.response.provider_request_count == 1
+    assert result.response.retry_count == 0
+
+
+def test_malformed_primary_output_text_does_not_fall_back_to_valid_steps() -> None:
+    valid_fallback = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = interaction_types.Interaction(
+        status="completed",
+        model="gemini-3.5-flash",
+        output_text="not json",
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[
+                    interaction_types.TextContent(type="text", text=valid_fallback)
+                ],
+            )
+        ],
+    )
+
+    result = _classifier(FakeTransport(interaction)).classify(_request())
+
+    _assert_rejected(result, "MALFORMED_JSON")
+    assert result.response.provider_request_count == 1
+    assert result.response.retry_count == 0
 
 
 @pytest.mark.parametrize(
@@ -590,16 +753,27 @@ def test_schema_and_contract_invalid_payloads_are_not_retried(
     assert len(transport.calls) == 1
 
 
-def test_empty_provider_output_is_provider_failure_without_retry() -> None:
-    for output in (None, "", "   ", 123):
-        transport = FakeTransport(_interaction(text=output))
-        result = _classifier(transport).classify(_request(str(output)))
+@pytest.mark.parametrize(
+    ("output", "category"),
+    [
+        (None, "EMPTY_RESPONSE"),
+        ("", "EMPTY_RESPONSE"),
+        ("   ", "EMPTY_RESPONSE"),
+        (123, "PROVIDER_ERROR"),
+    ],
+)
+def test_empty_or_invalid_provider_output_is_failure_without_retry(
+    output: object,
+    category: str,
+) -> None:
+    transport = FakeTransport(_interaction(output_text=output))
+    result = _classifier(transport).classify(_request(str(output)))
 
-        assert result.response.status is ContextClassificationStatus.PROVIDER_FAILED
-        assert result.response.safe_failure_category == "EMPTY_RESPONSE"
-        assert result.response.provider_request_count == 1
-        assert result.response.retry_count == 0
-        assert len(transport.calls) == 1
+    assert result.response.status is ContextClassificationStatus.PROVIDER_FAILED
+    assert result.response.safe_failure_category == category
+    assert result.response.provider_request_count == 1
+    assert result.response.retry_count == 0
+    assert len(transport.calls) == 1
 
 
 def test_safety_block_is_non_retryable_provider_failure() -> None:
@@ -611,7 +785,7 @@ def test_safety_block_is_non_retryable_provider_failure() -> None:
         ),
     )
     transport = FakeTransport(
-        _interaction(text="", status="failed", steps=[step])
+        _interaction(output_text="", status="failed", steps=[step])
     )
 
     result = _classifier(transport).classify(_request())
@@ -830,7 +1004,7 @@ def test_provider_failure_is_not_cached() -> None:
 
 
 def test_validation_rejection_is_not_cached() -> None:
-    transport = FakeTransport(_interaction(text="bad json"), _interaction())
+    transport = FakeTransport(_interaction(output_text="bad json"), _interaction())
     classifier = _classifier(transport)
     request = _request()
 

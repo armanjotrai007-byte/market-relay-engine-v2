@@ -328,51 +328,60 @@ def _empty_interaction_output_failure() -> _Failure:
 def _extract_interaction_output_text(
     interaction: object,
 ) -> tuple[str | None, _Failure | None]:
-    """Select one typed text output without reading SDK convenience properties."""
+    """Read SDK output text first, then mirror its documented steps fallback."""
 
     try:
-        output_items = _interaction_field(interaction, "outputs")
-        if output_items is _MISSING_INTERACTION_FIELD:
-            # google-genai 2.10.0 declares model output content under
-            # Interaction.steps; some Interactions responses expose the same
-            # typed content blocks as an extra top-level outputs collection.
-            steps = _interaction_field(interaction, "steps")
-            if steps is _MISSING_INTERACTION_FIELD:
-                return None, _invalid_interaction_output_failure()
-            if steps is None:
-                output_items = []
-            elif not isinstance(steps, (list, tuple)):
-                return None, _invalid_interaction_output_failure()
-            else:
-                nested_outputs: list[object] = []
-                for step in steps:
-                    if _interaction_field(step, "type") != "model_output":
-                        continue
-                    content = _interaction_field(step, "content")
-                    if content is None:
-                        continue
-                    if not isinstance(content, (list, tuple)):
-                        return None, _invalid_interaction_output_failure()
-                    nested_outputs.extend(content)
-                output_items = nested_outputs
-
-        if not isinstance(output_items, (list, tuple)):
+        sdk_output_text = _interaction_field(interaction, "output_text")
+        if isinstance(sdk_output_text, str) and sdk_output_text.strip():
+            return sdk_output_text, None
+        if sdk_output_text not in (_MISSING_INTERACTION_FIELD, None) and not isinstance(
+            sdk_output_text, str
+        ):
             return None, _invalid_interaction_output_failure()
 
-        text_outputs = [
-            output
-            for output in output_items
-            if _interaction_field(output, "type") == "text"
-        ]
-        if not text_outputs:
+        steps = _interaction_field(interaction, "steps")
+        if steps is _MISSING_INTERACTION_FIELD:
+            if sdk_output_text is _MISSING_INTERACTION_FIELD:
+                return None, _invalid_interaction_output_failure()
             return None, _empty_interaction_output_failure()
-        if len(text_outputs) != 1:
+        if steps is None or steps == []:
+            return None, _empty_interaction_output_failure()
+        if not isinstance(steps, (list, tuple)):
             return None, _invalid_interaction_output_failure()
 
-        text = _interaction_field(text_outputs[0], "text")
-        if not isinstance(text, str) or not text.strip():
+        text_parts: list[str] = []
+        collecting = False
+        for step in reversed(steps):
+            step_type = _interaction_field(step, "type")
+            if step_type == "user_input":
+                break
+            if step_type != "model_output":
+                if collecting:
+                    break
+                continue
+
+            content = _interaction_field(step, "content")
+            if not isinstance(content, (list, tuple)):
+                if collecting:
+                    break
+                continue
+
+            should_stop = False
+            for item in reversed(content):
+                if _interaction_field(item, "type") == "text":
+                    collecting = True
+                    text = _interaction_field(item, "text")
+                    text_parts.append(text if isinstance(text, str) else "")
+                elif collecting:
+                    should_stop = True
+                    break
+            if should_stop:
+                break
+
+        reconstructed = "".join(reversed(text_parts))
+        if not reconstructed.strip():
             return None, _empty_interaction_output_failure()
-        return text, None
+        return reconstructed, None
     except Exception:
         return None, _invalid_interaction_output_failure()
 
