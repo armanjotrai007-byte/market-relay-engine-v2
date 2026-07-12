@@ -117,7 +117,7 @@ def _live_check(*, required: bool) -> int:
         classifier.close()
     response = result.response
 
-    summary_safe = (
+    summary_has_no_trading_instruction = (
         response.summary is not None
         and not contains_trading_instruction(response.summary)
     )
@@ -132,7 +132,7 @@ def _live_check(*, required: bool) -> int:
         and response.retry_count == response.provider_request_count - 1
         and _trusted_snapshot(request) == trusted_before
         and request.affected_tickers == ["LMT"]
-        and summary_safe
+        and summary_has_no_trading_instruction
         and result.validation_result is not None
         and result.validation_result.validation_outcome is True
     )

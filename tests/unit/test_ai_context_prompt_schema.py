@@ -50,6 +50,9 @@ def test_prompt_template_is_versioned_and_requires_dynamic_placeholders() -> Non
     assert "@@ALLOWED_URGENCY_VALUES_JSON@@" in template
     assert "@@RESPONSE_SCHEMA_JSON@@" in template
     assert "@@UNTRUSTED_SOURCE_TEXT_JSON@@" in template
+    assert "Do not produce trading recommendations or instructions" in template
+    assert "Neutral factual descriptions may use ordinary words" in template
+    assert "Do not produce buy, sell, hold" not in template
 
     with pytest.raises(ValueError, match="unsupported prompt version"):
         load_prompt_template("context_filter_unreleased")
@@ -117,9 +120,13 @@ def test_response_schema_is_strict_bounded_and_model_owned_only() -> None:
         "timestamp",
         "trade_action",
         "order",
+        "order_side",
+        "quantity",
+        "broker_action",
         "leverage",
         "position_size",
         "price_target",
+        "risk_decision",
         "secret",
         "api_key",
     }

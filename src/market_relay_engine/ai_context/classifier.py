@@ -53,15 +53,155 @@ _EXPECTED_PROVIDER_KEYS = {
     "confidence",
     "summary",
 }
-_TRADING_INSTRUCTION_PATTERNS = tuple(
-    re.compile(pattern, flags=re.IGNORECASE)
-    for pattern in (
-        r"\b(?:buy|sell|hold)\b",
-        r"\b(?:place|submit|cancel)\s+(?:an?\s+)?order\b",
-        r"\bleverag(?:e|ed|ing)\b",
-        r"\bposition[- ]siz(?:e|ing)\b",
-        r"\bprice[- ]target\b",
-    )
+_SENTENCE_START = r"(?:^\s*|[.!?;:]\s+|\r?\n\s*)"
+_TRADE_INSTRUMENT_NOUN = r"(?:stocks?|shares?|securit(?:y|ies)|equity|equities|positions?)"
+_ADVICE_ACTOR = r"(?:investors?|traders?|clients?|shareholders?|you)"
+_ADVICE_MODAL = r"(?:should|must|ought\s+to|need\s+to)"
+_TRADE_ACTION = r"(?:buy(?:ing)?|sell(?:ing)?|hold(?:ing)?)"
+_ORDER_MODIFIER = r"(?:buy|sell|market|limit|stop(?:[- ](?:limit|loss))?)"
+_TRADING_INSTRUCTION_PATTERNS = (
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+)?(?:buy|sell|hold)"
+        r"(?:\s+(?:now|today|immediately|the\s+dip))?\s*(?:[.!?]|$)",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+|do\s+not\s+)?(?:buy|sell|hold)\b(?!-)"
+        rf"[^.!?]{{0,60}}\b{_TRADE_INSTRUMENT_NOUN}\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?i:(?:please\s+|do\s+not\s+)?(?:buy|sell|hold))"
+        r"\s+[A-Z][A-Z0-9.-]{0,5}\b"
+    ),
+    re.compile(
+        rf"\b{_ADVICE_ACTOR}\s+{_ADVICE_MODAL}\s+(?:not\s+)?(?:buy|sell|hold)\b(?!-)",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b{_ADVICE_MODAL}\s+(?:not\s+)?(?:buy|sell|hold)\b(?!-)"
+        rf"[^.!?]{{0,60}}\b{_TRADE_INSTRUMENT_NOUN}\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:recommend(?:s|ed|ing|ation)?|advis(?:e|es|ed|ing)|urge(?:s|d|ing)?)\b"
+        rf"[^.!?]{{0,60}}\b{_TRADE_ACTION}\b(?!-)[^.!?]{{0,40}}"
+        rf"\b{_TRADE_INSTRUMENT_NOUN}\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?i:\b(?:recommend(?:s|ed|ing|ation)?|advis(?:e|es|ed|ing)|"
+        r"urge(?:s|d|ing)?)\b[^.!?]{0,60}\b"
+        rf"{_TRADE_ACTION}\b(?!-)[^.!?]{{0,20}})"
+        r"[A-Z][A-Z0-9.-]{0,5}\b"
+        r"(?=\s*(?:(?i:(?:now|today|immediately)\s*)?[.!?](?:\s|$)|$))"
+    ),
+    re.compile(
+        r"\b(?:recommend(?:s|ed|ing|ation)?|advis(?:e|es|ed|ing)|urge(?:s|d|ing)?)\b"
+        rf"[^.!?]{{0,40}}\b{_ADVICE_ACTOR}\b[^.!?]{{0,30}}\b(?:buy|sell|hold)\b(?!-)",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:buy|sell|hold)\s+(?:recommendation|rating|signal)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:go|stay)\s+(?:long|short)(?:\s+or\s+(?:long|short))?\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+)?(?:enter|exit|open|close)"
+        r"(?:\s+or\s+(?:enter|exit|open|close))?\s+"
+        r"(?:(?:a|the|your)\s+)?(?:(?:long|short)\s+)?position\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b{_ADVICE_MODAL}\s+(?:enter|exit|open|close)\s+"
+        r"(?:(?:a|the|your)\s+)?(?:(?:long|short)\s+)?position\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+|do\s+not\s+)?"
+        r"(?:place|submit|cancel)"
+        r"(?:(?:,\s*(?:or\s+)?|\s+or\s+)(?:place|submit|cancel))*\s+"
+        rf"(?:(?:an?|the|your)\s+)?(?:{_ORDER_MODIFIER}\s+)?order\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b{_ADVICE_MODAL}\s+(?:not\s+)?(?:place|submit|cancel)\s+"
+        rf"(?:(?:an?|the|your)\s+)?(?:{_ORDER_MODIFIER}\s+)?order\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+)?(?:use|apply|increase|decrease|reduce)\s+"
+        r"(?:the\s+|your\s+)?leverage\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:recommend(?:s|ed|ing)?|advis(?:e|es|ed|ing))\b"
+        r"[^.!?]{0,40}\b(?:using\s+)?leverage\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+)?(?:increase|decrease|reduce|raise|use)"
+        r"(?:\s+or\s+(?:increase|decrease|reduce|raise))?\s+"
+        r"(?:(?:a|the|your)\s+)?(?:larger\s+|smaller\s+)?position[- ]siz(?:e|ing)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"\b{_ADVICE_MODAL}\s+(?:increase|decrease|reduce|raise|use)\s+"
+        r"(?:(?:a|the|your)\s+)?(?:larger\s+|smaller\s+)?position[- ]siz(?:e|ing)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+)?(?:increase|decrease|reduce|raise)\s+"
+        r"(?:(?:a|the|your)\s+)?position\b(?:\s+(?:size\b|by\b|to\b))?",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+)?(?:increase|decrease|reduce)\s+"
+        r"(?:(?:the|your)\s+)?exposure\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?i:(?:please\s+)?(?:"
+        r"allocate\s+\d+(?:\.\d+)?%\s+to|"
+        r"take\s+(?:an?\s+)?\d+(?:\.\d+)?%\s+position\s+in)\s+)"
+        r"[A-Z][A-Z0-9.-]{0,5}\b"
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+)?(?:set|use|adopt)\s+"
+        r"(?:(?:a|the|your)\s+)?price[- ]target\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:recommend(?:s|ed|ing)?|suggest(?:s|ed|ing)?)\b"
+        r"[^.!?]{0,40}\bprice[- ]target\b|"
+        r"\b(?:recommended|suggested)\s+price[- ]target\b|"
+        r"\bprice[- ]target\s+(?:recommendation|advice)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}the\s+price[- ]target\s+(?:is|should\s+be)\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(r"\border[- ]side\b", flags=re.IGNORECASE),
+    re.compile(
+        r"\b(?:order|trade|position)\s+quantity\b|"
+        r"\bquantity\s+(?:of|for)\s+(?:(?:the|an?)\s+)?(?:order|trade|position)\b|"
+        rf"{_SENTENCE_START}(?:please\s+)?(?:set|specify|use)\s+"
+        r"(?:(?:the|your)\s+)?(?:(?:order|trade)\s+)?quantity\b",
+        flags=re.IGNORECASE,
+    ),
+    re.compile(
+        rf"{_SENTENCE_START}(?:please\s+)?(?:use|select|choose)\s+"
+        r"(?:(?:a|the|your)\s+)?(?:broker|brokerage)\b|"
+        rf"{_SENTENCE_START}(?:please\s+)?(?:use|select|choose)\s+"
+        r"[^.!?]{1,40}\s+as\s+(?:(?:a|the|your)\s+)?(?:broker|brokerage)\b|"
+        rf"{_SENTENCE_START}(?:please\s+)?(?:route|send)\s+"
+        r"[^.!?]{0,30}\b(?:order|trade)\b",
+        flags=re.IGNORECASE,
+    ),
 )
 
 

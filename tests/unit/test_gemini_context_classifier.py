@@ -22,6 +22,7 @@ import pytest
 from market_relay_engine.ai_context.classifier import (
     GeminiContextClassifier,
     GeminiInteractionTransport,
+    contains_trading_instruction,
 )
 from market_relay_engine.ai_context.runtime_guards import (
     ClassificationDedupCache,
@@ -1083,12 +1084,40 @@ def test_oversized_trusted_metadata_rejects_total_prompt_before_provider_call() 
 @pytest.mark.parametrize(
     "summary",
     [
-        "BUY LMT immediately.",
-        "Investors should sell the company.",
-        "Hold the shares.",
+        "Buy LMT.",
+        "Contract awarded; buy LMT.",
+        "Contract awarded:\nBuy LMT.",
+        "Sell now.",
+        "Hold.",
+        "Buy the dip.",
+        "Investors should sell the stock.",
+        "Hold these shares.",
+        "Go long or short.",
+        "Enter or exit a position.",
         "Place an order for the security.",
+        "Place, submit, or cancel an order.",
+        "Submit a buy order for 100 shares.",
+        "Cancel the order.",
         "The report recommends leverage.",
+        "We recommend buying LMT.",
+        "The recommendation is to sell LMT.",
+        "Use leverage.",
         "Use a larger position size.",
+        "Increase or decrease position size.",
+        "Increase your position by 100 shares.",
+        "Set order side to buy.",
+        "Set the order quantity to 100 shares.",
+        "Set quantity to 100 shares.",
+        "Please place a limit order.",
+        "Please place a stop-loss order.",
+        "Use a broker for the trade.",
+        "Route the order through Alpaca.",
+        "Route the LMT order through Alpaca.",
+        "Use Alpaca as the broker.",
+        "Allocate 5% to LMT.",
+        "Take a 5% position in LMT.",
+        "Reduce exposure to LMT.",
+        "Set a price target of 600 dollars.",
         "The price target is 600 dollars.",
     ],
 )
@@ -1099,7 +1128,33 @@ def test_trading_instruction_summaries_are_deterministically_rejected(
 
     result = _classifier(transport).classify(_request())
 
+    assert contains_trading_instruction(summary) is True
     _assert_rejected(result, "TRADING_INSTRUCTION_SUMMARY")
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The company agreed to buy a supplier.",
+        "The executive sold 10,000 shares.",
+        "The board will hold its annual meeting.",
+        "The acquisition includes the sale of a business unit.",
+        "The board recommended buying ABC Corp. as an acquisition target.",
+        "Sell-side analysts cover defense stocks.",
+        "Buy-side firms increased their positions in defense stocks.",
+    ],
+)
+def test_factual_buy_sell_hold_summaries_are_accepted(summary: str) -> None:
+    transport = FakeTransport(_interaction(_provider_payload(summary=summary)))
+
+    result = _classifier(transport).classify(_request())
+
+    assert contains_trading_instruction(summary) is False
+    assert result.response.status is ContextClassificationStatus.VALID
+    assert result.response.summary == summary
+    assert result.validation_result is not None
+    assert result.validation_result.validation_outcome is True
     assert len(transport.calls) == 1
 
 
@@ -1331,8 +1386,12 @@ def test_checker_live_acceptance_shape_uses_one_hostile_synthetic_request_offlin
     import scripts.check_gemini_context as checker
 
     settings = _settings()
-    provider_transport = FakeTransport(_interaction())
+    factual_summary = "The agency agreed to buy sustainment services from LMT."
+    provider_transport = FakeTransport(
+        _interaction(_provider_payload(summary=factual_summary))
+    )
     logical_requests: list[ContextClassificationRequest] = []
+    assert contains_trading_instruction(factual_summary) is False
 
     def fake_classifier_factory(
         actual_settings: AIContextFilterSettings,
