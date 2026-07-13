@@ -7,6 +7,8 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from hashlib import sha256
+from importlib.metadata import version
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -14,6 +16,7 @@ from types import SimpleNamespace
 from threading import Barrier
 from typing import Any
 
+from google import genai
 from google.genai import errors, interactions as interaction_types
 from google.genai._gaos.lib import compat_errors as interaction_errors
 import httpx
@@ -248,13 +251,57 @@ def _interaction_status_error(
     )
 
 
+def test_pinned_google_genai_version_is_installed() -> None:
+    assert version("google-genai") == "2.10.0"
+
+
+def test_pinned_interactions_create_signatures_support_per_call_timeout() -> None:
+    client = genai.Client(api_key=API_KEY_SENTINEL)
+    try:
+        resource = client.interactions
+        resource_type = type(resource)
+        generated_resource_type = resource_type.__mro__[1]
+        public_signature = inspect.signature(resource.create)
+        generated_signature = inspect.signature(generated_resource_type.create)
+    finally:
+        client.close()
+
+    assert resource_type.__name__ == "GeminiNextGenInteractions"
+    assert generated_resource_type.__name__ == "Interactions"
+    for signature in (public_signature, generated_signature):
+        timeout = signature.parameters["timeout"]
+        assert timeout.kind is inspect.Parameter.KEYWORD_ONLY
+        assert timeout.default is None
+        assert "httpx.Timeout" in str(timeout.annotation)
+
+
 def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape() -> None:
     captured_factory: dict[str, object] = {}
     captured_create: list[dict[str, object]] = []
 
     class Interactions:
-        def create(self, **kwargs: object) -> object:
-            captured_create.append(dict(kwargs))
+        def create(
+            self,
+            *,
+            model: str,
+            input: str,
+            response_format: dict[str, object],
+            store: bool,
+            background: bool,
+            generation_config: dict[str, object],
+            timeout: float,
+        ) -> object:
+            captured_create.append(
+                {
+                    "model": model,
+                    "input": input,
+                    "response_format": response_format,
+                    "store": store,
+                    "background": background,
+                    "generation_config": generation_config,
+                    "timeout": timeout,
+                }
+            )
             return _interaction()
 
     def client_factory(**kwargs: object) -> object:
