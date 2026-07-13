@@ -1193,8 +1193,17 @@ def _classification_request(
             "full_section_hash": section.full_section_hash,
         }
     )
+    raw_input_key = _stable_hash(
+        {
+            "accession_number": filing.accession_number,
+            "document_hash": document_hash,
+            "item_number": section.item_number,
+            "full_section_hash": section.full_section_hash,
+            "excerpt_hash": section.excerpt_hash,
+        }
+    )
     raw = ContextRawInput(
-        raw_input_id=f"raw_input_sec_{section.excerpt_hash[:32]}",
+        raw_input_id=f"raw_input_sec_{raw_input_key[:32]}",
         source=SEC_SOURCE,
         source_type="sec_8k_item_excerpt",
         source_platform="sec_edgar",

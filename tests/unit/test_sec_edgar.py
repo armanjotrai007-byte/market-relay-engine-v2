@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+import market_relay_engine.context.sec_edgar as sec_edgar_module
 from market_relay_engine.ai_context import ContextClassificationAttemptResult
 from market_relay_engine.ai_context.classifier import GeminiContextClassifier
 from market_relay_engine.ai_context.settings import AIContextFilterSettings
@@ -45,6 +46,7 @@ from market_relay_engine.contracts.context import (
     ContextUrgency,
     DeterministicContextEventType,
 )
+from market_relay_engine.questdb.writer import context_classification_attempt_to_row
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -449,6 +451,79 @@ def test_complete_section_and_deterministic_excerpt_metadata() -> None:
     assert prepared.full_section_hash != prepared.excerpt_hash
     assert prepared.truncation_policy == EIGHT_K_TRUNCATION_POLICY == "HEAD_V1"
     assert prepared.extraction_version == EIGHT_K_EXTRACTION_VERSION
+
+
+def test_sec_raw_input_id_is_deterministic_and_filing_item_scoped() -> None:
+    filing = discover_filings(
+        FakeSECClient(), _issuer(), forms=("8-K",), collected_at=NOW
+    )[0]
+    sections = tuple(
+        prepare_8k_section(section, max_input_characters=12_000)
+        for section in extract_relevant_8k_sections(EIGHT_K)
+    )
+    document_hash = sha256(EIGHT_K).hexdigest()
+    first = sec_edgar_module._classification_request(
+        filing, document_hash, sections[0], "context_filter_v1"
+    )
+    rebuilt = sec_edgar_module._classification_request(
+        filing, document_hash, sections[0], "context_filter_v1"
+    )
+    other_accession = "0001321655-26-999998"
+    other_filing = replace(
+        filing,
+        accession_number=other_accession,
+        filing_url=filing_document_url(
+            filing.issuer_cik, other_accession, filing.primary_document
+        ),
+    )
+    other_filing_request = sec_edgar_module._classification_request(
+        other_filing, document_hash, sections[0], "context_filter_v1"
+    )
+    other_item_request = sec_edgar_module._classification_request(
+        filing, document_hash, sections[1], "context_filter_v1"
+    )
+
+    assert first.raw_input_hash == other_filing_request.raw_input_hash
+    assert first.raw_input_id != other_filing_request.raw_input_id
+    assert first.raw_input_id != other_item_request.raw_input_id
+    assert first.raw_input_id == rebuilt.raw_input_id
+    assert first.source_document_id == rebuilt.source_document_id
+
+
+def test_sec_raw_input_id_is_shared_by_document_request_and_questdb_lineage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured_documents = []
+    source_document_type = sec_edgar_module.ContextSourceDocument
+
+    def capture_source_document(**kwargs: object):
+        document = source_document_type(**kwargs)
+        captured_documents.append(document)
+        return document
+
+    monkeypatch.setattr(
+        sec_edgar_module, "ContextSourceDocument", capture_source_document
+    )
+    filing = discover_filings(
+        FakeSECClient(), _issuer(), forms=("8-K",), collected_at=NOW
+    )[0]
+    section = prepare_8k_section(
+        extract_relevant_8k_sections(EIGHT_K)[0], max_input_characters=12_000
+    )
+    request = sec_edgar_module._classification_request(
+        filing, sha256(EIGHT_K).hexdigest(), section, "context_filter_v1"
+    )
+    response = FakeClassifier([ContextClassificationStatus.VALID]).classify(
+        request
+    ).response
+    row = context_classification_attempt_to_row(request, response)
+
+    assert len(captured_documents) == 1
+    assert captured_documents[0].raw_input_id == request.raw_input_id
+    assert row["raw_input_id"] == request.raw_input_id
+    assert captured_documents[0].source_document_id == request.source_document_id
+    assert row["source_document_id"] == request.source_document_id
+    assert row["raw_input_hash"] == request.raw_input_hash == section.excerpt_hash
 
 
 def test_archive_immutable_objects_sections_and_atomic_manifest(tmp_path: Path) -> None:
