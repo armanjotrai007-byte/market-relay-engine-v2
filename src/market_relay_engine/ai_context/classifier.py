@@ -121,6 +121,14 @@ _TRADING_INSTRUCTION_PATTERNS = (
         flags=re.IGNORECASE,
     ),
     re.compile(
+        rf"{_SENTENCE_START}(?i:(?:please\s+)?(?:do\s+not\s+)?"
+        r"(?:enter|exit|open|close)"
+        r"(?:\s+or\s+(?:enter|exit|open|close))?)\s+"
+        r"[A-Z][A-Z0-9.-]{0,5}\b"
+        r"(?:\s+(?i:position|trade))?"
+        r"(?=\s*(?:(?i:now|today|immediately)\s*)?(?:[.!?](?:\s|$)|$))"
+    ),
+    re.compile(
         rf"{_SENTENCE_START}(?:please\s+|do\s+not\s+)?"
         r"(?:place|submit|cancel)"
         r"(?:(?:,\s*(?:or\s+)?|\s+or\s+)(?:place|submit|cancel))*\s+"
@@ -232,7 +240,6 @@ class InteractionTransport(Protocol):
         response_schema: dict[str, object],
         temperature: float,
         max_output_tokens: int,
-        timeout_seconds: float,
     ) -> object: ...
 
 
@@ -266,7 +273,6 @@ class GeminiInteractionTransport:
         response_schema: dict[str, object],
         temperature: float,
         max_output_tokens: int,
-        timeout_seconds: float,
     ) -> object:
         interactions = getattr(self._client, "interactions")
         return interactions.create(
@@ -283,7 +289,6 @@ class GeminiInteractionTransport:
                 "temperature": temperature,
                 "max_output_tokens": max_output_tokens,
             },
-            timeout=timeout_seconds,
         )
 
     def close(self) -> None:
@@ -338,10 +343,28 @@ def _extract_interaction_output_text(
             sdk_output_text, str
         ):
             return None, _invalid_interaction_output_failure()
+        recognized_empty_output = sdk_output_text is None or (
+            isinstance(sdk_output_text, str) and not sdk_output_text.strip()
+        )
+
+        nested_output = _interaction_field(interaction, "output")
+        if nested_output not in (_MISSING_INTERACTION_FIELD, None):
+            nested_output_text = _interaction_field(nested_output, "text")
+            if isinstance(nested_output_text, str) and nested_output_text.strip():
+                return nested_output_text, None
+            if nested_output_text is _MISSING_INTERACTION_FIELD:
+                return None, _invalid_interaction_output_failure()
+            if nested_output_text is not None and not isinstance(
+                nested_output_text, str
+            ):
+                return None, _invalid_interaction_output_failure()
+            recognized_empty_output = True
+        elif nested_output is None:
+            recognized_empty_output = True
 
         steps = _interaction_field(interaction, "steps")
         if steps is _MISSING_INTERACTION_FIELD:
-            if sdk_output_text is _MISSING_INTERACTION_FIELD:
+            if not recognized_empty_output:
                 return None, _invalid_interaction_output_failure()
             return None, _empty_interaction_output_failure()
         if steps is None or steps == []:
@@ -590,7 +613,6 @@ class GeminiContextClassifier:
                     response_schema=response_schema,
                     temperature=self._settings.temperature,
                     max_output_tokens=self._settings.max_output_tokens,
-                    timeout_seconds=self._settings.timeout_seconds,
                 )
                 interaction_failure = _interaction_failure(interaction)
                 if interaction_failure is not None:

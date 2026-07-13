@@ -289,7 +289,6 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
             store: bool,
             background: bool,
             generation_config: dict[str, object],
-            timeout: float,
         ) -> object:
             captured_create.append(
                 {
@@ -299,7 +298,6 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
                     "store": store,
                     "background": background,
                     "generation_config": generation_config,
-                    "timeout": timeout,
                 }
             )
             return _interaction()
@@ -321,7 +319,6 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
         response_schema=schema,
         temperature=0.0,
         max_output_tokens=222,
-        timeout_seconds=12.5,
     )
 
     http_options = captured_factory["http_options"]
@@ -344,10 +341,10 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
                 "temperature": 0.0,
                 "max_output_tokens": 222,
             },
-            "timeout": 12.5,
         }
     ]
     request_body = captured_create[0]
+    assert "timeout" not in request_body
     forbidden = {
         "previous_interaction_id",
         "tools",
@@ -421,6 +418,10 @@ def test_primary_output_text_is_read_once_without_inspecting_steps() -> None:
             return expected
 
         @property
+        def output(self) -> object:
+            raise AssertionError("nested output must not be inspected after output_text")
+
+        @property
         def steps(self) -> object:
             raise AssertionError("steps must not be inspected after usable output_text")
 
@@ -428,6 +429,46 @@ def test_primary_output_text_is_read_once_without_inspecting_steps() -> None:
     output_text, failure = _extract_interaction_output_text(interaction)
 
     assert interaction.reads == 1
+    assert output_text == expected
+    assert failure is None
+
+
+@pytest.mark.parametrize("as_mapping", [False, True])
+def test_nested_output_text_supports_mapping_and_object_shapes(
+    as_mapping: bool,
+) -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction: object = (
+        {
+            "status": "completed",
+            "output": {"text": expected},
+            "steps": "must not be inspected",
+        }
+        if as_mapping
+        else SimpleNamespace(
+            status="completed",
+            output=SimpleNamespace(text=expected),
+            steps="must not be inspected",
+        )
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
+def test_blank_top_level_output_text_falls_through_to_nested_output_text() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = SimpleNamespace(
+        status="completed",
+        output_text="   ",
+        output=SimpleNamespace(text=expected),
+        steps="must not be inspected",
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
     assert output_text == expected
     assert failure is None
 
@@ -559,6 +600,26 @@ def test_blank_output_text_falls_back_to_steps() -> None:
     assert failure is None
 
 
+def test_blank_nested_output_text_falls_back_to_steps() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = SimpleNamespace(
+        status="completed",
+        output_text=None,
+        output=SimpleNamespace(text="   "),
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[interaction_types.TextContent(type="text", text=expected)],
+            )
+        ],
+    )
+
+    output_text, failure = _extract_interaction_output_text(interaction)
+
+    assert output_text == expected
+    assert failure is None
+
+
 @pytest.mark.parametrize(
     ("interaction", "category"),
     [
@@ -567,6 +628,15 @@ def test_blank_output_text_falls_back_to_steps() -> None:
         (_interaction(output_text=""), "EMPTY_RESPONSE"),
         (_interaction(output_text="   "), "EMPTY_RESPONSE"),
         (_interaction(output_text=123), "PROVIDER_ERROR"),
+        (
+            SimpleNamespace(
+                status="completed",
+                output_text=None,
+                output=SimpleNamespace(text=123),
+                steps=None,
+            ),
+            "PROVIDER_ERROR",
+        ),
     ],
 )
 def test_missing_or_unusable_output_is_a_safe_failure(
@@ -591,6 +661,21 @@ def test_pinned_interaction_requires_no_invented_top_level_outputs() -> None:
 
 def test_realistic_sdk_output_text_shape_reaches_valid() -> None:
     result = _classifier(FakeTransport(_interaction())).classify(_request())
+
+    assert result.response.status is ContextClassificationStatus.VALID
+    assert result.response.safe_failure_category is None
+
+
+def test_documented_nested_output_text_shape_reaches_valid() -> None:
+    expected = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = SimpleNamespace(
+        status="completed",
+        output_text=None,
+        output=SimpleNamespace(text=expected),
+        steps=None,
+    )
+
+    result = _classifier(FakeTransport(interaction)).classify(_request())
 
     assert result.response.status is ContextClassificationStatus.VALID
     assert result.response.safe_failure_category is None
@@ -628,7 +713,7 @@ def test_one_classifier_provider_attempt_is_one_transport_invocation() -> None:
     assert call["model"] == "gemini-3.5-flash"
     assert call["temperature"] == 0
     assert call["max_output_tokens"] == 256
-    assert call["timeout_seconds"] == 30.0
+    assert "timeout_seconds" not in call
     assert call["response_schema"] == build_context_filter_response_schema()
 
 
@@ -742,6 +827,29 @@ def test_malformed_primary_output_text_does_not_fall_back_to_valid_steps() -> No
         status="completed",
         model="gemini-3.5-flash",
         output_text="not json",
+        steps=[
+            interaction_types.ModelOutputStep(
+                type="model_output",
+                content=[
+                    interaction_types.TextContent(type="text", text=valid_fallback)
+                ],
+            )
+        ],
+    )
+
+    result = _classifier(FakeTransport(interaction)).classify(_request())
+
+    _assert_rejected(result, "MALFORMED_JSON")
+    assert result.response.provider_request_count == 1
+    assert result.response.retry_count == 0
+
+
+def test_malformed_nested_output_text_does_not_fall_back_to_valid_steps() -> None:
+    valid_fallback = json.dumps(_provider_payload(), separators=(",", ":"))
+    interaction = SimpleNamespace(
+        status="completed",
+        output_text=None,
+        output=SimpleNamespace(text="not json"),
         steps=[
             interaction_types.ModelOutputStep(
                 type="model_output",
@@ -1462,6 +1570,15 @@ def test_oversized_trusted_metadata_rejects_total_prompt_before_provider_call() 
         "Hold these shares.",
         "Go long or short.",
         "Enter or exit a position.",
+        "Exit LMT.",
+        "Close RTX.",
+        "Open XOM.",
+        "Enter AVAV.",
+        "Please exit LMT.",
+        "Do not close RTX.",
+        "Enter or exit LMT.",
+        "Exit LMT position.",
+        "Please do not close RTX.",
         "Place an order for the security.",
         "Place, submit, or cancel an order.",
         "Submit a buy order for 100 shares.",
@@ -1514,6 +1631,32 @@ def test_trading_instruction_summaries_are_deterministically_rejected(
     ],
 )
 def test_factual_buy_sell_hold_summaries_are_accepted(summary: str) -> None:
+    transport = FakeTransport(_interaction(_provider_payload(summary=summary)))
+
+    result = _classifier(transport).classify(_request())
+
+    assert contains_trading_instruction(summary) is False
+    assert result.response.status is ContextClassificationStatus.VALID
+    assert result.response.summary == summary
+    assert result.validation_result is not None
+    assert result.validation_result.validation_outcome is True
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "summary",
+    [
+        "The company exited Russia.",
+        "The fund closed its office.",
+        "The exchange opened normally.",
+        "Management entered a supply agreement.",
+        "The company closed the acquisition.",
+        "The fund closed its RTX position yesterday.",
+    ],
+)
+def test_factual_enter_exit_open_close_summaries_are_accepted(
+    summary: str,
+) -> None:
     transport = FakeTransport(_interaction(_provider_payload(summary=summary)))
 
     result = _classifier(transport).classify(_request())
