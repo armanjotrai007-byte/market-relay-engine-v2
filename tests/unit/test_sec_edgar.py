@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 import json
 from pathlib import Path
@@ -36,7 +36,7 @@ from market_relay_engine.context.sec_edgar import (
     prepare_8k_section,
     resolve_form4_xml_document,
 )
-from market_relay_engine.context.sec_edgar_archive import SECEDGARArchive
+from market_relay_engine.context.sec_edgar_archive import SECArchiveError, SECEDGARArchive
 from market_relay_engine.contracts.context import (
     ContextClassificationEventType,
     ContextClassificationResponse,
@@ -182,6 +182,12 @@ class FakeFallback:
         self.records.append(dict(kwargs))
 
 
+class CrashBeforeManifestArchive(SECEDGARArchive):
+    def save_manifest(self, manifest: object) -> None:
+        del manifest
+        raise RuntimeError("simulated crash before manifest save")
+
+
 class FakeResponse:
     def __init__(
         self,
@@ -274,6 +280,42 @@ def _http_client(
 
 def _issuer():
     return load_sec_issuers(base_dir=REPO_ROOT)[0]
+
+
+def _archive_first_eight_k(tmp_path: Path):
+    settings = _settings(tmp_path)
+    archive = SECEDGARArchive(settings.archive_path)
+    client = FakeSECClient()
+    filing = discover_filings(
+        client, _issuer(), forms=("8-K",), collected_at=NOW
+    )[0]
+    result = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=archive,
+    )._load_or_archive(filing, archive.load_manifest())
+    return archive, filing, client, result
+
+
+def _crash_after_filing_metadata(tmp_path: Path):
+    settings = _settings(tmp_path)
+    crash_archive = CrashBeforeManifestArchive(settings.archive_path)
+    client = FakeSECClient()
+    filing = discover_filings(
+        client, _issuer(), forms=("8-K",), collected_at=NOW
+    )[0]
+    with pytest.raises(RuntimeError, match="simulated crash before manifest save"):
+        SECEDGARCollector(
+            settings=settings,
+            issuers=(_issuer(),),
+            client=client,
+            archive=crash_archive,
+        )._load_or_archive(filing, crash_archive.load_manifest())
+    archive = SECEDGARArchive(settings.archive_path)
+    assert not archive.manifest_path.exists()
+    assert archive.read_filing_metadata(filing.accession_number) is not None
+    return archive, filing
 
 
 def test_sec_configuration_user_agent_mapping_and_rate_limit(tmp_path: Path) -> None:
@@ -426,6 +468,136 @@ def test_archive_immutable_objects_sections_and_atomic_manifest(tmp_path: Path) 
     archive.save_manifest(manifest)
     assert archive.load_manifest()["filings"]["0001321655-26-000123"]["document_hash"] == digest
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_first_time_filing_archival_still_writes_durable_state(tmp_path: Path) -> None:
+    archive, filing, client, result = _archive_first_eight_k(tmp_path)
+    content, document_hash, state, was_archived = result
+
+    assert was_archived is True
+    assert content == EIGHT_K
+    assert client.bytes_calls == [filing.filing_url]
+    assert archive.read_filing_metadata(filing.accession_number) is not None
+    assert archive.load_manifest()["filings"][filing.accession_number] == state
+    assert state["document_hash"] == document_hash
+    assert state["collected_at"] == NOW.isoformat()
+
+
+def test_filing_archive_recovers_missing_manifest_without_redownload(
+    tmp_path: Path,
+) -> None:
+    archive, filing = _crash_after_filing_metadata(tmp_path)
+    metadata_path = archive.filings / f"{filing.accession_number}.json"
+    original_metadata_bytes = metadata_path.read_bytes()
+    original_metadata = archive.read_filing_metadata(filing.accession_number)
+    assert original_metadata is not None
+    original_hash = original_metadata["document_hash"]
+
+    recovery_client = FakeSECClient()
+    rediscovered = discover_filings(
+        recovery_client,
+        _issuer(),
+        forms=("8-K",),
+        collected_at=NOW + timedelta(minutes=5),
+    )[0]
+    settings = _settings(tmp_path)
+    recovered = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=recovery_client,
+        archive=archive,
+    )._load_or_archive(rediscovered, archive.load_manifest())
+    content, document_hash, state, was_archived = recovered
+
+    assert was_archived is False
+    assert content == EIGHT_K
+    assert document_hash == original_hash
+    assert recovery_client.bytes_calls == []
+    assert metadata_path.read_bytes() == original_metadata_bytes
+    assert state["document_hash"] == original_metadata["document_hash"]
+    assert state["official_document_identity"] == original_metadata[
+        "official_document_identity"
+    ]
+    assert state["official_document_url"] == original_metadata[
+        "official_document_url"
+    ]
+    assert state["collected_at"] == original_metadata["collected_at"]
+    assert state["collected_at"] == NOW.isoformat()
+    assert archive.load_manifest()["filings"][filing.accession_number] == state
+
+
+@pytest.mark.parametrize(
+    ("field", "conflicting_value"),
+    [
+        ("accession_number", "0001321655-26-999999"),
+        ("ticker", "WRONG"),
+        ("issuer_cik", "0000000001"),
+        ("form_type", "8-K/A"),
+        ("filing_date", "2026-01-01"),
+        ("primary_document", "other.htm"),
+        ("filing_url", "https://www.sec.gov/other"),
+    ],
+)
+def test_filing_archive_recovery_rejects_conflicting_source_identity(
+    tmp_path: Path, field: str, conflicting_value: str
+) -> None:
+    archive, filing = _crash_after_filing_metadata(tmp_path)
+    metadata = archive.read_filing_metadata(filing.accession_number)
+    assert metadata is not None
+    metadata[field] = conflicting_value
+    metadata_path = archive.filings / f"{filing.accession_number}.json"
+    metadata_path.write_text(
+        json.dumps(metadata, sort_keys=True, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    recovery_client = FakeSECClient()
+    rediscovered = discover_filings(
+        recovery_client,
+        _issuer(),
+        forms=("8-K",),
+        collected_at=NOW + timedelta(minutes=5),
+    )[0]
+
+    with pytest.raises(SECArchiveError, match="identity conflicts"):
+        SECEDGARCollector(
+            settings=_settings(tmp_path),
+            issuers=(_issuer(),),
+            client=recovery_client,
+            archive=archive,
+        )._load_or_archive(rediscovered, archive.load_manifest())
+    assert recovery_client.bytes_calls == []
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupted"])
+def test_filing_archive_recovery_rejects_missing_or_corrupted_document(
+    tmp_path: Path, damage: str
+) -> None:
+    archive, filing = _crash_after_filing_metadata(tmp_path)
+    metadata = archive.read_filing_metadata(filing.accession_number)
+    assert metadata is not None
+    document_path = next(
+        (archive.objects / metadata["document_hash"]).glob("original.*")
+    )
+    if damage == "missing":
+        document_path.unlink()
+    else:
+        document_path.write_bytes(b"corrupted")
+    recovery_client = FakeSECClient()
+    rediscovered = discover_filings(
+        recovery_client,
+        _issuer(),
+        forms=("8-K",),
+        collected_at=NOW + timedelta(minutes=5),
+    )[0]
+
+    with pytest.raises(SECArchiveError, match="missing|hash does not match"):
+        SECEDGARCollector(
+            settings=_settings(tmp_path),
+            issuers=(_issuer(),),
+            client=recovery_client,
+            archive=archive,
+        )._load_or_archive(rediscovered, archive.load_manifest())
+    assert recovery_client.bytes_calls == []
 
 
 def test_successful_classification_is_durable_across_restart(tmp_path: Path) -> None:

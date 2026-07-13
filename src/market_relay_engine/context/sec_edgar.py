@@ -873,6 +873,60 @@ class SECEDGARCollector:
                 False,
             )
 
+        archived_metadata = self.archive.read_filing_metadata(
+            filing.accession_number
+        )
+        if archived_metadata is not None:
+            stable_identity = {
+                "accession_number": filing.accession_number,
+                "ticker": filing.ticker,
+                "issuer_cik": filing.issuer_cik,
+                "form_type": filing.form_type,
+                "filing_date": filing.filing_date.isoformat(),
+                "primary_document": filing.primary_document,
+                "filing_url": filing.filing_url,
+            }
+            if any(
+                archived_metadata.get(name) != expected
+                for name, expected in stable_identity.items()
+            ):
+                raise SECArchiveError(
+                    "SEC accession identity conflicts with immutable filing metadata"
+                )
+            durable_fields = (
+                "document_hash",
+                "official_document_identity",
+                "official_document_url",
+                "collected_at",
+            )
+            if any(
+                not isinstance(archived_metadata.get(name), str)
+                or not archived_metadata[name].strip()
+                for name in durable_fields
+            ):
+                raise SECArchiveError("SEC immutable filing metadata is incomplete")
+            document_hash = archived_metadata["document_hash"]
+            official_url = archived_metadata["official_document_url"]
+            extension = Path(urlparse(official_url).path).suffix or ".bin"
+            content = self.archive.read_document(
+                document_hash, extension=extension
+            )
+            state = {
+                "form_type": archived_metadata["form_type"],
+                "primary_document": archived_metadata["primary_document"],
+                "official_document_identity": archived_metadata[
+                    "official_document_identity"
+                ],
+                "official_document_url": official_url,
+                "document_hash": document_hash,
+                "document_extension": extension,
+                "collected_at": archived_metadata["collected_at"],
+                "classifications": {},
+            }
+            filings[filing.accession_number] = state
+            self.archive.save_manifest(manifest)
+            return content, document_hash, state, False
+
         if filing.form_type in {"4", "4/A"}:
             official_identity, official_url, content = resolve_form4_xml_document(
                 self.client, filing
@@ -897,6 +951,7 @@ class SECEDGARCollector:
             "official_document_url": official_url,
             "document_hash": document_hash,
             "document_extension": extension,
+            "collected_at": metadata["collected_at"],
             "classifications": {},
         }
         filings[filing.accession_number] = state

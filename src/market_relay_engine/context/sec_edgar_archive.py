@@ -72,11 +72,30 @@ class SECEDGARArchive:
         return target
 
     def read_document(self, document_hash: str, *, extension: str) -> bytes:
+        if len(document_hash) != 64 or any(
+            value not in "0123456789abcdef" for value in document_hash
+        ):
+            raise SECArchiveError("SEC archive document hash is invalid")
         path = self.objects / document_hash / f"original.{_safe_extension(extension)}"
         try:
-            return path.read_bytes()
+            content = path.read_bytes()
         except OSError as exc:
             raise SECArchiveError("SEC archive document is missing") from exc
+        if sha256(content).hexdigest() != document_hash:
+            raise SECArchiveError("SEC archive document hash does not match content")
+        return content
+
+    def read_filing_metadata(self, accession_number: str) -> dict[str, Any] | None:
+        path = self.filings / f"{accession_number}.json"
+        if not path.exists():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise SECArchiveError("SEC immutable filing metadata could not be read") from exc
+        if not isinstance(value, dict):
+            raise SECArchiveError("SEC immutable filing metadata has invalid shape")
+        return value
 
     def write_filing_once(self, accession_number: str, payload: Mapping[str, Any]) -> None:
         self._write_json_once(self.filings / f"{accession_number}.json", payload)
