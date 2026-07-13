@@ -37,7 +37,10 @@ from market_relay_engine.contracts.context import (
     ContextSourceDocument,
     DeterministicContextEventType,
 )
-from market_relay_engine.questdb.jsonl_fallback import EmergencyJSONLLedgerFallback
+from market_relay_engine.questdb.jsonl_fallback import (
+    EmergencyJSONLLedgerFallback,
+    EmergencyLedgerFallbackError,
+)
 from market_relay_engine.questdb.writer import context_classification_attempt_to_row
 
 
@@ -1154,7 +1157,9 @@ class SECEDGARCollector:
         self, row: Mapping[str, Any], *, failure_type: str
     ) -> str:
         if self.fallback is None:
-            return "QUESTDB_AND_FALLBACK_FAILED"
+            raise EmergencyLedgerFallbackError(
+                "SEC classification-attempt fallback is unavailable"
+            )
         try:
             self.fallback.append_record(
                 record_type="context_classification_attempt",
@@ -1173,8 +1178,10 @@ class SECEDGARCollector:
                     "write_request": {"questdb_required": False},
                 },
             )
-        except Exception:  # noqa: BLE001 - preserve paid result and retry state.
-            return "QUESTDB_AND_FALLBACK_FAILED"
+        except Exception:  # noqa: BLE001 - surface only a safe failure category.
+            raise EmergencyLedgerFallbackError(
+                "SEC classification-attempt fallback write failed"
+            ) from None
         return "FALLBACK_WRITTEN_QUESTDB_PENDING"
 
 

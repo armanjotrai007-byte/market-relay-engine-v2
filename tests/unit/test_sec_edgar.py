@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import market_relay_engine.context.sec_edgar as sec_edgar_module
+import scripts.check_sec_edgar as check_sec_edgar
 from market_relay_engine.ai_context import ContextClassificationAttemptResult
 from market_relay_engine.ai_context.classifier import GeminiContextClassifier
 from market_relay_engine.ai_context.settings import AIContextFilterSettings
@@ -46,6 +47,11 @@ from market_relay_engine.contracts.context import (
     ContextUrgency,
     DeterministicContextEventType,
 )
+from market_relay_engine.questdb.jsonl_fallback import (
+    EmergencyJSONLLedgerFallback,
+    EmergencyLedgerFallbackConfig,
+    EmergencyLedgerFallbackError,
+)
 from market_relay_engine.questdb.writer import context_classification_attempt_to_row
 
 
@@ -60,6 +66,7 @@ SUBMISSIONS = json.loads(
 FILING_INDEX = json.loads(
     (FIXTURE_DIR / "filing_index.json").read_text(encoding="utf-8")
 )
+SINGLE_EIGHT_K = b"<html><body><h2>Item 2.02</h2><p>raw filing marker</p></body></html>"
 
 
 class FakeSECClient:
@@ -182,6 +189,14 @@ class FakeFallback:
 
     def append_record(self, **kwargs: object) -> None:
         self.records.append(dict(kwargs))
+
+
+class FailingFallback:
+    def append_record(self, **kwargs: object) -> None:
+        del kwargs
+        raise RuntimeError(
+            "credential marker and raw filing marker must not surface"
+        )
 
 
 class CrashBeforeManifestArchive(SECEDGARArchive):
@@ -824,6 +839,123 @@ def test_questdb_failure_preserves_paid_result_and_retries_only_ledger(
     assert len(successful_writer.row_calls) == 2
     assert all(call[0] == "context_classification_attempts" for call in successful_writer.row_calls)
     assert all("input_text" not in str(call[1]) for call in successful_writer.row_calls)
+
+
+@pytest.mark.parametrize("fallback_mode", ["unavailable", "disabled", "unwritable"])
+def test_dual_ledger_failure_surfaces_and_preserves_saved_classification(
+    tmp_path: Path, fallback_mode: str
+) -> None:
+    settings = _settings(tmp_path)
+    classifier = FakeClassifier([ContextClassificationStatus.VALID])
+    if fallback_mode == "unavailable":
+        fallback = None
+    elif fallback_mode == "disabled":
+        fallback = EmergencyJSONLLedgerFallback(
+            EmergencyLedgerFallbackConfig(
+                enabled=False, directory=tmp_path / "disabled_fallback"
+            )
+        )
+    else:
+        fallback = FailingFallback()
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(eight_k=SINGLE_EIGHT_K),
+        archive=SECEDGARArchive(settings.archive_path),
+        classifier=classifier,
+        ai_settings=_ai_settings(),
+        ledger_writer=FakeWriter(fail=True),
+        fallback=fallback,
+    )
+
+    with pytest.raises(EmergencyLedgerFallbackError) as error:
+        collector.collect(forms=("8-K",), max_filings=1, write_questdb=True)
+
+    assert "credential marker" not in str(error.value)
+    assert "raw filing marker" not in str(error.value)
+    manifest = SECEDGARArchive(settings.archive_path).load_manifest()
+    saved = next(
+        iter(next(iter(manifest["filings"].values()))["classifications"].values())
+    )
+    assert saved["classification_complete"] is True
+    assert saved["status"] == "VALID"
+    assert saved["ledger_write_status"] == "NOT_REQUESTED"
+    assert "raw filing marker" not in json.dumps(saved)
+
+    successful_writer = FakeWriter()
+    retry = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(eight_k=SINGLE_EIGHT_K),
+        archive=SECEDGARArchive(settings.archive_path),
+        classifier=classifier,
+        ai_settings=_ai_settings(),
+        ledger_writer=successful_writer,
+        fallback=FakeFallback(),
+    ).collect(forms=("8-K",), max_filings=1, write_questdb=True)
+
+    assert retry["ledger_retries"] == 1
+    assert retry["persistent_suppressions"] == 1
+    assert len(classifier.requests) == 1
+    assert len(successful_writer.row_calls) == 1
+    repaired_manifest = SECEDGARArchive(settings.archive_path).load_manifest()
+    repaired = next(
+        iter(
+            next(iter(repaired_manifest["filings"].values()))[
+                "classifications"
+            ].values()
+        )
+    )
+    assert repaired["ledger_write_status"] == "QUESTDB_WRITTEN"
+
+
+def test_transient_attempt_surfaces_dual_ledger_failure(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(eight_k=SINGLE_EIGHT_K),
+        archive=SECEDGARArchive(settings.archive_path),
+        classifier=FakeClassifier([ContextClassificationStatus.PROVIDER_FAILED]),
+        ai_settings=_ai_settings(),
+        ledger_writer=FakeWriter(fail=True),
+        fallback=FailingFallback(),
+    )
+
+    with pytest.raises(EmergencyLedgerFallbackError) as error:
+        collector.collect(forms=("8-K",), max_filings=1, write_questdb=True)
+
+    assert "credential marker" not in str(error.value)
+    assert "raw filing marker" not in str(error.value)
+
+
+def test_sec_checker_returns_failure_when_both_ledger_paths_fail(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FailingCollector:
+        def __init__(self, **kwargs: object) -> None:
+            del kwargs
+
+        def collect(self, **kwargs: object) -> dict[str, int]:
+            del kwargs
+            raise EmergencyLedgerFallbackError(
+                "credential marker and raw filing marker must not surface"
+            )
+
+    monkeypatch.setenv("SEC_ORGANIZATION", "Example Research")
+    monkeypatch.setenv("SEC_CONTACT_EMAIL", "sec@example.test")
+    monkeypatch.setattr(check_sec_edgar, "SECEDGARCollector", FailingCollector)
+
+    exit_code = check_sec_edgar.main(
+        ["--live", "--questdb", "--ticker", "LMT", "--form", "8-K"]
+    )
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert output.strip() == "SEC EDGAR live check FAIL: EmergencyLedgerFallbackError"
+    assert "credential marker" not in output
+    assert "raw filing marker" not in output
 
 
 def test_official_form4_xml_selection_avoids_renderer_document() -> None:
