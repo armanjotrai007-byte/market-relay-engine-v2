@@ -1,0 +1,14 @@
+{
+  "cik": "0001321655",
+  "name": "Palantir Technologies Inc.",
+  "tickers": ["PLTR"],
+  "filings": {
+    "recent": {
+      "form": ["8-K", "4", "4/A", "10-Q"],
+      "filingDate": ["2026-07-12", "2026-07-11", "2026-07-10", "2026-07-09"],
+      "accessionNumber": ["0001321655-26-000123", "0001321655-26-000124", "0001321655-26-000125", "0001321655-26-000126"],
+      "primaryDocument": ["form8k.htm", "xslF345X02/ownership.xml", "ownershipa.xml", "q.htm"],
+      "acceptanceDateTime": ["20260712101530", "20260711103000", "20260710103000", "20260709103000"]
+    }
+  }
+}

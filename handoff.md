@@ -4,10 +4,10 @@
 
 Repository: `armanjotrai007-byte/market-relay-engine-v2`
 
-PR35 review branch:
+PR36 implementation branch:
 
 ```text
-pr35-live-gemini-context-filter
+pr36-sec-edgar-context
 ```
 
 Base `main` SHA:
@@ -16,12 +16,13 @@ Base `main` SHA:
 ea55725416e77b3503f99eca4e9bfba28af36f04
 ```
 
-PR35 builds the reusable live Gemini Interactions classifier on the merged PR34
-contracts. It adds a versioned prompt, contract-derived JSON Schema, explicit
-retry ownership and attempt accounting, bounded process-local deduplication,
-local provider-call budgets, offline tests, and one explicitly gated live
-checker. It does not add SEC/news/social collection, persistent caching,
-QuestDB writes, risk integration, or broker/execution behavior.
+PR36 builds the small, source-specific SEC EDGAR research collector on PR35's
+existing Gemini boundary. It adds reviewed ticker/CIK mappings, bounded filing
+discovery, immutable local archiving, durable restart-safe classification
+suppression, complete-section archiving with bounded `HEAD_V1` excerpts,
+deterministic official-XML Form 4 parsing, and an explicit offline/live checker.
+Successful Gemini results are durable before optional ledger writes. It does
+not add a generic cache, scheduler, risk integration, or broker behavior.
 
 ## Non-negotiable boundaries
 
@@ -56,7 +57,10 @@ EIA, FRED, USAspending, the local macro calendar, and the yfinance development
 proxy are intentionally enabled for bounded explicit collection outside the
 decision loop. Enablement does not grant trading authority or schedule calls.
 SEC EDGAR, news, social, and the AI context filter remain disabled in repository
-configuration.
+configuration. SEC collection is invoked explicitly and is research-only. SEC
+requests are sequential, default to 2/second, reject configuration above
+8/second, honor bounded 429 `Retry-After`, back off boundedly for retryable 5xx,
+and stop on a potential fair-access 403.
 
 Repository history shows FRED was intentionally enabled with the other built
 structured sources. PR34 therefore repairs the stale disabled-by-default unit
@@ -89,8 +93,20 @@ instants. EIA preserves its existing pre-release risk window while placing the
 official release time in both availability representations.
 
 Only a safe provider failure category/summary may enter contracts and any later
-caller-owned QuestDB write. PR35 does not retain or emit raw provider
+caller-owned QuestDB write. PR35/PR36 do not retain or emit raw provider
 exceptions, prompts, source text, headers, or credentials.
+
+The SEC manifest, not a generated contract ID, owns restart-safe identity. Its
+classification key includes accession, official document, item, full-section
+and excerpt hashes, extraction/prompt/model/schema versions, and relevant
+classification configuration. PR35's LRU remains same-process protection.
+`VALID`/`ABSTAINED` results are saved completely and atomically before QuestDB;
+fallback or pending ledger state can be retried without another Gemini call.
+
+Official Form 4 XML is normalized for derivative and non-derivative
+transactions. Only non-derivative P/S values are promoted. Unresolved Form 4/A
+records remain archived with `AMENDMENT_UNRESOLVED` and are excluded from
+default aggregate counts; PR36 does not guess amendment relationships.
 
 ## QuestDB deployment
 
@@ -140,6 +156,8 @@ Use only the repository interpreter:
 & ".\.venv\Scripts\python.exe" scripts/check_questdb_schema.py
 & ".\.venv\Scripts\python.exe" scripts/check_gemini_context.py --help
 & ".\.venv\Scripts\python.exe" scripts/check_gemini_context.py
+& ".\.venv\Scripts\python.exe" scripts/check_sec_edgar.py
+& ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_sec_edgar.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_fred_collector.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_contracts_context.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_questdb_writer.py
@@ -148,17 +166,19 @@ Use only the repository interpreter:
 git diff --check
 ```
 
-Default PR35 validation stays offline. After it passes, run exactly one explicit
-`scripts/check_gemini_context.py --live --required` acceptance check. Do not run
-live source collectors, broker actions, or QuestDB writes.
+Default PR36 validation stays offline. The manually gated SEC read-only smoke
+check is:
+
+```powershell
+& ".\.venv\Scripts\python.exe" scripts/check_sec_edgar.py --live --ticker LMT --form 8-K --max-filings 1
+```
+
+It has no broker, Gemini, or QuestDB action. Do not use `--classify` or
+`--questdb` without explicitly intending those external calls.
 
 ## Explicit follow-ups
 
-- PR36+: trusted-source enforcement, source collectors, bounded orchestration,
-  and integration with the later persistent research cache.
-- PR37: research cache, as-of selection, and real shadow-policy evaluator that
-  never changes the real risk result.
-- PR38: SEC EDGAR collector, immutable local archive, bounded 8-K sections, and
-  deterministic Form 4 P/S parsing.
+- PR37: persistent research cache, as-of selection, and a real shadow-policy
+  evaluator that never changes the real risk result.
 - PR39: provider-neutral manual news/social inbox ingestion through the same
   validation and research-only pipeline.

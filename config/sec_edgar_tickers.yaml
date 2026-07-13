@@ -1,0 +1,37 @@
+metadata:
+  config_version: 1
+  description: "Reviewed SEC EDGAR issuer mapping for the approved research universe."
+  verification_source: "https://www.sec.gov/files/company_tickers.json"
+  verified_on: "2026-07-13"
+
+issuers:
+  - ticker: PLTR
+    issuer_name: "Palantir Technologies Inc."
+    cik: "0001321655"
+  - ticker: LMT
+    issuer_name: "LOCKHEED MARTIN CORP"
+    cik: "0000936468"
+  - ticker: RTX
+    issuer_name: "RTX Corp"
+    cik: "0000101829"
+  - ticker: GD
+    issuer_name: "GENERAL DYNAMICS CORP"
+    cik: "0000040533"
+  - ticker: AVAV
+    issuer_name: "AeroVironment, Inc."
+    cik: "0001368622"
+  - ticker: XOM
+    issuer_name: "EXXON MOBIL CORP"
+    cik: "0000034088"
+  - ticker: OXY
+    issuer_name: "OCCIDENTAL PETROLEUM CORP /DE/"
+    cik: "0000797468"
+  - ticker: SLB
+    issuer_name: "SCHLUMBERGER LTD /NV/"
+    cik: "0000087347"
+  - ticker: COP
+    issuer_name: "CONOCOPHILLIPS"
+    cik: "0001163165"
+  - ticker: VLO
+    issuer_name: "VALERO ENERGY CORP/TX"
+    cik: "0001035002"

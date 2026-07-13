@@ -104,7 +104,9 @@ SEC_FORM4_OPEN_MARKET_SALE
 
 They belong to `DeterministicContextEventType`, not the AI classification enum.
 `ContextClassificationResponse` and AI-derived `ContextAIEvent` reject those
-values. Deterministic Form 4 parsing and event emission remain deferred to PR38.
+values. The SEC collector parses non-derivative Form 4 P/S facts
+deterministically into local research events; they remain outside the AI
+contract and real risk/execution paths.
 
 ## Classification statuses
 

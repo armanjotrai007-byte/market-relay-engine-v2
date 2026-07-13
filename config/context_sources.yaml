@@ -91,10 +91,17 @@ structured_sources:
 unstructured_sources:
   sec_edgar:
     enabled: false
-    user_agent_env: SEC_USER_AGENT
-    purpose: "SEC filing text and metadata for AI context flags."
+    organization_env: SEC_ORGANIZATION
+    contact_email_env: SEC_CONTACT_EMAIL
+    purpose: "Research-only SEC 8-K section classification and deterministic Form 4 P/S parsing."
     feeds_ai_context_filter: true
     direct_trade_authority: false
+    timeout_seconds: 10.0
+    max_retries: 2
+    retry_base_delay_seconds: 0.5
+    retry_max_delay_seconds: 8.0
+    request_rate_per_second: 2.0
+    archive_path: "data_lake/context/sec_edgar"
 
   news:
     enabled: false

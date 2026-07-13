@@ -32,11 +32,25 @@ trusted-code-created raw-input metadata
 ```
 
 PR34 defines the contracts and ledger metadata. PR35 implements the reusable
-Gemini classification boundary but does not collect SEC filings or news,
-archive documents, populate a persistent research cache, execute a shadow
-policy, or route Phase 7 records into `approved_risk_context` or the real risk
-filter. Form 4 purchase/sale events use a separate deterministic vocabulary and
-remain deferred to PR38; they are never Gemini classification values.
+Gemini classification boundary. PR36 adds a source-specific, explicitly
+invoked SEC EDGAR research collector for the approved ten issuers. It archives
+original SEC documents and complete normalized 8-K items immutably, sends only
+versioned bounded excerpts to the existing classifier, and parses official Form
+4 XML directly. Its local SEC manifest stores safe successful results before
+optional ledger writes and suppresses repeat paid calls after restart. PR35's
+LRU remains same-process protection only.
+
+Form 4 normalization preserves derivative and non-derivative transactions, but
+only non-derivative P/S records become initial research events. Unresolved Form
+4/A events remain research-accessible and are excluded from default aggregates.
+They retain a separate deterministic vocabulary and are never Gemini values.
+
+The SEC path does not populate `approved_risk_context`, update `ContextState`,
+or alter risk, model features, orders, positions, Alpaca, or execution. QuestDB
+receives safe classification-attempt metadata only, never filings, sections,
+prompts, or provider bodies. QuestDB failure uses the existing JSONL fallback
+without repeating Gemini. A broader persistent research cache, as-of selection,
+and shadow-policy evaluation remain later work.
 
 The live implementation uses `client.interactions.create` with the configured
 model and a rendered bounded prompt. Its `response_format` selects text with

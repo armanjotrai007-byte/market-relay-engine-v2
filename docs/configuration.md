@@ -7,7 +7,8 @@ Each file is safe to load locally without broker access, QuestDB writes, or live
 ## Files
 
 - `symbols.yaml` defines the final 10-stock universe (`PLTR`, `LMT`, `RTX`, `GD`, `AVAV`, `XOM`, `OXY`, `SLB`, `COP`, and `VLO`) and separate context symbols. None of the tradable symbols is approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
-- `context_sources.yaml` defines structured and unstructured context source settings. EIA, FRED, USAspending, the local macro calendar, and `yfinance_dev_only` are intentionally enabled for bounded use outside the per-tick loop. Yfinance remains development-only and not production-critical; SEC EDGAR, news, social, and automatic AI-context classification remain disabled. An explicit checker can enable one Gemini classification without changing this default.
+- `context_sources.yaml` defines structured and unstructured context source settings. EIA, FRED, USAspending, the local macro calendar, and `yfinance_dev_only` are intentionally enabled for bounded use outside the per-tick loop. Yfinance remains development-only and not production-critical; SEC EDGAR, news, social, and automatic AI-context classification remain disabled by default. SEC has an explicitly invoked research collector.
+- `sec_edgar_tickers.yaml` is the reviewed, deterministic ticker/issuer/zero-padded-CIK map for the ten approved symbols. It is not inferred by an AI model.
 - `risk_limits.yaml` defines placeholder paper-trading risk limits. These are not optimized live settings.
 - `questdb.yaml` defines QuestDB connection/health defaults and the exact ledger
   table allow-list. PR34 adds `context_classification_attempts` and
@@ -119,6 +120,49 @@ The live checker makes one synthetic request. Free-tier 429 responses receive
 only the configured bounded retries; exhaustion returns a safe structured
 provider failure. Source collectors and pipeline/research-cache integration are
 deferred to later PRs. The classifier never writes QuestDB itself.
+
+## SEC EDGAR Research Collector
+
+PR36 reads public SEC EDGAR endpoints for `8-K`, `8-K/A`, `4`, and `4/A` only.
+It requires contact identification, not an API key: set blank-placeholder
+variables `SEC_ORGANIZATION` and `SEC_CONTACT_EMAIL` in the ignored `.env`.
+The contact email is placed only in the compliant HTTP User-Agent; no email
+account access, password, Gmail integration, or SEC API key is used.
+
+The collector is source-specific and deliberately bounded: sequential requests
+default to 2 requests per second and configuration above 8 per second fails.
+They use monotonic pacing and a 10-second timeout, honor bounded `Retry-After`
+on 429, use bounded exponential backoff for retryable 5xx/transport failures,
+and stop on a potential fair-access 403. Downloads are never concurrent.
+
+Immutable originals, complete normalized 8-K sections, deterministic Form 4
+metadata, and the atomically replaced SEC manifest live under ignored
+`data_lake/context/sec_edgar/`. Complete sections are hashed and archived before
+a versioned `HEAD_V1` excerpt is bounded to PR35's Gemini input limit. The
+manifest owns cross-restart successful-result suppression and ledger retry;
+PR35's LRU remains process-local. QuestDB stores safe concise attempt metadata,
+never raw filings or sections.
+
+Form 4 facts are parsed from official XML. Both derivative and non-derivative
+transactions are retained, while only non-derivative `P` and `S` become initial
+research events. Unresolved Form 4/A records are excluded from default aggregate
+counts. Gemini is used only when `--classify` is explicitly requested.
+
+Offline/default validation makes no network call:
+
+```powershell
+python scripts/check_sec_edgar.py
+```
+
+The manually gated read-only SEC smoke check has a strict one-filing cap and no
+broker, Gemini, or QuestDB action:
+
+```powershell
+python scripts/check_sec_edgar.py --live --ticker LMT --form 8-K --max-filings 1
+```
+
+See `docs/sec_edgar.md` for bounded collection and optional `--classify` /
+`--questdb` operation.
 
 ## YFinance Development Proxy
 
