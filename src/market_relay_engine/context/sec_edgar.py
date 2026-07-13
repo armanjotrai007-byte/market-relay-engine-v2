@@ -49,7 +49,7 @@ EIGHT_K_EXTRACTION_VERSION = "SEC_8K_ITEMS_V1"
 EIGHT_K_TRUNCATION_POLICY = "HEAD_V1"
 
 _ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
-_ITEM_RE = re.compile(r"(?im)^\s*item\s+([1-8]\.\d{2})\s*[.:-]?\s*(.*)$")
+_ITEM_RE = re.compile(r"(?im)^\s*item\s+([1-8]\.\d{2}|9\.01)\s*[.:-]?\s*(.*)$")
 _RETRYABLE_SERVER_STATUSES = frozenset({500, 502, 503, 504})
 _LEDGER_TIMESTAMP_FIELDS = frozenset(
     {

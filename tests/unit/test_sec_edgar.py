@@ -385,6 +385,15 @@ def test_discovery_detects_static_mapping_drift(field: str, value: object) -> No
         discover_filings(FakeSECClient(submissions=submissions), _issuer())
 
 
+def test_extract_relevant_8k_sections_uses_item_901_as_boundary() -> None:
+    sections = extract_relevant_8k_sections(EIGHT_K)
+
+    assert [section.item_number for section in sections] == ["2.02", "8.01"]
+    assert sections[1].text == "Item 8.01 Other Events Other material event."
+    assert "Item 9.01" not in sections[1].text
+    assert "Exhibit 99.1" not in sections[1].text
+
+
 def test_complete_section_and_deterministic_excerpt_metadata() -> None:
     long_document = (
         "<html><body><h2>Item 2.02</h2><p>" + ("material results " * 100) + "</p></body></html>"
