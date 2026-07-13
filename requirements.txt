@@ -7,3 +7,4 @@ pyarrow
 tzdata
 yfinance==1.4.1
 pandas>=2.2,<3
+google-genai==2.10.0

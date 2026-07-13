@@ -90,7 +90,11 @@ def _find_secret_issues(configs: dict[str, dict[str, Any]]) -> list[str]:
         for path, value in _walk_values(config):
             key = path.split(".")[-1].split("[")[0].lower()
             key_has_secret_marker = any(marker in key for marker in SECRET_FIELD_MARKERS)
-            key_is_safe_reference = key.endswith("_env") or key.endswith("_required")
+            key_is_safe_reference = (
+                key.endswith("_env")
+                or key.endswith("_required")
+                or (key == "max_output_tokens" and isinstance(value, int))
+            )
             value_is_empty = value in ("", None, False)
 
             if key_has_secret_marker and not key_is_safe_reference and not value_is_empty:
@@ -155,11 +159,82 @@ def _check_context_sources(
         if source.get("direct_trade_authority") is not False:
             issues.append(f"unstructured source {source_name} must not trade directly")
 
-    ai_filter = context_sources["ai_context_filter"]
-    if ai_filter.get("direct_trade_authority") is not False:
-        issues.append("AI context filter must not have direct trade authority")
+    _check_ai_context_filter(context_sources["ai_context_filter"], issues)
 
     return issues
+
+
+def _check_ai_context_filter(ai_filter: Any, issues: list[str]) -> None:
+    """Validate the fixed PR35 Gemini safety and resource boundaries."""
+
+    if not isinstance(ai_filter, dict):
+        issues.append("ai_context_filter must be a mapping")
+        return
+
+    if ai_filter.get("enabled") is not False:
+        issues.append("ai_context_filter enabled must default to false")
+    if ai_filter.get("provider") != "gemini":
+        issues.append("ai_context_filter provider must be 'gemini'")
+    for name in (
+        "model",
+        "api_key_env",
+        "prompt_version",
+        "response_schema_version",
+    ):
+        if not _non_empty_string(ai_filter.get(name)):
+            issues.append(f"ai_context_filter {name} must be a non-empty string")
+    if ai_filter.get("api_key_env") != "GEMINI_API_KEY":
+        issues.append("ai_context_filter api_key_env must reference GEMINI_API_KEY")
+    if ai_filter.get("prompt_version") != "context_filter_v1":
+        issues.append("ai_context_filter prompt_version must be context_filter_v1")
+    if ai_filter.get("response_schema_version") != "context_classification_response_v1":
+        issues.append(
+            "ai_context_filter response_schema_version must be context_classification_response_v1"
+        )
+    if ai_filter.get("temperature") != 0 or isinstance(ai_filter.get("temperature"), bool):
+        issues.append("ai_context_filter temperature must be 0")
+
+    for name in (
+        "timeout_seconds",
+        "retry_base_delay_seconds",
+        "retry_max_delay_seconds",
+    ):
+        actual = ai_filter.get(name)
+        if isinstance(actual, bool) or not isinstance(actual, (int, float)) or actual <= 0:
+            issues.append(f"ai_context_filter {name} must be a positive number")
+
+    max_retries = ai_filter.get("max_retries")
+    if isinstance(max_retries, bool) or not isinstance(max_retries, int) or not 0 <= max_retries <= 2:
+        issues.append("ai_context_filter max_retries must be an integer from 0 through 2")
+
+    for name in (
+        "max_input_characters",
+        "max_prompt_characters",
+        "max_summary_characters",
+        "max_output_tokens",
+        "max_provider_calls_per_minute",
+        "max_provider_calls_per_run",
+        "dedup_cache_max_entries",
+    ):
+        actual = ai_filter.get(name)
+        if isinstance(actual, bool) or not isinstance(actual, int) or actual <= 0:
+            issues.append(f"ai_context_filter {name} must be a positive integer")
+
+    retry_base = ai_filter.get("retry_base_delay_seconds")
+    retry_max = ai_filter.get("retry_max_delay_seconds")
+    if (
+        isinstance(retry_base, (int, float))
+        and not isinstance(retry_base, bool)
+        and isinstance(retry_max, (int, float))
+        and not isinstance(retry_max, bool)
+        and retry_max < retry_base
+    ):
+        issues.append(
+            "ai_context_filter retry_max_delay_seconds must be at least retry_base_delay_seconds"
+        )
+
+    if ai_filter.get("direct_trade_authority") is not False:
+        issues.append("AI context filter must not have direct trade authority")
 
 
 def _check_eia_source(configs: dict[str, dict[str, Any]], issues: list[str]) -> None:

@@ -16,6 +16,12 @@ MIGRATION_PATH = REPO_ROOT / "db" / "schema" / "questdb_pr26_add_context_indicat
 PR34_MIGRATION_PATH = (
     REPO_ROOT / "db" / "schema" / "questdb_pr34_add_phase7_context_ledger.sql"
 )
+PR35_MIGRATION_PATH = (
+    REPO_ROOT
+    / "db"
+    / "schema"
+    / "questdb_pr35_add_context_classification_accounting.sql"
+)
 
 
 class FakeResponse:
@@ -33,6 +39,7 @@ def test_schema_file_exists() -> None:
     assert SCHEMA_PATH.is_file()
     assert MIGRATION_PATH.is_file()
     assert PR34_MIGRATION_PATH.is_file()
+    assert PR35_MIGRATION_PATH.is_file()
 
 
 def test_offline_schema_validation_passes() -> None:
@@ -123,6 +130,49 @@ def test_pr34_migration_rejects_missing_idempotency_and_destructive_sql(tmp_path
 
     assert any("destructive or DML" in failure for failure in failures)
     assert any("ALTER statements" in failure for failure in failures)
+
+
+def test_pr35_additive_migration_is_exact_idempotent_and_non_destructive() -> None:
+    assert check_questdb_schema.validate_pr35_migration_file(PR35_MIGRATION_PATH) == []
+
+    cleaned = check_questdb_schema.strip_sql_line_comments(
+        PR35_MIGRATION_PATH.read_text(encoding="utf-8")
+    )
+    statements = check_questdb_schema.split_sql_statements(cleaned)
+
+    assert len(statements) == 4
+    assert all(
+        statement.startswith("ALTER TABLE context_classification_attempts")
+        for statement in statements
+    )
+    assert all(" ADD COLUMN IF NOT EXISTS " in statement for statement in statements)
+    for forbidden in (
+        "DROP",
+        "RENAME",
+        "TRUNCATE",
+        "CREATE",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "SELECT",
+    ):
+        assert re.search(rf"\b{forbidden}\b", cleaned, flags=re.IGNORECASE) is None
+
+
+def test_pr35_migration_rejects_missing_idempotency_and_destructive_sql(
+    tmp_path: Path,
+) -> None:
+    migration = tmp_path / "bad-pr35.sql"
+    migration.write_text(
+        "ALTER TABLE context_classification_attempts ADD COLUMN retry_count LONG;\n"
+        "DROP TABLE context_classification_attempts;\n",
+        encoding="utf-8",
+    )
+
+    failures = check_questdb_schema.validate_pr35_migration_file(migration)
+
+    assert any("destructive" in failure for failure in failures)
+    assert any("statements must exactly match" in failure for failure in failures)
 
 
 def test_reset_schema_columns_exactly_match_writer_tables() -> None:

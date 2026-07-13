@@ -4,24 +4,24 @@
 
 Repository: `armanjotrai007-byte/market-relay-engine-v2`
 
-PR34 review branch:
+PR35 review branch:
 
 ```text
-pr34-phase7-contracts-repository-consistency
+pr35-live-gemini-context-filter
 ```
 
 Base `main` SHA:
 
 ```text
-0f79eda1170237666a61fe2f2767e7eb5141200d
+ea55725416e77b3503f99eca4e9bfba28af36f04
 ```
 
-PR34 reconciles current source configuration and documentation, defines the
-Phase 7 provider-neutral context contracts and strict enums, and adds QuestDB
-metadata schemas for classification attempts and hypothetical shadow policy
-evaluations. It is an offline foundational-contract PR: it does not implement
-Gemini, SEC collection, a research cache, a shadow-policy runtime, or manual
-news/social ingress.
+PR35 builds the reusable live Gemini Interactions classifier on the merged PR34
+contracts. It adds a versioned prompt, contract-derived JSON Schema, explicit
+retry ownership and attempt accounting, bounded process-local deduplication,
+local provider-call budgets, offline tests, and one explicitly gated live
+checker. It does not add SEC/news/social collection, persistent caching,
+QuestDB writes, risk integration, or broker/execution behavior.
 
 ## Non-negotiable boundaries
 
@@ -75,10 +75,12 @@ ContextRawInput
 -> ShadowContextPolicyEvaluation
 ```
 
-Gemini-classification event types contain `UNKNOWN`, `OTHER`, and the bounded
-SEC 8-K values, with `UNKNOWN` reserved for non-valid response shapes. Form 4
-open-market purchase/sale values use a separate deterministic enum and cannot
-enter the classification response; their parser remains PR38 work.
+Gemini-classification event types retain the bounded SEC 8-K values and add
+general government-contract, regulatory-policy, geopolitical,
+supply-disruption, earnings-guidance, legal, cybersecurity,
+management-change, and social/political categories. `UNKNOWN` remains reserved
+for non-valid response shapes. Form 4 purchase/sale values remain deterministic
+and outside Gemini.
 
 `available_at` means the earliest trusted demonstrable public availability of
 the underlying fact. When both top-level `ContextFlag.available_at` and legacy
@@ -86,9 +88,9 @@ the underlying fact. When both top-level `ContextFlag.available_at` and legacy
 instants. EIA preserves its existing pre-release risk window while placing the
 official release time in both availability representations.
 
-Only a safe provider failure category/summary may enter contracts and QuestDB.
-PR36 must retain full exceptions locally in ignored structured logs correlated
-by the same classification attempt ID.
+Only a safe provider failure category/summary may enter contracts and any later
+caller-owned QuestDB write. PR35 does not retain or emit raw provider
+exceptions, prompts, source text, headers, or credentials.
 
 ## QuestDB deployment
 
@@ -107,6 +109,13 @@ After merge and before starting a PR34 writer, stop writers and apply:
 
 ```text
 db/schema/questdb_pr34_add_phase7_context_ledger.sql
+```
+
+Then apply the PR35 accounting extension before a later caller writes live
+classification attempts:
+
+```text
+db/schema/questdb_pr35_add_context_classification_accounting.sql
 ```
 
 The migration is additive and idempotent. Back up first, record legacy table
@@ -129,6 +138,8 @@ Use only the repository interpreter:
 & ".\.venv\Scripts\python.exe" scripts/check_config.py
 & ".\.venv\Scripts\python.exe" scripts/check_contracts.py
 & ".\.venv\Scripts\python.exe" scripts/check_questdb_schema.py
+& ".\.venv\Scripts\python.exe" scripts/check_gemini_context.py --help
+& ".\.venv\Scripts\python.exe" scripts/check_gemini_context.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_fred_collector.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_contracts_context.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_questdb_writer.py
@@ -137,16 +148,14 @@ Use only the repository interpreter:
 git diff --check
 ```
 
-PR34 validation must stay offline. Do not run live context-source, broker,
-Gemini, SEC, or QuestDB write tests for this PR.
+Default PR35 validation stays offline. After it passes, run exactly one explicit
+`scripts/check_gemini_context.py --live --required` acceptance check. Do not run
+live source collectors, broker actions, or QuestDB writes.
 
 ## Explicit follow-ups
 
-- PR35: trusted-source registry, timestamp/hash enforcement, cross-record
-  provenance, as-of validation, abstention/rejection policy, and prompt-injection
-  safety.
-- PR36: Gemini provider and bounded queue, timeouts/retries/rates/budgets,
-  deduplication/backpressure, plus correlated retained local full-exception logs.
+- PR36+: trusted-source enforcement, source collectors, bounded orchestration,
+  and integration with the later persistent research cache.
 - PR37: research cache, as-of selection, and real shadow-policy evaluator that
   never changes the real risk result.
 - PR38: SEC EDGAR collector, immutable local archive, bounded 8-K sections, and

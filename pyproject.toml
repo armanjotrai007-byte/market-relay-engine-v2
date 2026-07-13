@@ -14,6 +14,9 @@ dependencies = []
 where = ["src"]
 include = ["market_relay_engine*"]
 
+[tool.setuptools.package-data]
+"market_relay_engine.ai_context" = ["prompts/*.md"]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]

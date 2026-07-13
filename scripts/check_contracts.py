@@ -181,6 +181,7 @@ def build_contract_examples() -> list[Any]:
         prompt_version=classification_request.prompt_version,
         status=ContextClassificationStatus.VALID,
         provider_latency_ms=125.0,
+        provider_request_count=1,
         event_type=ContextClassificationEventType.SEC_8K_RESULTS,
         risk_level=ContextRiskLevel.MEDIUM,
         urgency=ContextUrgency.MEDIUM,

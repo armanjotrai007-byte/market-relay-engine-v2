@@ -30,6 +30,15 @@ class ContextClassificationEventType(str, Enum):
 
     UNKNOWN = "UNKNOWN"
     OTHER = "OTHER"
+    GOVERNMENT_CONTRACT = "GOVERNMENT_CONTRACT"
+    REGULATORY_POLICY = "REGULATORY_POLICY"
+    GEOPOLITICAL = "GEOPOLITICAL"
+    SUPPLY_DISRUPTION = "SUPPLY_DISRUPTION"
+    EARNINGS_GUIDANCE = "EARNINGS_GUIDANCE"
+    LEGAL = "LEGAL"
+    CYBERSECURITY = "CYBERSECURITY"
+    MANAGEMENT_CHANGE = "MANAGEMENT_CHANGE"
+    SOCIAL_POLITICAL_STATEMENT = "SOCIAL_POLITICAL_STATEMENT"
     SEC_8K_MATERIAL_AGREEMENT = "SEC_8K_MATERIAL_AGREEMENT"
     SEC_8K_TERMINATION_OF_MATERIAL_AGREEMENT = (
         "SEC_8K_TERMINATION_OF_MATERIAL_AGREEMENT"
@@ -78,7 +87,7 @@ class ContextUrgency(str, Enum):
 
 
 class ContextClassificationStatus(str, Enum):
-    """Outcome of one provider classification attempt."""
+    """Outcome of one logical classification attempt."""
 
     VALID = "VALID"
     ABSTAINED = "ABSTAINED"
@@ -158,6 +167,14 @@ def _non_negative_finite(value: object, field_name: str) -> float:
     if not math.isfinite(converted) or converted < 0.0:
         raise ValueError(f"{field_name} must be non-negative and finite")
     return converted
+
+
+def _non_negative_int(value: object, field_name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer")
+    if value < 0:
+        raise ValueError(f"{field_name} must be non-negative")
+    return value
 
 
 def _validate_common_record_fields(
@@ -352,7 +369,7 @@ class ContextClassificationRequest:
 
 @dataclass(frozen=True, kw_only=True)
 class ContextClassificationResponse:
-    """Safe, bounded result of one provider classification attempt."""
+    """Safe, bounded result of one logical classification attempt."""
 
     classification_request_id: str
     classified_at: datetime
@@ -371,6 +388,10 @@ class ContextClassificationResponse:
     summary: str | None = None
     safe_failure_category: str | None = None
     safe_failure_summary: str | None = None
+    provider_request_count: int = 0
+    retry_count: int = 0
+    deduplicated: bool = False
+    reused_classification_attempt_id: str | None = None
     schema_version: str = DEFAULT_SCHEMA_VERSION
     trace_id: str | None = None
 
@@ -396,6 +417,31 @@ class ContextClassificationResponse:
             self.safe_failure_summary,
             "safe_failure_summary",
         )
+        require_optional_non_empty_string(
+            self.reused_classification_attempt_id,
+            "reused_classification_attempt_id",
+        )
+        _non_negative_int(self.provider_request_count, "provider_request_count")
+        _non_negative_int(self.retry_count, "retry_count")
+        if not isinstance(self.deduplicated, bool):
+            raise TypeError("deduplicated must be bool")
+        if self.retry_count != max(self.provider_request_count - 1, 0):
+            raise ValueError(
+                "retry_count must equal provider_request_count minus the original request"
+            )
+        if self.deduplicated:
+            if self.provider_request_count != 0 or self.retry_count != 0:
+                raise ValueError(
+                    "deduplicated responses cannot include provider requests or retries"
+                )
+            if self.reused_classification_attempt_id is None:
+                raise ValueError(
+                    "deduplicated responses require reused_classification_attempt_id"
+                )
+        elif self.reused_classification_attempt_id is not None:
+            raise ValueError(
+                "reused_classification_attempt_id is only valid for deduplicated responses"
+            )
         object.__setattr__(self, "classified_at", utc_datetime(self.classified_at))
         object.__setattr__(
             self,

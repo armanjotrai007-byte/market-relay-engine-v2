@@ -209,6 +209,7 @@ def _build_example_rows() -> dict[str, dict[str, Any]]:
         prompt_version=classification_request.prompt_version,
         status=ContextClassificationStatus.VALID,
         provider_latency_ms=10.0,
+        provider_request_count=1,
         event_type=ContextClassificationEventType.OTHER,
         risk_level=ContextRiskLevel.LOW,
         urgency=ContextUrgency.LOW,

@@ -75,5 +75,6 @@ fresh, disposable local database whose contents are intentionally being reset.
 - yfinance is development-only, not production-critical.
 - Phase 7 records are research-only and cannot alter real risk, sizing, model,
   broker, or execution behavior.
-- PR34 does not implement Gemini or SEC collection. Provider and collector live
-  tests belong to PR36 and PR38 respectively.
+- PR35 adds an explicitly gated one-request Gemini acceptance checker; automatic
+  classification remains disabled. SEC and other source collectors remain
+  deferred to later PRs.

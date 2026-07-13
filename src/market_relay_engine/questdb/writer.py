@@ -47,7 +47,7 @@ risk_decisions: decision_time write_time risk_decision_id ticker model_signal_id
 context_indicator_snapshots: snapshot_time write_time context_indicator_id source ticker_or_sector indicator_name value_json window units freshness_seconds source_event_time details_json run_id session_id schema_version trace_id
 context_ai_events: event_time write_time context_event_id source source_id affected_tickers_json affected_sector event_type sentiment urgency risk_level confidence valid_from valid_until summary prompt_version model_version raw_input_hash run_id session_id schema_version trace_id raw_input_id source_document_id classification_request_id classification_attempt_id validation_result_id source_type source_platform source_uri source_locator document_hash source_published_at source_updated_at collected_at normalized_at classified_at available_at validated_at provider
 context_flags: event_time write_time context_flag_id source flag_type severity ticker sector confidence valid_until run_id session_id schema_version trace_id context_event_id raw_input_id source_document_id classification_request_id classification_attempt_id validation_result_id source_type source_id source_platform source_uri source_locator document_hash raw_input_hash valid_from available_at validated_at reason_codes_json summary
-context_classification_attempts: requested_at write_time classification_attempt_id classification_request_id raw_input_id source_document_id source source_type source_platform source_uri source_locator affected_tickers_json raw_input_hash document_hash source_published_at source_updated_at collected_at normalized_at classified_at provider model_version prompt_version status event_type risk_level urgency confidence summary validation_result_id validation_outcome validation_reason_codes_json validator_version validated_at provider_latency_ms safe_failure_category safe_failure_summary run_id session_id schema_version trace_id
+context_classification_attempts: requested_at write_time classification_attempt_id classification_request_id raw_input_id source_document_id source source_type source_platform source_uri source_locator affected_tickers_json raw_input_hash document_hash source_published_at source_updated_at collected_at normalized_at classified_at provider model_version prompt_version status event_type risk_level urgency confidence summary validation_result_id validation_outcome validation_reason_codes_json validator_version validated_at provider_latency_ms safe_failure_category safe_failure_summary run_id session_id schema_version trace_id provider_request_count retry_count deduplicated reused_classification_attempt_id
 shadow_context_policy_evaluations: decision_evaluation_time write_time shadow_evaluation_id model_signal_id risk_decision_id matched_context_event_ids_json matched_context_flag_ids_json shadow_context_fingerprint policy_version policy_config_hash hypothetical_action proposed_size_factor reason_codes_json run_id session_id schema_version trace_id
 order_events: order_time write_time order_id ticker side order_type quantity status expected_price submitted_price broker broker_order_id paper_trading model_signal_id risk_decision_id feature_snapshot_id run_id session_id schema_version trace_id
 fill_events: fill_time write_time fill_id order_id ticker side quantity fill_price expected_price slippage slippage_bps broker_status broker_fill_id model_signal_id risk_decision_id run_id session_id schema_version trace_id
@@ -593,6 +593,10 @@ def context_classification_attempt_to_row(
         'session_id': session_id,
         'schema_version': response.schema_version,
         'trace_id': trace_id,
+        'provider_request_count': response.provider_request_count,
+        'retry_count': response.retry_count,
+        'deduplicated': response.deduplicated,
+        'reused_classification_attempt_id': response.reused_classification_attempt_id,
     }
 
 
