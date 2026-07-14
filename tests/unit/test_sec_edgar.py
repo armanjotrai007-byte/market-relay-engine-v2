@@ -329,6 +329,18 @@ def _with_form4_plan_footnote_text(text: str) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
+def _with_form4_filing_plan(document: bytes, value: str | None) -> bytes:
+    root = ET.fromstring(document)
+    for element in tuple(root):
+        if element.tag.rsplit("}", 1)[-1] == "aff10b5One":
+            root.remove(element)
+    if value is not None:
+        checkbox = ET.Element("aff10b5One")
+        checkbox.text = value
+        root.insert(0, checkbox)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
 def _archive_first_eight_k(tmp_path: Path):
     settings = _settings(tmp_path)
     archive = SECEDGARArchive(settings.archive_path)
@@ -1500,6 +1512,24 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
         value.reporting_owners == expected_owners
         for value in parsed.promoted_events
     )
+    assert parsed.filing_plan_10b5_1 is None
+
+
+def test_form4_direct_true_plan_indicator_overrides_other_evidence() -> None:
+    document = _with_form4_plan_footnote_text(
+        "This transaction was not executed pursuant to a Rule 10b5-1 trading plan."
+    ).replace(
+        b"<transactionCode>S</transactionCode>",
+        b"<transactionCode>S</transactionCode>"
+        b"<tradingPlan10b5>1</tradingPlan10b5>",
+    )
+    document = _with_form4_filing_plan(document, "0")
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.filing_plan_10b5_1 is False
+    assert parsed.transactions[0].plan_10b5_1 is True
+    assert parsed.promoted_events[0].plan_10b5_1 is True
 
 
 def test_form4_direct_false_plan_indicator_remains_authoritative() -> None:
@@ -1508,20 +1538,113 @@ def test_form4_direct_false_plan_indicator_remains_authoritative() -> None:
         b"<transactionCode>S</transactionCode>"
         b"<tradingPlan10b5>0</tradingPlan10b5>",
     )
+    document = _with_form4_filing_plan(document, "1")
 
     parsed = parse_form4(document, _form4_plan_filing())
 
+    assert parsed.filing_plan_10b5_1 is True
     assert parsed.transactions[0].plan_10b5_1 is False
     assert parsed.promoted_events[0].plan_10b5_1 is False
 
 
-def test_form4_referenced_plan_footnote_sets_transaction_and_event() -> None:
-    parsed = parse_form4(FORM4_PLAN_FOOTNOTE, _form4_plan_filing())
+def test_form4_referenced_plan_footnote_overrides_false_filing_checkbox() -> None:
+    document = _with_form4_filing_plan(FORM4_PLAN_FOOTNOTE, "0")
+
+    parsed = parse_form4(document, _form4_plan_filing())
 
     assert len(parsed.transactions) == 1
     assert len(parsed.promoted_events) == 1
+    assert parsed.filing_plan_10b5_1 is False
     assert parsed.transactions[0].plan_10b5_1 is True
     assert parsed.promoted_events[0].plan_10b5_1 is True
+
+
+def test_form4_referenced_negative_footnote_overrides_true_filing_checkbox() -> None:
+    document = _with_form4_filing_plan(
+        _with_form4_plan_footnote_text(
+            "This transaction was not executed pursuant to a Rule 10b5-1 trading plan."
+        ),
+        "1",
+    )
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.filing_plan_10b5_1 is True
+    assert parsed.transactions[0].plan_10b5_1 is False
+    assert parsed.promoted_events[0].plan_10b5_1 is False
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param("1", True, id="one"),
+        pytest.param("true", True, id="true"),
+        pytest.param("0", False, id="zero"),
+        pytest.param("false", False, id="false"),
+        pytest.param(None, None, id="missing"),
+        pytest.param("yes", None, id="malformed"),
+    ],
+)
+def test_form4_parses_filing_level_plan_checkbox(
+    value: str | None, expected: bool | None
+) -> None:
+    document = _with_form4_filing_plan(FORM4_PLAN_FOOTNOTE, value)
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.filing_plan_10b5_1 is expected
+
+
+def test_form4_true_filing_checkbox_falls_back_for_one_promoted_transaction() -> None:
+    document = _with_form4_filing_plan(
+        FORM4_PLAN_FOOTNOTE.replace(b'<footnoteId id="F1"/>', b""),
+        "1",
+    )
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.filing_plan_10b5_1 is True
+    assert [value.plan_10b5_1 for value in parsed.transactions] == [True]
+    assert [value.plan_10b5_1 for value in parsed.promoted_events] == [True]
+
+
+def test_form4_true_filing_checkbox_is_not_broadcast_to_multiple_events() -> None:
+    second_transaction = b"""
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-07-11</value></transactionDate>
+      <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>10</value></transactionShares>
+        <transactionPricePerShare><value>24</value></transactionPricePerShare>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+    """
+    document = FORM4_PLAN_FOOTNOTE.replace(
+        b'<footnoteId id="F1"/>', b""
+    ).replace(
+        b"</nonDerivativeTable>",
+        second_transaction + b"</nonDerivativeTable>",
+    )
+    document = _with_form4_filing_plan(document, "1")
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.filing_plan_10b5_1 is True
+    assert [value.plan_10b5_1 for value in parsed.transactions] == [None, None]
+    assert [value.plan_10b5_1 for value in parsed.promoted_events] == [None, None]
+
+
+def test_form4_false_filing_checkbox_falls_back_without_specific_evidence() -> None:
+    document = _with_form4_filing_plan(
+        FORM4_PLAN_FOOTNOTE.replace(b'<footnoteId id="F1"/>', b""),
+        "0",
+    )
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.filing_plan_10b5_1 is False
+    assert [value.plan_10b5_1 for value in parsed.transactions] == [False]
+    assert [value.plan_10b5_1 for value in parsed.promoted_events] == [False]
 
 
 @pytest.mark.parametrize(
@@ -1561,6 +1684,36 @@ def test_form4_referenced_plan_footnote_sets_transaction_and_event() -> None:
             ),
             False,
             id="explicit-negative-plan-language",
+        ),
+        pytest.param(
+            _with_form4_plan_footnote_text(
+                "These transactions were not effected pursuant to a Rule 10b5-1 "
+                "trading plan."
+            ),
+            False,
+            id="negative-effected-pursuant",
+        ),
+        pytest.param(
+            _with_form4_plan_footnote_text(
+                "The sale was effected pursuant to a Rule 10b5-1 trading plan."
+            ),
+            True,
+            id="sale-effected-pursuant",
+        ),
+        pytest.param(
+            _with_form4_plan_footnote_text(
+                "Shares sold pursuant to the reporting person's Rule 10b5-1 plan."
+            ),
+            True,
+            id="shares-sold-pursuant",
+        ),
+        pytest.param(
+            _with_form4_plan_footnote_text(
+                "The purchase was effected in accordance with a Rule 10b5-1 "
+                "trading plan."
+            ),
+            True,
+            id="purchase-in-accordance-with",
         ),
         pytest.param(
             _with_form4_plan_footnote_text(
@@ -1697,14 +1850,15 @@ def test_collector_archives_all_form4_transactions_without_gemini(tmp_path: Path
     )
 
 
-def test_collector_archives_referenced_form4_plan_footnote_value(
+def test_collector_archives_filing_and_resolved_form4_plan_values(
     tmp_path: Path,
 ) -> None:
     settings = _settings(tmp_path)
+    document = _with_form4_filing_plan(FORM4_PLAN_FOOTNOTE, "0")
     result = SECEDGARCollector(
         settings=settings,
         issuers=(_issuer(),),
-        client=FakeSECClient(form4=FORM4_PLAN_FOOTNOTE),
+        client=FakeSECClient(form4=document),
         archive=SECEDGARArchive(settings.archive_path),
     ).collect(forms=("4",), max_filings=1)
     payload = json.loads(
@@ -1714,6 +1868,7 @@ def test_collector_archives_referenced_form4_plan_footnote_value(
     )
 
     assert result["form4_events"] == 1
+    assert payload["filing_plan_10b5_1"] is False
     assert payload["normalized_transactions"][0]["plan_10b5_1"] is True
     assert payload["research_events"][0]["plan_10b5_1"] is True
 

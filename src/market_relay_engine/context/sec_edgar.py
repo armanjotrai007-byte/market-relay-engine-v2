@@ -59,15 +59,15 @@ _ITEM_RE = re.compile(
 )
 _FORM4_PLAN_FOOTNOTE_TRUE_RE = re.compile(
     r"\b(?:transactions?|sales?|purchases?|shares?)\b"
-    r".{0,60}\b(?:made|executed|purchased|sold)\b"
-    r".{0,50}\b(?:pursuant\s+to|under|according\s+to)\b"
+    r".{0,60}\b(?:made|executed|effected|purchased|sold)\b"
+    r".{0,50}\b(?:pursuant\s+to|under|according\s+to|in\s+accordance\s+with)\b"
     r".{0,160}\b(?:rule\s+)?10b5\s*-\s*1\b"
 )
 _FORM4_PLAN_FOOTNOTE_FALSE_RE = re.compile(
     r"\b(?:transactions?|sales?|purchases?|shares?)\b"
     r".{0,60}\b(?:was|were|is|are)\s+not\s+"
-    r"(?:(?:made|executed|purchased|sold)\s+)?"
-    r"(?:pursuant\s+to|under|according\s+to)\b"
+    r"(?:(?:made|executed|effected|purchased|sold)\s+)?"
+    r"(?:pursuant\s+to|under|according\s+to|in\s+accordance\s+with)\b"
     r".{0,160}\b(?:rule\s+)?10b5\s*-\s*1\b"
 )
 _RETRYABLE_SERVER_STATUSES = frozenset({500, 502, 503, 504})
@@ -304,6 +304,7 @@ class Form4ResearchEvent:
 class ParsedForm4:
     issuer_ticker: str
     issuer_cik: str
+    filing_plan_10b5_1: bool | None
     reporting_owners: tuple[Form4ReportingOwner, ...]
     transactions: tuple[Form4Transaction, ...]
     promoted_events: tuple[Form4ResearchEvent, ...]
@@ -700,7 +701,12 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
         for element in root
         if element.tag.rsplit("}", 1)[-1] == "reportingOwner"
     )
+    filing_plan_10b5_1 = _form4_boolean(_xml_text(root, "aff10b5One"))
     footnotes = _form4_footnote_map(root)
+    promoted_transaction_count = sum(
+        _xml_text(transaction, "transactionCode") in {"P", "S"}
+        for transaction in _xml_elements(root, "nonDerivativeTransaction")
+    )
     is_amendment = filing.form_type == "4/A"
     if not is_amendment:
         aggregate_eligibility = "ELIGIBLE"
@@ -726,6 +732,15 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
                 )
             elif security_kind == "NON_DERIVATIVE" and code == "S":
                 promoted_type = DeterministicContextEventType.SEC_FORM4_OPEN_MARKET_SALE
+            filing_plan_fallback: bool | None = None
+            if filing_plan_10b5_1 is False:
+                filing_plan_fallback = False
+            elif (
+                filing_plan_10b5_1 is True
+                and promoted_type is not None
+                and promoted_transaction_count == 1
+            ):
+                filing_plan_fallback = True
             parsed = Form4Transaction(
                 security_kind=security_kind,
                 transaction_code=code,
@@ -750,7 +765,9 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
                 underlying_shares=_xml_number(
                     transaction, "underlyingSecurityShares"
                 ),
-                plan_10b5_1=_xml_plan_indicator(transaction, footnotes),
+                plan_10b5_1=_xml_plan_indicator(
+                    transaction, footnotes, filing_plan_fallback
+                ),
                 promoted_event_type=promoted_type,
                 aggregate_eligibility=aggregate_eligibility,
             )
@@ -782,6 +799,7 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
     return ParsedForm4(
         issuer_ticker=ticker,
         issuer_cik=cik,
+        filing_plan_10b5_1=filing_plan_10b5_1,
         reporting_owners=reporting_owners,
         transactions=tuple(transactions),
         promoted_events=tuple(events),
@@ -1111,6 +1129,7 @@ class SECEDGARCollector:
             ),
             "issuer_ticker": parsed.issuer_ticker,
             "issuer_cik": parsed.issuer_cik,
+            "filing_plan_10b5_1": parsed.filing_plan_10b5_1,
             "reporting_owners": [
                 _form4_reporting_owner_payload(value)
                 for value in parsed.reporting_owners
@@ -1637,14 +1656,25 @@ def _form4_footnote_plan_indicator(value: str) -> bool | None:
     return None
 
 
-def _xml_plan_indicator(
-    transaction: ET.Element, footnotes: Mapping[str, str]
-) -> bool | None:
-    value = _xml_text(transaction, "tradingPlan10b5")
-    if value is not None and value.lower() in {"1", "true"}:
+def _form4_boolean(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    normalized = value.casefold()
+    if normalized in {"1", "true"}:
         return True
-    if value is not None and value.lower() in {"0", "false"}:
+    if normalized in {"0", "false"}:
         return False
+    return None
+
+
+def _xml_plan_indicator(
+    transaction: ET.Element,
+    footnotes: Mapping[str, str],
+    filing_plan_fallback: bool | None,
+) -> bool | None:
+    direct_indicator = _form4_boolean(_xml_text(transaction, "tradingPlan10b5"))
+    if direct_indicator is not None:
+        return direct_indicator
     referenced_indicators: set[bool] = set()
     for reference in _xml_elements(transaction, "footnoteId"):
         identifier = (reference.get("id") or "").strip()
@@ -1656,7 +1686,7 @@ def _xml_plan_indicator(
             referenced_indicators.add(indicator)
     if len(referenced_indicators) == 1:
         return next(iter(referenced_indicators))
-    return None
+    return filing_plan_fallback
 
 
 def _stable_hash(value: Mapping[str, Any]) -> str:
