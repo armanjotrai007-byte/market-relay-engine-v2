@@ -57,6 +57,19 @@ _EDGAR_ACCEPTANCE_TIMEZONE = ZoneInfo("America/New_York")
 _ITEM_RE = re.compile(
     r"(?im)^[ \t]*item[ \t]+([1-8]\.\d{2}|9\.01)[ \t]*[.:-]?[ \t]*(.*)$"
 )
+_FORM4_PLAN_FOOTNOTE_TRUE_RE = re.compile(
+    r"\b(?:transactions?|sales?|purchases?|shares?)\b"
+    r".{0,60}\b(?:made|executed|purchased|sold)\b"
+    r".{0,50}\b(?:pursuant\s+to|under|according\s+to)\b"
+    r".{0,160}\b(?:rule\s+)?10b5\s*-\s*1\b"
+)
+_FORM4_PLAN_FOOTNOTE_FALSE_RE = re.compile(
+    r"\b(?:transactions?|sales?|purchases?|shares?)\b"
+    r".{0,60}\b(?:was|were|is|are)\s+not\s+"
+    r"(?:(?:made|executed|purchased|sold)\s+)?"
+    r"(?:pursuant\s+to|under|according\s+to)\b"
+    r".{0,160}\b(?:rule\s+)?10b5\s*-\s*1\b"
+)
 _RETRYABLE_SERVER_STATUSES = frozenset({500, 502, 503, 504})
 _LEDGER_TIMESTAMP_FIELDS = frozenset(
     {
@@ -687,6 +700,7 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
         for element in root
         if element.tag.rsplit("}", 1)[-1] == "reportingOwner"
     )
+    footnotes = _form4_footnote_map(root)
     is_amendment = filing.form_type == "4/A"
     if not is_amendment:
         aggregate_eligibility = "ELIGIBLE"
@@ -736,7 +750,7 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
                 underlying_shares=_xml_number(
                     transaction, "underlyingSecurityShares"
                 ),
-                plan_10b5_1=_xml_plan_indicator(transaction),
+                plan_10b5_1=_xml_plan_indicator(transaction, footnotes),
                 promoted_event_type=promoted_type,
                 aggregate_eligibility=aggregate_eligibility,
             )
@@ -1599,14 +1613,49 @@ def _xml_number(root: ET.Element, name: str) -> float | None:
         return None
 
 
-def _xml_plan_indicator(transaction: ET.Element) -> bool | None:
-    value = _xml_text(transaction, "tradingPlan10b5")
-    if value is None:
-        return None
-    if value.lower() in {"1", "true"}:
-        return True
-    if value.lower() in {"0", "false"}:
+def _form4_footnote_map(root: ET.Element) -> dict[str, str]:
+    footnotes: dict[str, str] = {}
+    for element in _xml_elements(root, "footnote"):
+        identifier = (element.get("id") or "").strip()
+        if identifier and identifier not in footnotes:
+            footnotes[identifier] = _normalize_form4_footnote_text(
+                " ".join(element.itertext())
+            )
+    return footnotes
+
+
+def _normalize_form4_footnote_text(value: str) -> str:
+    normalized_dashes = re.sub(r"[\u2010-\u2015\u2212]", "-", value)
+    return re.sub(r"\s+", " ", normalized_dashes).strip().casefold()
+
+
+def _form4_footnote_plan_indicator(value: str) -> bool | None:
+    if _FORM4_PLAN_FOOTNOTE_FALSE_RE.search(value):
         return False
+    if _FORM4_PLAN_FOOTNOTE_TRUE_RE.search(value):
+        return True
+    return None
+
+
+def _xml_plan_indicator(
+    transaction: ET.Element, footnotes: Mapping[str, str]
+) -> bool | None:
+    value = _xml_text(transaction, "tradingPlan10b5")
+    if value is not None and value.lower() in {"1", "true"}:
+        return True
+    if value is not None and value.lower() in {"0", "false"}:
+        return False
+    referenced_indicators: set[bool] = set()
+    for reference in _xml_elements(transaction, "footnoteId"):
+        identifier = (reference.get("id") or "").strip()
+        text = footnotes.get(identifier)
+        if text is None:
+            continue
+        indicator = _form4_footnote_plan_indicator(text)
+        if indicator is not None:
+            referenced_indicators.add(indicator)
+    if len(referenced_indicators) == 1:
+        return next(iter(referenced_indicators))
     return None
 
 

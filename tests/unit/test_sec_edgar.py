@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime, timedelta
 from hashlib import sha256
 import json
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -62,6 +63,7 @@ FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "sec_edgar"
 EIGHT_K = (FIXTURE_DIR / "eight_k.html").read_bytes()
 FORM4 = (FIXTURE_DIR / "form4.xml").read_bytes()
 FORM4_JOINT = (FIXTURE_DIR / "form4_joint.xml").read_bytes()
+FORM4_PLAN_FOOTNOTE = (FIXTURE_DIR / "form4_plan_footnote.xml").read_bytes()
 SUBMISSIONS = json.loads(
     (FIXTURE_DIR / "submissions.json").read_text(encoding="utf-8")
 )
@@ -299,6 +301,32 @@ def _http_client(
 
 def _issuer():
     return load_sec_issuers(base_dir=REPO_ROOT)[0]
+
+
+def _form4_plan_filing() -> SECFiling:
+    return SECFiling(
+        ticker="PLTR",
+        issuer_cik="0001321655",
+        accession_number="0001321655-26-000127",
+        form_type="4",
+        filing_date=date(2026, 7, 11),
+        primary_document="ownership.xml",
+        filing_url="https://www.sec.gov/example",
+        collected_at=NOW,
+        acceptance_at=NOW - timedelta(minutes=5),
+    )
+
+
+def _with_form4_plan_footnote_text(text: str) -> bytes:
+    root = ET.fromstring(FORM4_PLAN_FOOTNOTE)
+    footnote = next(
+        element
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "footnote"
+        and element.get("id") == "F1"
+    )
+    footnote.text = text
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
 def _archive_first_eight_k(tmp_path: Path):
@@ -1459,6 +1487,8 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
     ]
     assert parsed.transactions[3].underlying_shares == 10
     assert parsed.transactions[3].promoted_event_type is None
+    assert parsed.transactions[0].plan_10b5_1 is True
+    assert parsed.promoted_events[0].plan_10b5_1 is True
     assert parsed.promoted_events[0].approximate_value == 2050
     assert parsed.promoted_events[0].aggregate_eligibility == "ELIGIBLE"
     assert {value.available_at for value in parsed.promoted_events} == {
@@ -1470,6 +1500,106 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
         value.reporting_owners == expected_owners
         for value in parsed.promoted_events
     )
+
+
+def test_form4_direct_false_plan_indicator_remains_authoritative() -> None:
+    document = FORM4_PLAN_FOOTNOTE.replace(
+        b"<transactionCode>S</transactionCode>",
+        b"<transactionCode>S</transactionCode>"
+        b"<tradingPlan10b5>0</tradingPlan10b5>",
+    )
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.transactions[0].plan_10b5_1 is False
+    assert parsed.promoted_events[0].plan_10b5_1 is False
+
+
+def test_form4_referenced_plan_footnote_sets_transaction_and_event() -> None:
+    parsed = parse_form4(FORM4_PLAN_FOOTNOTE, _form4_plan_filing())
+
+    assert len(parsed.transactions) == 1
+    assert len(parsed.promoted_events) == 1
+    assert parsed.transactions[0].plan_10b5_1 is True
+    assert parsed.promoted_events[0].plan_10b5_1 is True
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        pytest.param(
+            FORM4_PLAN_FOOTNOTE.replace(b'<footnoteId id="F1"/>', b""),
+            None,
+            id="unreferenced-plan-footnote",
+        ),
+        pytest.param(
+            FORM4_PLAN_FOOTNOTE.replace(
+                b'<footnoteId id="F1"/>', b'<footnoteId id="UNKNOWN"/>'
+            ),
+            None,
+            id="unknown-footnote-id",
+        ),
+        pytest.param(
+            FORM4_PLAN_FOOTNOTE.replace(
+                b'<footnoteId id="F1"/>', b"<footnoteId/>"
+            ),
+            None,
+            id="missing-footnote-id",
+        ),
+        pytest.param(
+            _with_form4_plan_footnote_text(
+                "The reporting person may consider adopting a Rule 10b5-1 "
+                "trading plan in the future."
+            ),
+            None,
+            id="unrelated-plan-language",
+        ),
+        pytest.param(
+            _with_form4_plan_footnote_text(
+                "This transaction was not executed pursuant to a Rule 10b5-1 "
+                "trading plan."
+            ),
+            False,
+            id="explicit-negative-plan-language",
+        ),
+        pytest.param(
+            _with_form4_plan_footnote_text(
+                "THIS TRANSACTION WAS SOLD UNDER A RULE 10B5\u20111 TRADING PLAN."
+            ),
+            True,
+            id="case-and-dash-normalization",
+        ),
+    ],
+)
+def test_form4_plan_footnote_matching_is_narrow_and_transaction_scoped(
+    document: bytes, expected: bool | None
+) -> None:
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.transactions[0].plan_10b5_1 is expected
+    assert parsed.promoted_events[0].plan_10b5_1 is expected
+
+
+def test_form4_plan_footnote_does_not_leak_to_another_transaction() -> None:
+    second_transaction = b"""
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-07-11</value></transactionDate>
+      <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>10</value></transactionShares>
+        <transactionPricePerShare><value>24</value></transactionPricePerShare>
+      </transactionAmounts>
+    </nonDerivativeTransaction>
+    """
+    document = FORM4_PLAN_FOOTNOTE.replace(
+        b"</nonDerivativeTable>",
+        second_transaction + b"</nonDerivativeTable>",
+    )
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert [value.plan_10b5_1 for value in parsed.transactions] == [True, None]
+    assert [value.plan_10b5_1 for value in parsed.promoted_events] == [True, None]
 
 
 def test_joint_form4_preserves_owner_scoped_roles_without_duplicate_events() -> None:
@@ -1565,6 +1695,27 @@ def test_collector_archives_all_form4_transactions_without_gemini(tmp_path: Path
         value["security_kind"] == "DERIVATIVE"
         for value in payload["normalized_transactions"]
     )
+
+
+def test_collector_archives_referenced_form4_plan_footnote_value(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    result = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(form4=FORM4_PLAN_FOOTNOTE),
+        archive=SECEDGARArchive(settings.archive_path),
+    ).collect(forms=("4",), max_filings=1)
+    payload = json.loads(
+        next((settings.archive_path / "form4").glob("*.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert result["form4_events"] == 1
+    assert payload["normalized_transactions"][0]["plan_10b5_1"] is True
+    assert payload["research_events"][0]["plan_10b5_1"] is True
 
 
 def test_collector_archives_all_joint_form4_owners_without_duplication(
