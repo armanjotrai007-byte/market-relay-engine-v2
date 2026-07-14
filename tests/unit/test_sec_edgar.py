@@ -425,12 +425,40 @@ def test_discovery_validates_mapping_and_parses_accessions() -> None:
         client, _issuer(), forms=("8-K", "4", "4/A"), collected_at=NOW
     )
     assert [filing.form_type for filing in filings] == ["8-K", "4", "4/A"]
-    assert filings[0].acceptance_at == datetime(2026, 7, 12, 10, 15, 30, tzinfo=UTC)
+    assert filings[0].acceptance_at == datetime(2026, 7, 12, 15, 15, 30, tzinfo=UTC)
     assert filings[2].amendment_of is None
     assert normalize_accession_number("000132165526000123") == "0001321655-26-000123"
     assert filing_document_url(
         "0001321655", "0001321655-26-000123", "form8k.htm"
     ).endswith("/1321655/000132165526000123/form8k.htm")
+
+
+def test_parse_timestamp_converts_compact_sec_est_to_utc() -> None:
+    assert sec_edgar_module._parse_timestamp("20260102123045") == datetime(
+        2026, 1, 2, 17, 30, 45, tzinfo=UTC
+    )
+
+
+def test_parse_timestamp_rolls_compact_sec_est_to_next_utc_date() -> None:
+    assert sec_edgar_module._parse_timestamp("20260102233045") == datetime(
+        2026, 1, 3, 4, 30, 45, tzinfo=UTC
+    )
+
+
+def test_parse_timestamp_preserves_iso_z_instant() -> None:
+    assert sec_edgar_module._parse_timestamp("2026-01-02T12:30:45Z") == datetime(
+        2026, 1, 2, 12, 30, 45, tzinfo=UTC
+    )
+
+
+def test_parse_timestamp_converts_iso_offset_to_utc() -> None:
+    assert sec_edgar_module._parse_timestamp(
+        "2026-01-02T12:30:45-05:00"
+    ) == datetime(2026, 1, 2, 17, 30, 45, tzinfo=UTC)
+
+
+def test_parse_timestamp_returns_none_for_malformed_value() -> None:
+    assert sec_edgar_module._parse_timestamp("20260102253045") is None
 
 
 @pytest.mark.parametrize(
@@ -1150,7 +1178,7 @@ def test_collector_archives_form4_acceptance_separately_from_availability(
         )
     )
 
-    acceptance_at = "2026-07-11T10:30:00+00:00"
+    acceptance_at = "2026-07-11T15:30:00+00:00"
     assert payload["filing"]["acceptance_at"] == acceptance_at
     assert payload["filing"]["collected_at"] == NOW.isoformat()
     assert {value["available_at"] for value in payload["research_events"]} == {

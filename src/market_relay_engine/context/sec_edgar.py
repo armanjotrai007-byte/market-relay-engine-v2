@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
 import html
@@ -52,6 +52,7 @@ EIGHT_K_EXTRACTION_VERSION = "SEC_8K_ITEMS_V2"
 EIGHT_K_TRUNCATION_POLICY = "HEAD_V1"
 
 _ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
+_EDGAR_ACCEPTANCE_TIMEZONE = timezone(timedelta(hours=-5), name="EST")
 _ITEM_RE = re.compile(
     r"(?im)^[ \t]*item[ \t]+([1-8]\.\d{2}|9\.01)[ \t]*[.:-]?[ \t]*(.*)$"
 )
@@ -1501,7 +1502,9 @@ def _parse_timestamp(value: object) -> datetime | None:
     raw = value.strip()
     try:
         if re.fullmatch(r"\d{14}", raw):
-            return datetime.strptime(raw, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
+            return datetime.strptime(raw, "%Y%m%d%H%M%S").replace(
+                tzinfo=_EDGAR_ACCEPTANCE_TIMEZONE
+            ).astimezone(UTC)
         return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(UTC)
     except ValueError:
         return None
