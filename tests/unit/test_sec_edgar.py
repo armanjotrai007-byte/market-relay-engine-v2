@@ -445,7 +445,7 @@ def test_discovery_validates_mapping_and_parses_accessions() -> None:
         client, _issuer(), forms=("8-K", "4", "4/A"), collected_at=NOW
     )
     assert [filing.form_type for filing in filings] == ["8-K", "4", "4/A"]
-    assert filings[0].acceptance_at == datetime(2026, 7, 12, 15, 15, 30, tzinfo=UTC)
+    assert filings[0].acceptance_at == datetime(2026, 7, 12, 14, 15, 30, tzinfo=UTC)
     assert filings[2].amendment_of is None
     assert normalize_accession_number("000132165526000123") == "0001321655-26-000123"
     assert filing_document_url(
@@ -453,13 +453,19 @@ def test_discovery_validates_mapping_and_parses_accessions() -> None:
     ).endswith("/1321655/000132165526000123/form8k.htm")
 
 
-def test_parse_timestamp_converts_compact_sec_est_to_utc() -> None:
+def test_parse_timestamp_converts_winter_compact_eastern_time_to_utc() -> None:
     assert sec_edgar_module._parse_timestamp("20260102123045") == datetime(
         2026, 1, 2, 17, 30, 45, tzinfo=UTC
     )
 
 
-def test_parse_timestamp_rolls_compact_sec_est_to_next_utc_date() -> None:
+def test_parse_timestamp_converts_summer_compact_eastern_time_to_utc() -> None:
+    assert sec_edgar_module._parse_timestamp("20260702123045") == datetime(
+        2026, 7, 2, 16, 30, 45, tzinfo=UTC
+    )
+
+
+def test_parse_timestamp_rolls_compact_eastern_time_to_next_utc_date() -> None:
     assert sec_edgar_module._parse_timestamp("20260102233045") == datetime(
         2026, 1, 3, 4, 30, 45, tzinfo=UTC
     )
@@ -479,6 +485,10 @@ def test_parse_timestamp_converts_iso_offset_to_utc() -> None:
 
 def test_parse_timestamp_returns_none_for_malformed_value() -> None:
     assert sec_edgar_module._parse_timestamp("20260102253045") is None
+
+
+def test_parse_timestamp_rejects_naive_iso_without_local_timezone_assumption() -> None:
+    assert sec_edgar_module._parse_timestamp("2026-01-02T12:30:45") is None
 
 
 @pytest.mark.parametrize(
@@ -635,6 +645,10 @@ def test_sec_raw_input_id_is_deterministic_and_filing_item_scoped() -> None:
     assert first.raw_input_id != other_item_request.raw_input_id
     assert first.raw_input_id == rebuilt.raw_input_id
     assert first.source_document_id == rebuilt.source_document_id
+    assert first.source_published_at == filing.acceptance_at == datetime(
+        2026, 7, 12, 14, 15, 30, tzinfo=UTC
+    )
+    assert first.collected_at == NOW
 
 
 def test_sec_raw_input_id_is_shared_by_document_request_and_questdb_lineage(
@@ -671,6 +685,9 @@ def test_sec_raw_input_id_is_shared_by_document_request_and_questdb_lineage(
     assert captured_documents[0].source_document_id == request.source_document_id
     assert row["source_document_id"] == request.source_document_id
     assert row["raw_input_hash"] == request.raw_input_hash == section.excerpt_hash
+    assert captured_documents[0].source_published_at == request.source_published_at
+    assert row["source_published_at"] == request.source_published_at
+    assert row["collected_at"] == request.collected_at == NOW
 
 
 def test_archive_immutable_objects_sections_and_atomic_manifest(tmp_path: Path) -> None:
@@ -1328,7 +1345,7 @@ def test_collector_archives_form4_acceptance_separately_from_availability(
         )
     )
 
-    acceptance_at = "2026-07-11T15:30:00+00:00"
+    acceptance_at = "2026-07-11T14:30:00+00:00"
     assert payload["filing"]["acceptance_at"] == acceptance_at
     assert payload["filing"]["collected_at"] == NOW.isoformat()
     assert {value["available_at"] for value in payload["research_events"]} == {
