@@ -727,11 +727,9 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
             price = _xml_number(transaction, "transactionPricePerShare")
             promoted_type: DeterministicContextEventType | None = None
             if security_kind == "NON_DERIVATIVE" and code == "P":
-                promoted_type = (
-                    DeterministicContextEventType.SEC_FORM4_OPEN_MARKET_PURCHASE
-                )
+                promoted_type = DeterministicContextEventType.SEC_FORM4_PURCHASE
             elif security_kind == "NON_DERIVATIVE" and code == "S":
-                promoted_type = DeterministicContextEventType.SEC_FORM4_OPEN_MARKET_SALE
+                promoted_type = DeterministicContextEventType.SEC_FORM4_SALE
             filing_plan_fallback: bool | None = None
             if filing_plan_10b5_1 is False:
                 filing_plan_fallback = False
@@ -860,6 +858,7 @@ class SECEDGARCollector:
         manifest = self.archive.load_manifest()
         counts = {
             "discovered": 0,
+            "actionable_filings": 0,
             "archived": 0,
             "classifications": 0,
             "persistent_suppressions": 0,
@@ -882,18 +881,20 @@ class SECEDGARCollector:
                 counts["mapping_drift"] += 1
                 continue
             for filing in filings:
-                if counts["discovered"] >= max_filings:
-                    return counts
                 counts["discovered"] += 1
                 if dry_run:
+                    if counts["discovered"] >= max_filings:
+                        return counts
                     continue
+                had_manifest_state = filing.accession_number in manifest["filings"]
                 content, document_hash, state, was_archived = self._load_or_archive(
                     filing, manifest
                 )
                 effective_filing = _filing_with_archived_collected_at(filing, state)
                 counts["archived"] += int(was_archived)
+                filing_did_work = was_archived or not had_manifest_state
                 if effective_filing.form_type.startswith("8-K"):
-                    counts_for_filing = self._process_8k(
+                    counts_for_filing, processing_did_work = self._process_8k(
                         effective_filing,
                         document_hash,
                         content,
@@ -904,9 +905,15 @@ class SECEDGARCollector:
                     for name, value in counts_for_filing.items():
                         counts[name] += value
                 else:
-                    counts["form4_events"] += self._process_form4(
+                    form4_events, processing_did_work = self._process_form4(
                         effective_filing, document_hash, content, state, manifest
                     )
+                    counts["form4_events"] += form4_events
+                filing_did_work = filing_did_work or processing_did_work
+                if filing_did_work:
+                    counts["actionable_filings"] += 1
+                    if counts["actionable_filings"] >= max_filings:
+                        return counts
         return counts
 
     def _load_or_archive(
@@ -1026,9 +1033,15 @@ class SECEDGARCollector:
         state: dict[str, Any],
         manifest: dict[str, Any],
         write_questdb: bool,
-    ) -> dict[str, int]:
+    ) -> tuple[dict[str, int], bool]:
+        normalized_path = self.archive.objects / document_hash / "normalized.txt"
+        work_performed = not normalized_path.exists()
         self.archive.archive_normalized_text(
             document_hash, _normalize_document(content)
+        )
+        section_directory = self.archive.objects / document_hash / "sections"
+        existing_section_paths = (
+            set(section_directory.iterdir()) if section_directory.exists() else set()
         )
         counts = {
             "classifications": 0,
@@ -1037,12 +1050,15 @@ class SECEDGARCollector:
         }
         for section in extract_relevant_8k_sections(content):
             full_hash = _text_hash(section.text)
-            self.archive.archive_normalized_section(
+            section_path = self.archive.archive_normalized_section(
                 document_hash,
                 item_number=section.item_number,
                 section_hash=full_hash,
                 text=section.text,
             )
+            if section_path not in existing_section_paths:
+                work_performed = True
+                existing_section_paths.add(section_path)
             if self.classifier is None or self.ai_settings is None:
                 continue
             prepared = prepare_8k_section(
@@ -1069,6 +1085,7 @@ class SECEDGARCollector:
                 prepared,
                 self.ai_settings.prompt_version,
             )
+            work_performed = True
             result = self.classifier.classify(request)
             response = result.response
             counts["classifications"] += 1
@@ -1106,7 +1123,7 @@ class SECEDGARCollector:
                 self._write_transient_attempt(
                     request, response, result.validation_result
                 )
-        return counts
+        return counts, work_performed
 
     def _process_form4(
         self,
@@ -1115,10 +1132,10 @@ class SECEDGARCollector:
         content: bytes,
         state: dict[str, Any],
         manifest: dict[str, Any],
-    ) -> int:
+    ) -> tuple[int, bool]:
         path = self.archive.form4 / f"{filing.accession_number}.json"
         if path.exists():
-            return 0
+            return 0, False
         parsed = parse_form4(content, filing)
         payload = {
             "filing": _filing_metadata(
@@ -1144,7 +1161,7 @@ class SECEDGARCollector:
             ],
         }
         self.archive.write_form4_once(filing.accession_number, payload)
-        return len(parsed.promoted_events)
+        return len(parsed.promoted_events), True
 
     def _retry_pending_ledger(self, manifest: dict[str, Any]) -> int:
         """Retry saved safe rows without requiring SEC text or Gemini."""

@@ -154,8 +154,9 @@ Offline/default validation makes no network call:
 python scripts/check_sec_edgar.py
 ```
 
-The manually gated read-only SEC smoke check has a strict one-filing cap and no
-broker, Gemini, or QuestDB action:
+The manually gated read-only SEC smoke check has a one-actionable-filing cap and
+no broker, Gemini, or QuestDB action. In dry-run mode the same option caps raw
+discoveries because no processing occurs:
 
 ```powershell
 python scripts/check_sec_edgar.py --live --ticker LMT --form 8-K --max-filings 1

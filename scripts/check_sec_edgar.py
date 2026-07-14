@@ -42,8 +42,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--form", action="append", choices=("8-K", "8-K/A", "4", "4/A"), help="SEC form; repeat to select several.")
     parser.add_argument("--start-date", type=_date_argument, help="Inclusive filing date, YYYY-MM-DD.")
     parser.add_argument("--end-date", type=_date_argument, help="Inclusive filing date, YYYY-MM-DD.")
-    parser.add_argument("--max-filings", type=int, default=1, help="Strict maximum filings per live run (default: 1).")
-    parser.add_argument("--dry-run", action="store_true", help="Discover only: no archive, Gemini, or QuestDB writes.")
+    parser.add_argument(
+        "--max-filings",
+        type=int,
+        default=1,
+        help=(
+            "Maximum actionable filings per live run; dry-run limits raw "
+            "discoveries (default: 1)."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Discover only: no archive, Gemini, or QuestDB writes; "
+            "--max-filings limits raw discoveries."
+        ),
+    )
     parser.add_argument("--classify", action="store_true", help="Explicitly enable existing Gemini classification for eligible bounded 8-K sections.")
     parser.add_argument("--questdb", action="store_true", help="Explicitly write classification-attempt metadata to QuestDB.")
     return parser
@@ -124,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     print("SEC EDGAR live check PASS")
     print("mode=research_only")
     print(f"discovered={result['discovered']}")
+    print(f"actionable_filings={result['actionable_filings']}")
     print(f"archived={result['archived']}")
     print(f"classifications={result['classifications']}")
     print(f"persistent_suppressions={result['persistent_suppressions']}")

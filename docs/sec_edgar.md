@@ -72,6 +72,10 @@ non-derivative and derivative transactions. Only non-derivative transaction
 codes `P` and `S` are promoted as initial research events; derivative `P`/`S`,
 `M`, `C`, `O`, `X`, grants, withholding, gifts, and other codes remain archived
 without being treated as equivalent common-share purchases or sales.
+The promoted event types are the venue-neutral `SEC_FORM4_PURCHASE` and
+`SEC_FORM4_SALE`. [SEC defines P/S](https://www.sec.gov/edgar/searchedgar/ownershipformcodes.html)
+as open-market or private transactions. PR36 does not infer transaction venue
+from those codes or from footnotes.
 
 An unresolved `4/A` is retained with
 `aggregate_eligibility=AMENDMENT_UNRESOLVED` and excluded from default insider
@@ -97,8 +101,8 @@ Offline validation (no network):
 python scripts/check_sec_edgar.py
 ```
 
-Manually gated, bounded SEC read smoke check (one filing; no Gemini, QuestDB, or
-broker action):
+Manually gated, bounded SEC read smoke check (one actionable filing; no Gemini,
+QuestDB, or broker action):
 
 ```powershell
 python scripts/check_sec_edgar.py --live --ticker LMT --form 8-K --max-filings 1
@@ -106,12 +110,18 @@ python scripts/check_sec_edgar.py --live --ticker LMT --form 8-K --max-filings 1
 
 The command uses the ignored local `.env`, performs SEC GET requests, and may
 write the local immutable archive. It does not mutate SEC or any trading system.
+In normal mode, `--max-filings` limits filings for which this run performs
+missing archive, normalization, or classification work. Completed accessions
+may be examined without consuming that actionable cap.
 
 Discover only, without archive writes:
 
 ```powershell
 python scripts/check_sec_edgar.py --live --ticker PLTR --form 4 --max-filings 1 --dry-run
 ```
+
+Because dry-run performs no processing from which to determine actionability,
+its `--max-filings` value limits raw discoveries instead.
 
 Gemini classification and QuestDB writing are separate explicit opt-ins:
 

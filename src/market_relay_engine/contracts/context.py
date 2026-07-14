@@ -63,8 +63,8 @@ class ContextClassificationEventType(str, Enum):
 class DeterministicContextEventType(str, Enum):
     """Event vocabulary reserved for deterministic parsers, never Gemini."""
 
-    SEC_FORM4_OPEN_MARKET_PURCHASE = "SEC_FORM4_OPEN_MARKET_PURCHASE"
-    SEC_FORM4_OPEN_MARKET_SALE = "SEC_FORM4_OPEN_MARKET_SALE"
+    SEC_FORM4_PURCHASE = "SEC_FORM4_PURCHASE"
+    SEC_FORM4_SALE = "SEC_FORM4_SALE"
 
 
 class ContextRiskLevel(str, Enum):

@@ -341,6 +341,33 @@ def _with_form4_filing_plan(document: bytes, value: str | None) -> bytes:
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
+def _submissions_with_recent(
+    *rows: tuple[str, str, str, str, str],
+) -> dict[str, object]:
+    payload = deepcopy(SUBMISSIONS)
+    recent = payload["filings"]["recent"]
+    for index, name in enumerate(
+        (
+            "form",
+            "filingDate",
+            "accessionNumber",
+            "primaryDocument",
+            "acceptanceDateTime",
+        )
+    ):
+        recent[name] = [row[index] for row in rows]
+    return payload
+
+
+def _multiple_eight_k_submissions(count: int = 3) -> dict[str, object]:
+    rows = (
+        ("8-K", "2026-07-12", "0001321655-26-000123", "newest.htm", "20260712101530"),
+        ("8-K", "2026-07-11", "0001321655-26-000122", "middle.htm", "20260711101530"),
+        ("8-K", "2026-07-10", "0001321655-26-000121", "oldest.htm", "20260710101530"),
+    )
+    return _submissions_with_recent(*rows[:count])
+
+
 def _archive_first_eight_k(tmp_path: Path):
     settings = _settings(tmp_path)
     archive = SECEDGARArchive(settings.archive_path)
@@ -798,6 +825,208 @@ def test_first_time_8k_processing_uses_original_collection_time_downstream(
     assert writer.initial_calls[0][0].collected_at == NOW
     assert metadata["collected_at"] == state["collected_at"] == NOW.isoformat()
     assert ledger_collected_at == NOW
+
+
+def test_actionable_cap_skips_completed_filings_in_discovery_order(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    archive = SECEDGARArchive(settings.archive_path)
+    client = FakeSECClient(submissions=_multiple_eight_k_submissions())
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=archive,
+    )
+
+    first = collector.collect(forms=("8-K",), max_filings=2)
+
+    assert first["discovered"] == 2
+    assert first["actionable_filings"] == 2
+    assert first["archived"] == 2
+    assert not (archive.filings / "0001321655-26-000121.json").exists()
+
+    second = collector.collect(forms=("8-K",), max_filings=1)
+
+    assert second["discovered"] == 3
+    assert second["actionable_filings"] == 1
+    assert second["archived"] == 1
+    assert (archive.filings / "0001321655-26-000121.json").exists()
+    assert [url.rsplit("/", 1)[-1] for url in client.bytes_calls] == [
+        "newest.htm",
+        "middle.htm",
+        "oldest.htm",
+    ]
+
+
+def test_missing_form4_normalization_consumes_one_actionable_slot(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    archive = SECEDGARArchive(settings.archive_path)
+    client = FakeSECClient()
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=archive,
+    )
+    filing = discover_filings(
+        client, _issuer(), forms=("4",), collected_at=NOW
+    )[0]
+    collector._load_or_archive(filing, archive.load_manifest())
+    client.bytes_calls.clear()
+
+    result = collector.collect(forms=("4",), max_filings=1)
+
+    assert result["discovered"] == 1
+    assert result["actionable_filings"] == 1
+    assert result["archived"] == 0
+    assert result["form4_events"] == 2
+    assert (archive.form4 / f"{filing.accession_number}.json").exists()
+    assert client.bytes_calls == []
+
+
+def test_classification_work_consumes_cap_but_suppression_does_not(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    archive = SECEDGARArchive(settings.archive_path)
+    client = FakeSECClient(
+        submissions=_multiple_eight_k_submissions(2),
+        eight_k=SINGLE_EIGHT_K,
+    )
+    SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=archive,
+    ).collect(forms=("8-K",), max_filings=1)
+    classifier = FakeClassifier(
+        [ContextClassificationStatus.VALID, ContextClassificationStatus.VALID]
+    )
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=archive,
+        classifier=classifier,
+        ai_settings=_ai_settings(),
+    )
+
+    classified = collector.collect(forms=("8-K",), max_filings=1)
+    caught_up = collector.collect(forms=("8-K",), max_filings=1)
+
+    assert classified["discovered"] == 1
+    assert classified["actionable_filings"] == 1
+    assert classified["archived"] == 0
+    assert classified["classifications"] == 1
+    assert caught_up["discovered"] == 2
+    assert caught_up["actionable_filings"] == 1
+    assert caught_up["archived"] == 1
+    assert caught_up["classifications"] == 1
+    assert caught_up["persistent_suppressions"] == 1
+    assert len(classifier.requests) == 2
+
+
+def test_provider_failure_counts_as_retryable_actionable_work(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    archive = SECEDGARArchive(settings.archive_path)
+    client = FakeSECClient(eight_k=SINGLE_EIGHT_K)
+    SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=archive,
+    ).collect(forms=("8-K",), max_filings=1)
+    classifier = FakeClassifier(
+        [
+            ContextClassificationStatus.PROVIDER_FAILED,
+            ContextClassificationStatus.VALID,
+        ]
+    )
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=archive,
+        classifier=classifier,
+        ai_settings=_ai_settings(),
+    )
+
+    failed = collector.collect(forms=("8-K",), max_filings=1)
+
+    assert failed["discovered"] == 1
+    assert failed["actionable_filings"] == 1
+    assert failed["archived"] == 0
+    assert failed["classifications"] == 1
+    state = next(iter(archive.load_manifest()["filings"].values()))
+    assert state["classifications"] == {}
+
+    retried = collector.collect(forms=("8-K",), max_filings=1)
+
+    assert retried["actionable_filings"] == 1
+    assert retried["classifications"] == 1
+    assert len(classifier.requests) == 2
+
+
+def test_missing_normalized_8k_artifact_consumes_actionable_slot(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    archive = SECEDGARArchive(settings.archive_path)
+    client = FakeSECClient(submissions=_multiple_eight_k_submissions(2))
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=archive,
+    )
+    collector.collect(forms=("8-K",), max_filings=1)
+    document_hash = next(iter(archive.load_manifest()["filings"].values()))[
+        "document_hash"
+    ]
+    (archive.objects / document_hash / "normalized.txt").unlink()
+
+    result = collector.collect(forms=("8-K",), max_filings=1)
+
+    assert result["discovered"] == 1
+    assert result["actionable_filings"] == 1
+    assert result["archived"] == 0
+    assert not (archive.filings / "0001321655-26-000122.json").exists()
+
+
+def test_dry_run_caps_raw_discovery_without_performing_work(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    client = FakeSECClient(submissions=_multiple_eight_k_submissions())
+    classifier = FakeClassifier([ContextClassificationStatus.VALID])
+    writer = FakeWriter()
+
+    result = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=client,
+        archive=SECEDGARArchive(settings.archive_path),
+        classifier=classifier,
+        ai_settings=_ai_settings(),
+        ledger_writer=writer,
+    ).collect(
+        forms=("8-K",),
+        max_filings=2,
+        dry_run=True,
+        write_questdb=True,
+    )
+
+    assert result["discovered"] == 2
+    assert result["actionable_filings"] == 0
+    assert result["archived"] == 0
+    assert result["classifications"] == 0
+    assert client.bytes_calls == []
+    assert classifier.requests == []
+    assert writer.initial_calls == []
+    assert writer.row_calls == []
+    assert not settings.archive_path.exists()
 
 
 def test_filing_archive_recovers_missing_manifest_without_redownload(
@@ -1494,9 +1723,15 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
         ("DERIVATIVE", "M"),
     ]
     assert [value.event_type for value in parsed.promoted_events] == [
-        DeterministicContextEventType.SEC_FORM4_OPEN_MARKET_PURCHASE,
-        DeterministicContextEventType.SEC_FORM4_OPEN_MARKET_SALE,
+        DeterministicContextEventType.SEC_FORM4_PURCHASE,
+        DeterministicContextEventType.SEC_FORM4_SALE,
     ]
+    assert b"open market" not in FORM4.lower()
+    assert b"private" not in FORM4.lower()
+    assert all(
+        "OPEN_MARKET" not in value.event_type.value
+        for value in parsed.promoted_events
+    )
     assert parsed.transactions[3].underlying_shares == 10
     assert parsed.transactions[3].promoted_event_type is None
     assert parsed.transactions[0].plan_10b5_1 is True
@@ -1513,6 +1748,60 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
         for value in parsed.promoted_events
     )
     assert parsed.filing_plan_10b5_1 is None
+
+
+def test_form4_private_transaction_footnote_keeps_generic_sale_event() -> None:
+    document = _with_form4_plan_footnote_text(
+        "The reported sale was a privately negotiated transaction."
+    )
+
+    parsed = parse_form4(document, _form4_plan_filing())
+
+    assert parsed.transactions[0].transaction_code == "S"
+    assert parsed.promoted_events[0].event_type is (
+        DeterministicContextEventType.SEC_FORM4_SALE
+    )
+    assert "OPEN_MARKET" not in parsed.promoted_events[0].event_type.value
+
+
+def test_form4_documentation_uses_venue_neutral_event_terms() -> None:
+    contracts = (REPO_ROOT / "docs" / "data_contracts.md").read_text(
+        encoding="utf-8"
+    )
+    sec_docs = (REPO_ROOT / "docs" / "sec_edgar.md").read_text(encoding="utf-8")
+
+    assert "SEC_FORM4_PURCHASE" in contracts
+    assert "SEC_FORM4_SALE" in contracts
+    assert "SEC_FORM4_OPEN_MARKET" not in contracts + sec_docs
+    assert "PR36 does not infer transaction venue" in sec_docs
+
+
+@pytest.mark.parametrize("code", ["P", "S"])
+def test_form4_derivative_p_s_remain_unpromoted(code: str) -> None:
+    root = ET.fromstring(FORM4)
+    derivative = next(
+        element
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "derivativeTransaction"
+    )
+    transaction_code = next(
+        element
+        for element in derivative.iter()
+        if element.tag.rsplit("}", 1)[-1] == "transactionCode"
+    )
+    transaction_code.text = code
+
+    parsed = parse_form4(
+        ET.tostring(root, encoding="utf-8", xml_declaration=True),
+        _form4_plan_filing(),
+    )
+    derivative_transaction = next(
+        value for value in parsed.transactions if value.security_kind == "DERIVATIVE"
+    )
+
+    assert derivative_transaction.transaction_code == code
+    assert derivative_transaction.promoted_event_type is None
+    assert len(parsed.promoted_events) == 2
 
 
 def test_form4_direct_true_plan_indicator_overrides_other_evidence() -> None:
@@ -1831,6 +2120,14 @@ def test_collector_archives_all_form4_transactions_without_gemini(tmp_path: Path
     )
     assert len(payload["normalized_transactions"]) == 5
     assert len(payload["research_events"]) == 2
+    assert [value["event_type"] for value in payload["research_events"]] == [
+        "SEC_FORM4_PURCHASE",
+        "SEC_FORM4_SALE",
+    ]
+    assert all(
+        "OPEN_MARKET" not in value["event_type"]
+        for value in payload["research_events"]
+    )
     assert payload["reporting_owners"] == [
         {
             "cik": None,
