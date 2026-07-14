@@ -8,7 +8,7 @@ facts. It never updates risk, model, order, or execution state.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime
 from email.utils import parsedate_to_datetime
 from hashlib import sha256
@@ -258,13 +258,21 @@ class Form4Transaction:
 
 
 @dataclass(frozen=True, kw_only=True)
+class Form4ReportingOwner:
+    cik: str | None
+    name: str | None
+    roles: tuple[str, ...]
+    officer_title: str | None
+    other_relationship_text: str | None
+
+
+@dataclass(frozen=True, kw_only=True)
 class Form4ResearchEvent:
     event_type: DeterministicContextEventType
     issuer_ticker: str
     issuer_cik: str
     accession_number: str
-    reporting_owner_name: str | None
-    roles: tuple[str, ...]
+    reporting_owners: tuple[Form4ReportingOwner, ...]
     transaction_date: date | None
     available_at: datetime | None
     transaction_code: str
@@ -283,8 +291,7 @@ class Form4ResearchEvent:
 class ParsedForm4:
     issuer_ticker: str
     issuer_cik: str
-    reporting_owner_name: str | None
-    roles: tuple[str, ...]
+    reporting_owners: tuple[Form4ReportingOwner, ...]
     transactions: tuple[Form4Transaction, ...]
     promoted_events: tuple[Form4ResearchEvent, ...]
     is_amendment: bool
@@ -644,6 +651,25 @@ def prepare_8k_section(
     )
 
 
+def _parse_form4_reporting_owner(element: ET.Element) -> Form4ReportingOwner:
+    return Form4ReportingOwner(
+        cik=_xml_text(element, "rptOwnerCik"),
+        name=_xml_text(element, "rptOwnerName"),
+        roles=tuple(
+            role
+            for flag, role in (
+                ("isDirector", "DIRECTOR"),
+                ("isOfficer", "OFFICER"),
+                ("isTenPercentOwner", "TEN_PERCENT_OWNER"),
+                ("isOther", "OTHER"),
+            )
+            if _xml_text(element, flag) == "1"
+        ),
+        officer_title=_xml_text(element, "officerTitle"),
+        other_relationship_text=_xml_text(element, "otherText"),
+    )
+
+
 def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
     """Parse official Form 4 XML without semantic inference or Gemini."""
     try:
@@ -656,16 +682,10 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
         raise SECMappingDriftError(
             f"SEC Form 4 issuer identity drift for {filing.ticker}; manual review required"
         )
-    owner_name = _xml_text(root, "rptOwnerName")
-    roles = tuple(
-        role
-        for flag, role in (
-            ("isDirector", "DIRECTOR"),
-            ("isOfficer", "OFFICER"),
-            ("isTenPercentOwner", "TEN_PERCENT_OWNER"),
-            ("isOther", "OTHER"),
-        )
-        if _xml_text(root, flag) == "1"
+    reporting_owners = tuple(
+        _parse_form4_reporting_owner(element)
+        for element in root
+        if element.tag.rsplit("}", 1)[-1] == "reportingOwner"
     )
     is_amendment = filing.form_type == "4/A"
     if not is_amendment:
@@ -728,8 +748,7 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
                         issuer_ticker=ticker,
                         issuer_cik=cik,
                         accession_number=filing.accession_number,
-                        reporting_owner_name=owner_name,
-                        roles=roles,
+                        reporting_owners=reporting_owners,
                         transaction_date=parsed.transaction_date,
                         available_at=filing.collected_at,
                         transaction_code=code or "",
@@ -749,8 +768,7 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
     return ParsedForm4(
         issuer_ticker=ticker,
         issuer_cik=cik,
-        reporting_owner_name=owner_name,
-        roles=roles,
+        reporting_owners=reporting_owners,
         transactions=tuple(transactions),
         promoted_events=tuple(events),
         is_amendment=is_amendment,
@@ -840,10 +858,11 @@ class SECEDGARCollector:
                 content, document_hash, state, was_archived = self._load_or_archive(
                     filing, manifest
                 )
+                effective_filing = _filing_with_archived_collected_at(filing, state)
                 counts["archived"] += int(was_archived)
-                if filing.form_type.startswith("8-K"):
+                if effective_filing.form_type.startswith("8-K"):
                     counts_for_filing = self._process_8k(
-                        filing,
+                        effective_filing,
                         document_hash,
                         content,
                         state,
@@ -854,7 +873,7 @@ class SECEDGARCollector:
                         counts[name] += value
                 else:
                     counts["form4_events"] += self._process_form4(
-                        filing, document_hash, content, state, manifest
+                        effective_filing, document_hash, content, state, manifest
                     )
         return counts
 
@@ -1078,8 +1097,10 @@ class SECEDGARCollector:
             ),
             "issuer_ticker": parsed.issuer_ticker,
             "issuer_cik": parsed.issuer_cik,
-            "reporting_owner_name": parsed.reporting_owner_name,
-            "roles": list(parsed.roles),
+            "reporting_owners": [
+                _form4_reporting_owner_payload(value)
+                for value in parsed.reporting_owners
+            ],
             "is_amendment": parsed.is_amendment,
             "amends_accession": parsed.amends_accession,
             "normalized_transactions": [
@@ -1374,6 +1395,36 @@ def _filing_metadata(
     }
 
 
+def _filing_with_archived_collected_at(
+    filing: SECFiling, state: Mapping[str, Any]
+) -> SECFiling:
+    raw = state.get("collected_at")
+    if not isinstance(raw, str) or not raw.strip():
+        raise SECArchiveError("SEC archived collected_at is missing")
+    try:
+        parsed = datetime.fromisoformat(raw.strip().replace("Z", "+00:00"))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise SECArchiveError(
+                "SEC archived collected_at must be timezone-aware"
+            )
+        collected_at = parsed.astimezone(UTC)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise SECArchiveError(
+            "SEC archived collected_at cannot be normalized to UTC"
+        ) from exc
+    return replace(filing, collected_at=collected_at)
+
+
+def _form4_reporting_owner_payload(value: Form4ReportingOwner) -> dict[str, Any]:
+    return {
+        "cik": value.cik,
+        "name": value.name,
+        "roles": list(value.roles),
+        "officer_title": value.officer_title,
+        "other_relationship_text": value.other_relationship_text,
+    }
+
+
 def _form4_transaction_payload(value: Form4Transaction) -> dict[str, Any]:
     return {
         "security_kind": value.security_kind,
@@ -1405,8 +1456,10 @@ def _form4_event_payload(value: Form4ResearchEvent) -> dict[str, Any]:
         "issuer_ticker": value.issuer_ticker,
         "issuer_cik": value.issuer_cik,
         "accession_number": value.accession_number,
-        "reporting_owner_name": value.reporting_owner_name,
-        "roles": list(value.roles),
+        "reporting_owners": [
+            _form4_reporting_owner_payload(owner)
+            for owner in value.reporting_owners
+        ],
         "transaction_date": _date_iso(value.transaction_date),
         "available_at": _iso(value.available_at),
         "transaction_code": value.transaction_code,
@@ -1616,6 +1669,7 @@ __all__ = [
     "EIGHT_K_TRUNCATION_POLICY",
     "MAX_SEC_REQUEST_RATE_PER_SECOND",
     "EightKSection",
+    "Form4ReportingOwner",
     "Form4ResearchEvent",
     "Form4Transaction",
     "ParsedForm4",

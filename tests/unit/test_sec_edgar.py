@@ -20,6 +20,7 @@ from market_relay_engine.common.config import ConfigValidationError, load_yaml_c
 from market_relay_engine.context.sec_edgar import (
     EIGHT_K_EXTRACTION_VERSION,
     EIGHT_K_TRUNCATION_POLICY,
+    Form4ReportingOwner,
     SECEDGARCollector,
     SECEDGARConfigurationError,
     SECEDGARFairAccessError,
@@ -60,6 +61,7 @@ NOW = datetime(2026, 7, 13, 14, 30, tzinfo=UTC)
 FIXTURE_DIR = REPO_ROOT / "tests" / "fixtures" / "sec_edgar"
 EIGHT_K = (FIXTURE_DIR / "eight_k.html").read_bytes()
 FORM4 = (FIXTURE_DIR / "form4.xml").read_bytes()
+FORM4_JOINT = (FIXTURE_DIR / "form4_joint.xml").read_bytes()
 SUBMISSIONS = json.loads(
     (FIXTURE_DIR / "submissions.json").read_text(encoding="utf-8")
 )
@@ -315,12 +317,12 @@ def _archive_first_eight_k(tmp_path: Path):
     return archive, filing, client, result
 
 
-def _crash_after_filing_metadata(tmp_path: Path):
+def _crash_after_filing_metadata(tmp_path: Path, *, form_type: str = "8-K"):
     settings = _settings(tmp_path)
     crash_archive = CrashBeforeManifestArchive(settings.archive_path)
     client = FakeSECClient()
     filing = discover_filings(
-        client, _issuer(), forms=("8-K",), collected_at=NOW
+        client, _issuer(), forms=(form_type,), collected_at=NOW
     )[0]
     with pytest.raises(RuntimeError, match="simulated crash before manifest save"):
         SECEDGARCollector(
@@ -722,6 +724,42 @@ def test_first_time_filing_archival_still_writes_durable_state(tmp_path: Path) -
     assert state["collected_at"] == NOW.isoformat()
 
 
+def test_first_time_8k_processing_uses_original_collection_time_downstream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sec_edgar_module, "utc_now", lambda: NOW)
+    settings = _settings(tmp_path)
+    archive = SECEDGARArchive(settings.archive_path)
+    classifier = FakeClassifier([ContextClassificationStatus.VALID])
+    writer = FakeWriter()
+
+    result = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(eight_k=SINGLE_EIGHT_K),
+        archive=archive,
+        classifier=classifier,
+        ai_settings=_ai_settings(),
+        ledger_writer=writer,
+    ).collect(forms=("8-K",), max_filings=1, write_questdb=True)
+
+    assert result["classifications"] == 1
+    request = classifier.requests[0]
+    manifest = archive.load_manifest()
+    state = next(iter(manifest["filings"].values()))
+    saved = next(iter(state["classifications"].values()))
+    metadata = archive.read_filing_metadata(saved["accession_number"])
+    assert metadata is not None
+    ledger_collected_at = datetime.fromisoformat(
+        saved["ledger_row"]["collected_at"].replace("Z", "+00:00")
+    )
+
+    assert request.collected_at == NOW
+    assert writer.initial_calls[0][0].collected_at == NOW
+    assert metadata["collected_at"] == state["collected_at"] == NOW.isoformat()
+    assert ledger_collected_at == NOW
+
+
 def test_filing_archive_recovers_missing_manifest_without_redownload(
     tmp_path: Path,
 ) -> None:
@@ -763,6 +801,141 @@ def test_filing_archive_recovers_missing_manifest_without_redownload(
     assert state["collected_at"] == original_metadata["collected_at"]
     assert state["collected_at"] == NOW.isoformat()
     assert archive.load_manifest()["filings"][filing.accession_number] == state
+
+
+def test_recovery_preserves_archived_collection_time_for_8k_and_suppression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, filing = _crash_after_filing_metadata(tmp_path)
+    later = NOW + timedelta(minutes=5)
+    monkeypatch.setattr(sec_edgar_module, "utc_now", lambda: later)
+    settings = _settings(tmp_path)
+    classifier = FakeClassifier(
+        [ContextClassificationStatus.VALID, ContextClassificationStatus.VALID]
+    )
+    writer = FakeWriter()
+    recovery_client = FakeSECClient()
+
+    first = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=recovery_client,
+        archive=archive,
+        classifier=classifier,
+        ai_settings=_ai_settings(),
+        ledger_writer=writer,
+    ).collect(forms=("8-K",), max_filings=1, write_questdb=True)
+
+    assert first["classifications"] == 2
+    assert recovery_client.bytes_calls == []
+    assert {request.requested_at for request in classifier.requests} == {later}
+    assert {request.collected_at for request in classifier.requests} == {NOW}
+    assert {call[0].collected_at for call in writer.initial_calls} == {NOW}
+    metadata = archive.read_filing_metadata(filing.accession_number)
+    assert metadata is not None
+    manifest = archive.load_manifest()
+    state = manifest["filings"][filing.accession_number]
+    saved = state["classifications"].values()
+    ledger_times = {
+        datetime.fromisoformat(
+            value["ledger_row"]["collected_at"].replace("Z", "+00:00")
+        )
+        for value in saved
+    }
+    assert metadata["collected_at"] == state["collected_at"] == NOW.isoformat()
+    assert ledger_times == {NOW}
+
+    monkeypatch.setattr(
+        sec_edgar_module, "utc_now", lambda: later + timedelta(minutes=5)
+    )
+    second = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(),
+        archive=archive,
+        classifier=classifier,
+        ai_settings=_ai_settings(),
+    ).collect(forms=("8-K",), max_filings=1)
+
+    assert second["classifications"] == 0
+    assert second["persistent_suppressions"] == 2
+    assert len(classifier.requests) == 2
+
+
+def test_recovery_preserves_archived_collection_time_for_form4_availability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, filing = _crash_after_filing_metadata(tmp_path, form_type="4")
+    monkeypatch.setattr(
+        sec_edgar_module, "utc_now", lambda: NOW + timedelta(minutes=5)
+    )
+    recovery_client = FakeSECClient()
+
+    result = SECEDGARCollector(
+        settings=_settings(tmp_path),
+        issuers=(_issuer(),),
+        client=recovery_client,
+        archive=archive,
+    ).collect(forms=("4",), max_filings=1)
+
+    assert result["form4_events"] == 2
+    assert recovery_client.bytes_calls == []
+    payload = json.loads(
+        (archive.form4 / f"{filing.accession_number}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest = archive.load_manifest()
+    assert (
+        payload["filing"]["collected_at"]
+        == manifest["filings"][filing.accession_number]["collected_at"]
+        == NOW.isoformat()
+    )
+    assert {event["available_at"] for event in payload["research_events"]} == {
+        NOW.isoformat()
+    }
+
+
+@pytest.mark.parametrize(
+    "archived_collected_at",
+    [
+        pytest.param(None, id="missing"),
+        pytest.param("not-a-timestamp", id="malformed"),
+        pytest.param("2026-07-13T14:30:00", id="timezone-naive"),
+        pytest.param(
+            "9999-12-31T23:59:59-23:59", id="utc-normalization-overflow"
+        ),
+    ],
+)
+def test_recovery_rejects_invalid_archived_collection_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    archived_collected_at: str | None,
+) -> None:
+    archive, filing = _crash_after_filing_metadata(tmp_path)
+    metadata = archive.read_filing_metadata(filing.accession_number)
+    assert metadata is not None
+    if archived_collected_at is None:
+        metadata.pop("collected_at")
+    else:
+        metadata["collected_at"] = archived_collected_at
+    (archive.filings / f"{filing.accession_number}.json").write_text(
+        json.dumps(metadata, sort_keys=True, indent=2, ensure_ascii=True) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sec_edgar_module, "utc_now", lambda: NOW + timedelta(minutes=5)
+    )
+    recovery_client = FakeSECClient()
+
+    with pytest.raises(SECArchiveError):
+        SECEDGARCollector(
+            settings=_settings(tmp_path),
+            issuers=(_issuer(),),
+            client=recovery_client,
+            archive=archive,
+        ).collect(forms=("8-K",), max_filings=1)
+    assert recovery_client.bytes_calls == []
 
 
 @pytest.mark.parametrize(
@@ -1262,6 +1435,16 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
         acceptance_at=acceptance_at,
     )
     parsed = parse_form4(FORM4, filing)
+    expected_owners = (
+        Form4ReportingOwner(
+            cik=None,
+            name="Jane Insider",
+            roles=("DIRECTOR", "OFFICER"),
+            officer_title=None,
+            other_relationship_text=None,
+        ),
+    )
+    assert parsed.reporting_owners == expected_owners
     assert [(value.security_kind, value.transaction_code) for value in parsed.transactions] == [
         ("NON_DERIVATIVE", "P"),
         ("NON_DERIVATIVE", "S"),
@@ -1280,6 +1463,46 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
     assert {value.available_at for value in parsed.promoted_events} == {NOW}
     assert all(value.available_at != acceptance_at for value in parsed.promoted_events)
     assert parsed.promoted_events[0].transaction_date == date(2026, 7, 10)
+    assert all(
+        value.reporting_owners == expected_owners
+        for value in parsed.promoted_events
+    )
+
+
+def test_joint_form4_preserves_owner_scoped_roles_without_duplicate_events() -> None:
+    filing = SECFiling(
+        ticker="PLTR",
+        issuer_cik="0001321655",
+        accession_number="0001321655-26-000126",
+        form_type="4",
+        filing_date=date(2026, 7, 11),
+        primary_document="ownership.xml",
+        filing_url="https://www.sec.gov/example",
+        collected_at=NOW,
+        acceptance_at=NOW - timedelta(minutes=5),
+    )
+
+    parsed = parse_form4(FORM4_JOINT, filing)
+
+    assert parsed.reporting_owners == (
+        Form4ReportingOwner(
+            cik="0000001111",
+            name="Alex Director",
+            roles=("DIRECTOR",),
+            officer_title=None,
+            other_relationship_text=None,
+        ),
+        Form4ReportingOwner(
+            cik="0000002222",
+            name="Blair Officer",
+            roles=("OFFICER", "TEN_PERCENT_OWNER", "OTHER"),
+            officer_title="Chief Financial Officer",
+            other_relationship_text="Member of a filing group",
+        ),
+    )
+    assert len(parsed.transactions) == 1
+    assert len(parsed.promoted_events) == 1
+    assert parsed.promoted_events[0].reporting_owners == parsed.reporting_owners
 
 
 def test_form4_amendment_is_preserved_but_excluded_from_default_aggregates() -> None:
@@ -1322,10 +1545,64 @@ def test_collector_archives_all_form4_transactions_without_gemini(tmp_path: Path
     )
     assert len(payload["normalized_transactions"]) == 5
     assert len(payload["research_events"]) == 2
+    assert payload["reporting_owners"] == [
+        {
+            "cik": None,
+            "name": "Jane Insider",
+            "roles": ["DIRECTOR", "OFFICER"],
+            "officer_title": None,
+            "other_relationship_text": None,
+        }
+    ]
+    assert all(
+        value["reporting_owners"] == payload["reporting_owners"]
+        for value in payload["research_events"]
+    )
     assert any(
         value["security_kind"] == "DERIVATIVE"
         for value in payload["normalized_transactions"]
     )
+
+
+def test_collector_archives_all_joint_form4_owners_without_duplication(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path)
+    result = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(form4=FORM4_JOINT),
+        archive=SECEDGARArchive(settings.archive_path),
+    ).collect(forms=("4",), max_filings=1)
+    payload = json.loads(
+        next((settings.archive_path / "form4").glob("*.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    expected_owners = [
+        {
+            "cik": "0000001111",
+            "name": "Alex Director",
+            "roles": ["DIRECTOR"],
+            "officer_title": None,
+            "other_relationship_text": None,
+        },
+        {
+            "cik": "0000002222",
+            "name": "Blair Officer",
+            "roles": ["OFFICER", "TEN_PERCENT_OWNER", "OTHER"],
+            "officer_title": "Chief Financial Officer",
+            "other_relationship_text": "Member of a filing group",
+        },
+    ]
+
+    assert result["form4_events"] == 1
+    assert len(payload["normalized_transactions"]) == 1
+    assert len(payload["research_events"]) == 1
+    assert payload["reporting_owners"] == expected_owners
+    assert payload["research_events"][0]["reporting_owners"] == expected_owners
+    assert "reporting_owner_name" not in payload
+    assert "reporting_owner_name" not in payload["research_events"][0]
 
 
 def test_collector_archives_form4_acceptance_separately_from_availability(

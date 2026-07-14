@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+  <issuer>
+    <issuerCik><value>1321655</value></issuerCik>
+    <issuerTradingSymbol><value>PLTR</value></issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000001111</rptOwnerCik>
+      <rptOwnerName>Alex Director</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>1</isDirector>
+      <isOfficer>0</isOfficer>
+      <isTenPercentOwner>0</isTenPercentOwner>
+      <isOther>0</isOther>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000002222</rptOwnerCik>
+      <rptOwnerName>Blair Officer</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>0</isDirector>
+      <isOfficer>1</isOfficer>
+      <isTenPercentOwner>1</isTenPercentOwner>
+      <isOther>1</isOther>
+      <officerTitle>Chief Financial Officer</officerTitle>
+      <otherText>Member of a filing group</otherText>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-07-10</value></transactionDate>
+      <transactionCoding><transactionCode>P</transactionCode></transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>25</value></transactionShares>
+        <transactionPricePerShare><value>20</value></transactionPricePerShare>
+      </transactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership><value>D</value></directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>
