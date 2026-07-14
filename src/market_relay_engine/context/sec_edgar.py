@@ -1108,9 +1108,8 @@ class SECEDGARCollector:
                 ):
                     continue
                 self._write_saved_ledger(saved)
+                self.archive.save_manifest(manifest)
                 retried += 1
-        if retried:
-            self.archive.save_manifest(manifest)
         return retried
 
     def _write_saved_ledger(

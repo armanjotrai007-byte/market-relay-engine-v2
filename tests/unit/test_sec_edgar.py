@@ -335,6 +335,26 @@ def _crash_after_filing_metadata(tmp_path: Path):
     return archive, filing
 
 
+def _archive_two_saved_classifications(
+    tmp_path: Path, *, fallback_pending: bool
+) -> tuple[SECEDGARSettings, SECEDGARArchive]:
+    settings = _settings(tmp_path)
+    archive = SECEDGARArchive(settings.archive_path)
+    SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(),
+        archive=archive,
+        classifier=FakeClassifier(
+            [ContextClassificationStatus.VALID, ContextClassificationStatus.VALID]
+        ),
+        ai_settings=_ai_settings(),
+        ledger_writer=FakeWriter(fail=True) if fallback_pending else None,
+        fallback=FakeFallback() if fallback_pending else None,
+    ).collect(forms=("8-K",), max_filings=1, write_questdb=fallback_pending)
+    return settings, archive
+
+
 def test_sec_configuration_user_agent_mapping_and_rate_limit(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
     assert settings.request_rate_per_second == 2
@@ -951,6 +971,136 @@ def test_questdb_failure_preserves_paid_result_and_retries_only_ledger(
     assert len(successful_writer.row_calls) == 2
     assert all(call[0] == "context_classification_attempts" for call in successful_writer.row_calls)
     assert all("input_text" not in str(call[1]) for call in successful_writer.row_calls)
+    persisted = SECEDGARArchive(settings.archive_path).load_manifest()
+    persisted_records = next(iter(persisted["filings"].values()))["classifications"]
+    assert {
+        value["ledger_write_status"] for value in persisted_records.values()
+    } == {"QUESTDB_WRITTEN"}
+
+
+def test_pending_ledger_retry_persists_success_before_later_failure(
+    tmp_path: Path,
+) -> None:
+    class FailOnSecondRowWriter(FakeWriter):
+        def write_row(self, table: str, row: dict[str, object]) -> None:
+            self.row_calls.append((table, row))
+            if len(self.row_calls) == 2:
+                raise RuntimeError("simulated later QuestDB outage")
+
+    settings, archive = _archive_two_saved_classifications(
+        tmp_path, fallback_pending=True
+    )
+    manifest = archive.load_manifest()
+    pending_records = list(
+        next(iter(manifest["filings"].values()))["classifications"].values()
+    )
+    pending_ids = [
+        str(value["ledger_row"]["classification_attempt_id"])
+        for value in pending_records
+    ]
+    writer = FailOnSecondRowWriter()
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(),
+        archive=archive,
+        ledger_writer=writer,
+        fallback=FailingFallback(),
+    )
+
+    with pytest.raises(EmergencyLedgerFallbackError):
+        collector._retry_pending_ledger(manifest)
+
+    assert len(writer.row_calls) == 2
+    persisted = archive.load_manifest()
+    persisted_records = {
+        str(value["ledger_row"]["classification_attempt_id"]): value
+        for value in next(iter(persisted["filings"].values()))[
+            "classifications"
+        ].values()
+    }
+    assert persisted_records[pending_ids[0]]["ledger_write_status"] == (
+        "QUESTDB_WRITTEN"
+    )
+    assert persisted_records[pending_ids[1]]["ledger_write_status"] == (
+        "FALLBACK_WRITTEN_QUESTDB_PENDING"
+    )
+
+    later_writer = FakeWriter()
+    retried = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(),
+        archive=archive,
+        ledger_writer=later_writer,
+        fallback=FakeFallback(),
+    )._retry_pending_ledger(archive.load_manifest())
+
+    assert retried == 1
+    assert [
+        str(row["classification_attempt_id"])
+        for _, row in later_writer.row_calls
+    ] == [pending_ids[1]]
+
+
+def test_pending_ledger_retry_persists_fallback_before_later_failure(
+    tmp_path: Path,
+) -> None:
+    class FailOnSecondFallback(FakeFallback):
+        def append_record(self, **kwargs: object) -> None:
+            if self.records:
+                raise RuntimeError("simulated later fallback outage")
+            super().append_record(**kwargs)
+
+    settings, archive = _archive_two_saved_classifications(
+        tmp_path, fallback_pending=False
+    )
+    manifest = archive.load_manifest()
+    pending_records = list(
+        next(iter(manifest["filings"].values()))["classifications"].values()
+    )
+    pending_ids = [
+        str(value["ledger_row"]["classification_attempt_id"])
+        for value in pending_records
+    ]
+    fallback = FailOnSecondFallback()
+    collector = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(),
+        archive=archive,
+        ledger_writer=FakeWriter(fail=True),
+        fallback=fallback,
+    )
+
+    with pytest.raises(EmergencyLedgerFallbackError):
+        collector._retry_pending_ledger(manifest)
+
+    assert len(fallback.records) == 1
+    persisted = archive.load_manifest()
+    persisted_records = {
+        str(value["ledger_row"]["classification_attempt_id"]): value
+        for value in next(iter(persisted["filings"].values()))[
+            "classifications"
+        ].values()
+    }
+    assert persisted_records[pending_ids[0]]["ledger_write_status"] == (
+        "FALLBACK_WRITTEN_QUESTDB_PENDING"
+    )
+    assert persisted_records[pending_ids[1]]["ledger_write_status"] == "NOT_REQUESTED"
+
+    later_writer = FakeWriter()
+    retried = SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(),
+        archive=archive,
+        ledger_writer=later_writer,
+        fallback=FakeFallback(),
+    )._retry_pending_ledger(archive.load_manifest())
+
+    assert retried == 2
+    assert len(later_writer.row_calls) == 2
 
 
 @pytest.mark.parametrize("fallback_mode", ["unavailable", "disabled", "unwritable"])
