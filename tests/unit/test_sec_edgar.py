@@ -862,7 +862,7 @@ def test_recovery_preserves_archived_collection_time_for_8k_and_suppression(
     assert len(classifier.requests) == 2
 
 
-def test_recovery_preserves_archived_collection_time_for_form4_availability(
+def test_recovery_preserves_archived_form4_collection_metadata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     archive, filing = _crash_after_filing_metadata(tmp_path, form_type="4")
@@ -891,8 +891,9 @@ def test_recovery_preserves_archived_collection_time_for_form4_availability(
         == manifest["filings"][filing.accession_number]["collected_at"]
         == NOW.isoformat()
     )
+    assert filing.acceptance_at is not None
     assert {event["available_at"] for event in payload["research_events"]} == {
-        NOW.isoformat()
+        filing.acceptance_at.isoformat()
     }
 
 
@@ -1460,8 +1461,10 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
     assert parsed.transactions[3].promoted_event_type is None
     assert parsed.promoted_events[0].approximate_value == 2050
     assert parsed.promoted_events[0].aggregate_eligibility == "ELIGIBLE"
-    assert {value.available_at for value in parsed.promoted_events} == {NOW}
-    assert all(value.available_at != acceptance_at for value in parsed.promoted_events)
+    assert {value.available_at for value in parsed.promoted_events} == {
+        acceptance_at
+    }
+    assert all(value.available_at != NOW for value in parsed.promoted_events)
     assert parsed.promoted_events[0].transaction_date == date(2026, 7, 10)
     assert all(
         value.reporting_owners == expected_owners
@@ -1505,7 +1508,7 @@ def test_joint_form4_preserves_owner_scoped_roles_without_duplicate_events() -> 
     assert parsed.promoted_events[0].reporting_owners == parsed.reporting_owners
 
 
-def test_form4_amendment_is_preserved_but_excluded_from_default_aggregates() -> None:
+def test_form4_amendment_without_acceptance_falls_back_and_remains_excluded() -> None:
     filing = SECFiling(
         ticker="PLTR",
         issuer_cik="0001321655",
@@ -1605,7 +1608,7 @@ def test_collector_archives_all_joint_form4_owners_without_duplication(
     assert "reporting_owner_name" not in payload["research_events"][0]
 
 
-def test_collector_archives_form4_acceptance_separately_from_availability(
+def test_collector_uses_form4_acceptance_for_availability_and_preserves_collection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(sec_edgar_module, "utc_now", lambda: NOW)
@@ -1626,10 +1629,10 @@ def test_collector_archives_form4_acceptance_separately_from_availability(
     assert payload["filing"]["acceptance_at"] == acceptance_at
     assert payload["filing"]["collected_at"] == NOW.isoformat()
     assert {value["available_at"] for value in payload["research_events"]} == {
-        NOW.isoformat()
+        acceptance_at
     }
     assert all(
-        value["available_at"] != acceptance_at
+        value["available_at"] != payload["filing"]["collected_at"]
         for value in payload["research_events"]
     )
 

@@ -750,7 +750,7 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
                         accession_number=filing.accession_number,
                         reporting_owners=reporting_owners,
                         transaction_date=parsed.transaction_date,
-                        available_at=filing.collected_at,
+                        available_at=filing.acceptance_at or filing.collected_at,
                         transaction_code=code or "",
                         shares=shares,
                         price_per_share=price,
