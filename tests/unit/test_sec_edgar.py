@@ -448,9 +448,93 @@ def test_extract_relevant_8k_sections_uses_item_901_as_boundary() -> None:
     sections = extract_relevant_8k_sections(EIGHT_K)
 
     assert [section.item_number for section in sections] == ["2.02", "8.01"]
+    assert all(section.item_number != "9.01" for section in sections)
     assert sections[1].text == "Item 8.01 Other Events Other material event."
     assert "Item 9.01" not in sections[1].text
     assert "Exhibit 99.1" not in sections[1].text
+
+
+def test_extract_relevant_8k_sections_ignores_table_of_contents_duplicate() -> None:
+    document = b"""
+    <html><body>
+    <p>Item 2.02 Contents link</p>
+    <p>Item 9.01 Contents link</p>
+    <h2>Item 2.02 Results of Operations and Financial Condition</h2>
+    <p>Quarterly revenue increased and management provided detailed guidance.</p>
+    <h2>Item 9.01 Financial Statements and Exhibits</h2>
+    <p>Exhibit 99.1</p>
+    </body></html>
+    """
+
+    sections = extract_relevant_8k_sections(document)
+
+    assert [section.item_number for section in sections] == ["2.02"]
+    assert "Quarterly revenue increased" in sections[0].text
+    assert "Contents link" not in sections[0].text
+
+
+def test_extract_relevant_8k_sections_selects_largest_duplicate_body() -> None:
+    document = b"""Item 7.01
+    This is the longer first disclosure with substantive regulation FD detail.
+    Item 9.01
+    Item 7.01
+    Short.
+    Item 9.01
+    """
+
+    sections = extract_relevant_8k_sections(document)
+
+    assert len(sections) == 1
+    assert "longer first disclosure" in sections[0].text
+    assert "Short." not in sections[0].text
+
+
+def test_extract_relevant_8k_sections_selects_later_equal_length_duplicate() -> None:
+    document = b"""Item 8.01
+AAAA
+Item 9.01
+Item 8.01
+BBBB
+Item 9.01
+"""
+
+    sections = extract_relevant_8k_sections(document)
+
+    assert len(sections) == 1
+    assert sections[0].text == "Item 8.01 BBBB"
+
+
+def test_extract_relevant_8k_sections_retains_unique_short_disclosure() -> None:
+    document = b"""Item 1.01
+Deal signed.
+Item 9.01
+Exhibits
+"""
+
+    sections = extract_relevant_8k_sections(document)
+
+    assert len(sections) == 1
+    assert sections[0].text == "Item 1.01 Deal signed."
+
+
+def test_extract_relevant_8k_sections_preserves_selected_filing_order() -> None:
+    document = b"""Item 8.01
+TOC
+Item 9.01
+Item 2.02
+Detailed quarterly results disclosure.
+Item 7.01
+Detailed regulation FD disclosure.
+Item 8.01
+Detailed other event disclosure from the filing body.
+Item 9.01
+Exhibits
+"""
+
+    sections = extract_relevant_8k_sections(document)
+
+    assert [section.item_number for section in sections] == ["2.02", "7.01", "8.01"]
+    assert sections[2].text.endswith("filing body.")
 
 
 def test_complete_section_and_deterministic_excerpt_metadata() -> None:
@@ -465,7 +549,7 @@ def test_complete_section_and_deterministic_excerpt_metadata() -> None:
     assert prepared.input_truncated is True
     assert prepared.full_section_hash != prepared.excerpt_hash
     assert prepared.truncation_policy == EIGHT_K_TRUNCATION_POLICY == "HEAD_V1"
-    assert prepared.extraction_version == EIGHT_K_EXTRACTION_VERSION
+    assert prepared.extraction_version == EIGHT_K_EXTRACTION_VERSION == "SEC_8K_ITEMS_V2"
 
 
 def test_sec_raw_input_id_is_deterministic_and_filing_item_scoped() -> None:
@@ -970,6 +1054,7 @@ def test_official_form4_xml_selection_avoids_renderer_document() -> None:
 
 
 def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> None:
+    acceptance_at = NOW - timedelta(minutes=5)
     filing = SECFiling(
         ticker="PLTR",
         issuer_cik="0001321655",
@@ -979,7 +1064,7 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
         primary_document="ownership.xml",
         filing_url="https://www.sec.gov/example",
         collected_at=NOW,
-        acceptance_at=NOW,
+        acceptance_at=acceptance_at,
     )
     parsed = parse_form4(FORM4, filing)
     assert [(value.security_kind, value.transaction_code) for value in parsed.transactions] == [
@@ -997,6 +1082,9 @@ def test_form4_preserves_derivatives_and_promotes_only_nonderivative_p_s() -> No
     assert parsed.transactions[3].promoted_event_type is None
     assert parsed.promoted_events[0].approximate_value == 2050
     assert parsed.promoted_events[0].aggregate_eligibility == "ELIGIBLE"
+    assert {value.available_at for value in parsed.promoted_events} == {NOW}
+    assert all(value.available_at != acceptance_at for value in parsed.promoted_events)
+    assert parsed.promoted_events[0].transaction_date == date(2026, 7, 10)
 
 
 def test_form4_amendment_is_preserved_but_excluded_from_default_aggregates() -> None:
@@ -1009,7 +1097,7 @@ def test_form4_amendment_is_preserved_but_excluded_from_default_aggregates() -> 
         primary_document="ownershipa.xml",
         filing_url="https://www.sec.gov/example",
         collected_at=NOW,
-        acceptance_at=NOW,
+        acceptance_at=None,
         amendment_of=None,
     )
     parsed = parse_form4(FORM4, filing)
@@ -1018,6 +1106,7 @@ def test_form4_amendment_is_preserved_but_excluded_from_default_aggregates() -> 
     assert {value.aggregate_eligibility for value in parsed.promoted_events} == {
         "AMENDMENT_UNRESOLVED"
     }
+    assert {value.available_at for value in parsed.promoted_events} == {NOW}
     assert default_aggregate_form4_events(parsed.promoted_events) == ()
 
 
@@ -1041,6 +1130,35 @@ def test_collector_archives_all_form4_transactions_without_gemini(tmp_path: Path
     assert any(
         value["security_kind"] == "DERIVATIVE"
         for value in payload["normalized_transactions"]
+    )
+
+
+def test_collector_archives_form4_acceptance_separately_from_availability(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sec_edgar_module, "utc_now", lambda: NOW)
+    settings = _settings(tmp_path)
+    SECEDGARCollector(
+        settings=settings,
+        issuers=(_issuer(),),
+        client=FakeSECClient(),
+        archive=SECEDGARArchive(settings.archive_path),
+    ).collect(forms=("4",), max_filings=1)
+    payload = json.loads(
+        next((settings.archive_path / "form4").glob("*.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+
+    acceptance_at = "2026-07-11T10:30:00+00:00"
+    assert payload["filing"]["acceptance_at"] == acceptance_at
+    assert payload["filing"]["collected_at"] == NOW.isoformat()
+    assert {value["available_at"] for value in payload["research_events"]} == {
+        NOW.isoformat()
+    }
+    assert all(
+        value["available_at"] != acceptance_at
+        for value in payload["research_events"]
     )
 
 

@@ -48,11 +48,13 @@ LOGGER = logging.getLogger(__name__)
 SEC_SOURCE = "sec_edgar"
 SUPPORTED_FORMS = frozenset({"8-K", "8-K/A", "4", "4/A"})
 MAX_SEC_REQUEST_RATE_PER_SECOND = 8.0
-EIGHT_K_EXTRACTION_VERSION = "SEC_8K_ITEMS_V1"
+EIGHT_K_EXTRACTION_VERSION = "SEC_8K_ITEMS_V2"
 EIGHT_K_TRUNCATION_POLICY = "HEAD_V1"
 
 _ACCESSION_RE = re.compile(r"^\d{10}-\d{2}-\d{6}$")
-_ITEM_RE = re.compile(r"(?im)^\s*item\s+([1-8]\.\d{2}|9\.01)\s*[.:-]?\s*(.*)$")
+_ITEM_RE = re.compile(
+    r"(?im)^[ \t]*item[ \t]+([1-8]\.\d{2}|9\.01)[ \t]*[.:-]?[ \t]*(.*)$"
+)
 _RETRYABLE_SERVER_STATUSES = frozenset({500, 502, 503, 504})
 _LEDGER_TIMESTAMP_FIELDS = frozenset(
     {
@@ -600,22 +602,24 @@ def extract_relevant_8k_sections(document: bytes) -> tuple[EightKSection, ...]:
     """Extract complete normalized relevant sections; never truncate here."""
     text = _normalize_document(document)
     matches = list(_ITEM_RE.finditer(text))
-    sections: list[EightKSection] = []
+    selected: dict[str, tuple[int, EightKSection]] = {}
     for index, match in enumerate(matches):
         item_number = match.group(1)
         if item_number not in _RELEVANT_8K_ITEMS:
             continue
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         body = re.sub(r"\s+", " ", text[match.start() : end]).strip()
-        if body:
-            sections.append(
-                EightKSection(
-                    item_number=item_number,
-                    item_title=_RELEVANT_8K_ITEMS[item_number],
-                    text=body,
-                )
-            )
-    return tuple(sections)
+        if not body:
+            continue
+        candidate = EightKSection(
+            item_number=item_number,
+            item_title=_RELEVANT_8K_ITEMS[item_number],
+            text=body,
+        )
+        existing = selected.get(item_number)
+        if existing is None or len(candidate.text) >= len(existing[1].text):
+            selected[item_number] = (match.start(), candidate)
+    return tuple(section for _, section in sorted(selected.values()))
 
 
 def prepare_8k_section(
@@ -725,7 +729,7 @@ def parse_form4(document: bytes, filing: SECFiling) -> ParsedForm4:
                         reporting_owner_name=owner_name,
                         roles=roles,
                         transaction_date=parsed.transaction_date,
-                        available_at=filing.acceptance_at,
+                        available_at=filing.collected_at,
                         transaction_code=code or "",
                         shares=shares,
                         price_per_share=price,
