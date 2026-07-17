@@ -77,7 +77,7 @@ strings. Tests cover generated IDs, UTC enforcement, defensive collection
 copies, exact enum serialization, status-specific response shapes, validation
 results, and shadow size-factor rules. Form 4 purchase/sale values use the
 separate deterministic enum and are rejected by AI-classification contracts;
-the actual deterministic parser remains deferred to PR38.
+fixture-backed SEC tests cover the deterministic P/S parser separately.
 
 All Phase 7 fixture source text, IDs, and hashes are synthetic. Fixtures do not
 contain real filings, articles, social posts, API output, credentials, or

@@ -95,16 +95,20 @@ SEC_8K_OTHER_EVENT
 Risk levels are `UNKNOWN`, `LOW`, `MEDIUM`, `HIGH`, and `CRITICAL`. Urgency is
 `UNKNOWN`, `LOW`, `MEDIUM`, or `HIGH`.
 
-Form 4 open-market purchase and sale values are deliberately separate:
+Form 4 purchase and sale values are deliberately separate and venue-neutral:
 
 ```text
-SEC_FORM4_OPEN_MARKET_PURCHASE
-SEC_FORM4_OPEN_MARKET_SALE
+SEC_FORM4_PURCHASE
+SEC_FORM4_SALE
 ```
 
 They belong to `DeterministicContextEventType`, not the AI classification enum.
 `ContextClassificationResponse` and AI-derived `ContextAIEvent` reject those
-values. Deterministic Form 4 parsing and event emission remain deferred to PR38.
+values. The SEC collector parses non-derivative Form 4 P/S facts
+deterministically into local research events. SEC transaction codes P and S
+cover open-market or private transactions, so PR36 does not infer a venue from
+the code alone. These events remain outside the AI contract and real
+risk/execution paths.
 
 ## Classification statuses
 

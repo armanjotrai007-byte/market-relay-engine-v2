@@ -101,8 +101,8 @@ def test_phase7_enum_value_sets_are_exact() -> None:
         "SEC_8K_OTHER_EVENT",
     ]
     assert [item.value for item in DeterministicContextEventType] == [
-        "SEC_FORM4_OPEN_MARKET_PURCHASE",
-        "SEC_FORM4_OPEN_MARKET_SALE",
+        "SEC_FORM4_PURCHASE",
+        "SEC_FORM4_SALE",
     ]
     assert [item.value for item in ContextRiskLevel] == [
         "UNKNOWN",
@@ -484,12 +484,12 @@ def test_classification_contracts_reject_raw_strings_and_form4_event_types() -> 
     with pytest.raises(TypeError, match="event_type"):
         replace(
             make_context_classification_response(),
-            event_type=DeterministicContextEventType.SEC_FORM4_OPEN_MARKET_PURCHASE,
+            event_type=DeterministicContextEventType.SEC_FORM4_PURCHASE,
         )
     with pytest.raises(TypeError, match="event_type"):
         replace(
             make_context_ai_event(),
-            event_type=DeterministicContextEventType.SEC_FORM4_OPEN_MARKET_SALE,
+            event_type=DeterministicContextEventType.SEC_FORM4_SALE,
         )
     with pytest.raises(TypeError, match="risk_level"):
         replace(make_context_ai_event(), risk_level="MEDIUM")

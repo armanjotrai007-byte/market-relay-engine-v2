@@ -14,7 +14,8 @@ be reported as the real decision.
 
 The ledger intentionally excludes full filings, articles, posts, normalized
 documents, prompt/request excerpts, credentials, and full provider exceptions.
-Research that needs source bodies must use the future immutable local archive
-from PR38/PR39, never QuestDB raw-text columns.
+Research that needs source bodies must use an immutable local archive for that
+source, never QuestDB raw-text columns. SEC filings use the local PR36
+archive; later news/social sources will require their own approved archive.
 
 PR 1 does not generate reports and does not commit generated data.

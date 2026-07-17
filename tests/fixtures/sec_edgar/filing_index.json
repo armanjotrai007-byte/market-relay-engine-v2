@@ -1,0 +1,8 @@
+{
+  "directory": {
+    "item": [
+      {"name": "ownership.xml", "size": 2500},
+      {"name": "doc1.txt", "size": 1000}
+    ]
+  }
+}

@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+  <issuer>
+    <issuerCik><value>1321655</value></issuerCik>
+    <issuerTradingSymbol><value>PLTR</value></issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0000003333</rptOwnerCik>
+      <rptOwnerName>Casey Seller</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isOfficer>1</isOfficer>
+      <officerTitle>Chief Operating Officer</officerTitle>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionDate><value>2026-07-10</value></transactionDate>
+      <transactionCoding>
+        <transactionCode>S</transactionCode>
+        <footnoteId id="F1"/>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>50</value></transactionShares>
+        <transactionPricePerShare><value>25</value></transactionPricePerShare>
+      </transactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership><value>D</value></directOrIndirectOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+  <footnotes>
+    <footnote id="F1">This transaction was executed pursuant to a Rule 10b5-1
+      trading plan adopted on August 21, 2024.</footnote>
+  </footnotes>
+</ownershipDocument>

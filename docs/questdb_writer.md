@@ -40,10 +40,14 @@ validation facts, latency, and safe failure fields. Full documents, excerpts,
 prompts, exceptions, tracebacks, secrets, and credentials are prohibited.
 
 Provider failures expose only `safe_failure_category` and optional
-`safe_failure_summary`. PR36 must record the full exception and traceback in
-retained ignored local structured logs, redact credentials, and correlate those
-logs with the same `classification_attempt_id`; PR34 does not implement that
-runtime logging.
+`safe_failure_summary`. PR36 preserves retry eligibility in its SEC manifest
+without retaining a provider exception or traceback; its optional ledger
+fallback likewise contains only the existing safe row metadata.
+
+For successful SEC classification, the complete safe reusable result and
+ledger row are saved atomically in the SEC manifest before the optional QuestDB
+attempt. A QuestDB failure uses the existing JSONL fallback and remains marked
+for ledger-only retry; it never requires another Gemini call.
 
 Shadow rows contain hypothetical research output only. A `BLOCK`,
 `REDUCE_SIZE`, or `DELAY` value cannot alter a real `RiskDecision` or execution

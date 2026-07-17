@@ -133,6 +133,7 @@ def _check_context_sources(
     _check_fred_source(context_sources, issues)
     _check_usaspending_source(context_sources, issues, base_dir=base_dir)
     _check_macro_calendar_source(context_sources, issues, base_dir=base_dir)
+    _check_sec_edgar_source(context_sources, issues, base_dir=base_dir)
 
     yfinance = structured_sources["yfinance_dev_only"]
     if yfinance.get("development_only") is not True:
@@ -162,6 +163,22 @@ def _check_context_sources(
     _check_ai_context_filter(context_sources["ai_context_filter"], issues)
 
     return issues
+
+
+def _check_sec_edgar_source(
+    context_sources: dict[str, Any],
+    issues: list[str],
+    *,
+    base_dir: Path,
+) -> None:
+    """Validate the source-specific PR36 SEC boundary without contacting SEC."""
+    try:
+        from market_relay_engine.context.sec_edgar import SECEDGARSettings, load_sec_issuers
+
+        SECEDGARSettings.from_repository_config(context_sources, base_dir=base_dir)
+        load_sec_issuers(base_dir=base_dir)
+    except Exception as exc:  # noqa: BLE001 - aggregate configuration diagnostics.
+        issues.append(f"sec_edgar PR36 config invalid: {exc}")
 
 
 def _check_ai_context_filter(ai_filter: Any, issues: list[str]) -> None:
