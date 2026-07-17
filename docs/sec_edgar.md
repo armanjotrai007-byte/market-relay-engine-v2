@@ -129,6 +129,9 @@ Gemini classification and QuestDB writing are separate explicit opt-ins:
 python scripts/check_sec_edgar.py --live --ticker LMT --form 8-K --max-filings 1 --classify --questdb
 ```
 
-PR37 remains responsible for the broader persistent research cache, as-of
-selection, and shadow-policy evaluation. PR36's SEC checkpoint is source-local
-paid-call suppression and ledger retry state, not that generic research cache.
+PR37 reads these durable outputs only during explicit research preparation. It
+pins one exact 8-K classification profile, adapts existing Form 4 research
+events without re-parsing or Gemini, and hydrates a bounded in-memory index for
+leak-free shadow evaluation. PR36's SEC checkpoint remains source-local
+paid-call suppression and ledger retry state; PR37 adds no persistent generic
+research cache.

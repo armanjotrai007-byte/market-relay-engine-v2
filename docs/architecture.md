@@ -27,7 +27,8 @@ trusted-code-created raw-input metadata
 -> versioned source-neutral prompt and Gemini Interactions API
 -> strict schema-constrained classification response and validation
 -> research-only ContextAIEvent / ContextFlag
--> future research cache
+-> explicit PR37 archive hydration into a bounded in-memory event index
+-> existing structured DecisionContext + leak-free event selection
 -> hypothetical ShadowContextPolicyEvaluation
 ```
 
@@ -49,8 +50,14 @@ The SEC path does not populate `approved_risk_context`, update `ContextState`,
 or alter risk, model features, orders, positions, Alpaca, or execution. QuestDB
 receives safe classification-attempt metadata only, never filings, sections,
 prompts, or provider bodies. QuestDB failure uses the existing JSONL fallback
-without repeating Gemini. A broader persistent research cache, as-of selection,
-and shadow-policy evaluation remain later work.
+without repeating Gemini.
+
+PR37 adds no persistent generic research cache.  An explicit preparation step
+reads durable PR36 output, pins one classification profile, validates ownership,
+and atomically hydrates a bounded in-memory event index.  Signal-time selection
+then combines that event view with the unchanged structured
+`DecisionContext.context_fingerprint` without filesystem, QuestDB, network,
+SEC, Gemini, or broker reads.  The resulting policy action remains hypothetical.
 
 The live implementation uses `client.interactions.create` with the configured
 model and a rendered bounded prompt. Its `response_format` selects text with
