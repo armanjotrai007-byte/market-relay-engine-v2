@@ -115,11 +115,13 @@ form a separate research-only audit path. They do not enter
 `approved_risk_context` and cannot approve, block, reduce, delay, or otherwise
 change the real decision.
 
-PR37 will own a separate research cache and decision-time shadow evaluator. It
-must select only validated records whose canonical `available_at` is no later
-than the explicit `decision_evaluation_time`; PR34 merely defines the durable
-language and ledger shape. Existing structured-context selection and real
-`RiskDecision` results are unchanged.
+PR37 consumes the completed `DecisionContext` unchanged and combines its
+fingerprint with a separate bounded in-memory event selection.  Structured
+entries are never copied into that index.  Event hydration occurs before signal
+evaluation, pins one SEC classification profile, and owns no durable generic
+cache.  At signal time, only canonical `available_at` and explicit validity or
+finite-lookback rules determine event visibility.  Existing structured-context
+selection and real `RiskDecision` results remain unchanged.
 
 ## Deferred Work
 

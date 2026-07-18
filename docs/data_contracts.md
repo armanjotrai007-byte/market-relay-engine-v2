@@ -188,8 +188,10 @@ WARN_ONLY
 
 `proposed_size_factor` is required only for `REDUCE_SIZE` and must satisfy
 `0 < factor <= 1`; every other action rejects a size factor. This is audit-only
-hypothetical output. PR37 owns the research cache, as-of selection, and actual
-shadow evaluator and must never alter the real risk decision.
+hypothetical output. PR37 supplies deterministic in-memory as-of selection and
+the shadow evaluator without adding another public event or evaluation
+contract.  It adapts PR36's existing `Form4ResearchEvent` facts internally and
+must never alter the real risk decision.
 
 ## Timestamp meanings
 
@@ -219,7 +221,6 @@ Run contract checks offline with the repository virtual environment:
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_contracts_context.py
 ```
 
-PR35 adds live Gemini classification only. SEC collection, news/social
-collection, archive writing, manual inbox processing, persistent research-cache
-behavior, real shadow-policy execution, and real risk integration remain
-deferred.
+PR35 adds live Gemini classification only. PR37 does not add SEC collection,
+news/social collection, raw manual inbox processing, a persistent generic
+research cache, real policy execution, or real risk integration.

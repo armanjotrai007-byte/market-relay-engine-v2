@@ -4,25 +4,25 @@
 
 Repository: `armanjotrai007-byte/market-relay-engine-v2`
 
-PR36 implementation branch:
+PR37 implementation branch:
 
 ```text
-pr36-sec-edgar-context
+pr37-context-shadow-evaluation
 ```
 
 Base `main` SHA:
 
 ```text
-ea55725416e77b3503f99eca4e9bfba28af36f04
+f0d0753267ef07bba1454d5c41303f2dc2c17905
 ```
 
-PR36 builds the small, source-specific SEC EDGAR research collector on PR35's
-existing Gemini boundary. It adds reviewed ticker/CIK mappings, bounded filing
-discovery, immutable local archiving, durable restart-safe classification
-suppression, complete-section archiving with bounded `HEAD_V1` excerpts,
-deterministic official-XML Form 4 parsing, and an explicit offline/live checker.
-Successful Gemini results are durable before optional ledger writes. It does
-not add a generic cache, scheduler, risk integration, or broker behavior.
+PR37 consumes the existing structured `DecisionContext` and PR36's durable SEC
+outputs to produce leak-free, research-only shadow policy evaluations.  It pins
+one 8-K classification profile, hydrates a bounded in-memory event index before
+signal evaluation, applies an explicit finite lookback where native expiry is
+absent, and writes only the existing `ShadowContextPolicyEvaluation` shape.
+The default policy returns `NO_CHANGE`; no real risk, model, execution, or
+broker behavior changes.
 
 ## Non-negotiable boundaries
 
@@ -75,7 +75,8 @@ ContextRawInput
 -> ContextClassificationResponse
 -> ContextValidationResult
 -> research-only ContextAIEvent / ContextFlag
--> future research cache
+-> explicit bounded in-memory research-event hydration
+-> leak-free selection at model-signal time
 -> ShadowContextPolicyEvaluation
 ```
 
@@ -157,6 +158,8 @@ Use only the repository interpreter:
 & ".\.venv\Scripts\python.exe" scripts/check_gemini_context.py --help
 & ".\.venv\Scripts\python.exe" scripts/check_gemini_context.py
 & ".\.venv\Scripts\python.exe" scripts/check_sec_edgar.py
+& ".\.venv\Scripts\python.exe" scripts/check_context_shadow_evaluation.py
+& ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_research_projection.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_sec_edgar.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_fred_collector.py
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_contracts_context.py
@@ -166,7 +169,7 @@ Use only the repository interpreter:
 git diff --check
 ```
 
-Default PR36 validation stays offline. The manually gated SEC read-only smoke
+Default PR37 validation stays offline. The manually gated SEC read-only smoke
 check is:
 
 ```powershell
@@ -178,7 +181,8 @@ It has no broker, Gemini, or QuestDB action. Do not use `--classify` or
 
 ## Explicit follow-ups
 
-- PR37: persistent research cache, as-of selection, and a real shadow-policy
-  evaluator that never changes the real risk result.
+- Later research must join shadow evaluations to actual after-cost outcomes and
+  test policy versions before any claim that context improves profitability.
 - PR39: provider-neutral manual news/social inbox ingestion through the same
-  validation and research-only pipeline.
+  validation and research-only pipeline; only resulting validated
+  `ContextAIEvent`/event-owned `ContextFlag` records may reuse PR37's seam.
