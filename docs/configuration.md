@@ -1,13 +1,19 @@
 # Configuration
 
-PR 2 organizes the Trading System V2 configuration files under `config/`.
+Trading System V2 configuration files live under `config/`.
 
 Each file is safe to load locally without broker access, QuestDB writes, or live market data. Enabled online context sources still require their referenced environment variables and should be validated with the focused source-smoke tools, not by committing secrets.
 
 ## Files
 
 - `symbols.yaml` defines the final 10-stock universe (`PLTR`, `LMT`, `RTX`, `GD`, `AVAV`, `XOM`, `OXY`, `SLB`, `COP`, and `VLO`) and separate context symbols. None of the tradable symbols is approved for live trading. PR25 uses fixed context proxy groups for SPY, QQQ, IWM, GLD, `^VIX`, XLE, XOP, OIH, XLI, PPA, and ITA.
-- `context_sources.yaml` defines structured and unstructured context source settings. EIA, FRED, USAspending, the local macro calendar, and `yfinance_dev_only` are intentionally enabled for bounded use outside the per-tick loop. Yfinance remains development-only and not production-critical; SEC EDGAR, news, social, and automatic AI-context classification remain disabled by default. SEC has an explicitly invoked research collector.
+- `context_sources.yaml` defines structured and unstructured context source
+  settings. EIA, FRED, USAspending, the local macro calendar, and
+  `yfinance_dev_only` are intentionally enabled for bounded use outside the
+  per-tick loop. Yfinance remains development-only and not production critical.
+  SEC EDGAR, VeritaWire/Truth Social, LMT RSS, PLTR IR, company earnings, and
+  automatic AI-context classification remain disabled by default and require
+  explicit research commands.
 - `sec_edgar_tickers.yaml` is the reviewed, deterministic ticker/issuer/zero-padded-CIK map for the ten approved symbols. It is not inferred by an AI model.
 - `risk_limits.yaml` defines placeholder paper-trading risk limits. These are not optimized live settings.
 - `questdb.yaml` defines QuestDB connection/health defaults and the exact ledger
@@ -23,13 +29,18 @@ Each file is safe to load locally without broker access, QuestDB writes, or live
 Run these commands from Windows PowerShell after pulling the repo:
 
 ```powershell
-python scripts/check_environment.py
-python scripts/check_config.py
-python scripts/check_questdb.py
-python scripts/check_yfinance_proxy.py
-python -m pytest
+& ".\.venv\Scripts\python.exe" scripts/check_environment.py
+& ".\.venv\Scripts\python.exe" scripts/check_config.py
+& ".\.venv\Scripts\python.exe" scripts/check_questdb.py
+& ".\.venv\Scripts\python.exe" scripts/check_yfinance_proxy.py
+& ".\.venv\Scripts\python.exe" scripts/check_external_event_sources.py
+& ".\.venv\Scripts\python.exe" -m pytest
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
+
+`check_external_event_sources.py` is offline by default. If it is absent from
+the checked-out branch, the pilot has not landed there. `run_tests.ps1` invokes
+the config-required QuestDB health check and therefore needs the local service.
 
 The same commands should be run on the separate trading laptop after it pulls from GitHub.
 
@@ -46,6 +57,11 @@ The same commands should be run on the separate trading laptop after it pulls fr
   alter real risk, sizing, model, broker, or execution behavior.
 - Full source documents, prompts/request excerpts, credentials, and provider
   exceptions must not appear in QuestDB configuration or schemas.
+- External-source settings must keep `direct_trade_authority: false`; an
+  enabled collector still receives no scheduling, policy, risk, or broker
+  authority.
+- Source archives, classification registries, coverage manifests, and mutable
+  checkpoints belong under ignored `data_lake/`, not in Git or QuestDB.
 
 ## Gemini AI Context Filter
 
@@ -79,6 +95,14 @@ more than two repository-owned retries, and `direct_trade_authority: false`.
 The last setting is a hard safety assertion: `true` is invalid configuration,
 not a supported mode.
 
+The values above remain the exact backward-compatible v1 defaults. External
+multi-scope profiles explicitly pin `context_filter_v2_scope`,
+`context_classification_response_v2`, and
+`context_filter_validator_v2_scope`. V2 accepts only canonical uppercase
+ticker/sector allowlists supplied by trusted configuration and an explicit
+boolean `global_relevance`; it does not relax v1 responses or silently select a
+latest profile.
+
 `GEMINI_API_KEY=` is the only Gemini placeholder in `.env.example`. Put the
 real value in the ignored repository `.env`; the application and explicit live
 checker load that file without displaying it. The key is never part of a
@@ -100,10 +124,12 @@ process limits, not replacements for Google project quotas or billing controls.
 The 256-entry LRU deduplication cache stores only valid or abstained results and
 uses a bounded fingerprint of trusted hashes/IDs, ticker hints, source type,
 prompt, model, and schema versions. It is process-local and disappears on
-restart; persistent research caching is deferred.
+restart. SEC and external-event archives own their separate durable
+classification suppression and canonical-result state; they reuse this
+classifier rather than adding another Gemini transport or retry loop.
 
-The supported future text inputs include SEC filing sections and exhibits,
-news excerpts, social or political statements, contract descriptions,
+Supported text inputs include SEC filing sections and exhibits, news excerpts,
+social or political statements, contract descriptions,
 government announcements, regulatory/policy and geopolitical developments,
 company disclosures, and manual research documents. FRED observations, EIA
 numbers, calendar timing, proxy bars, structured USAspending award values, and
@@ -118,8 +144,8 @@ python scripts/check_gemini_context.py --live --required
 
 The live checker makes one synthetic request. Free-tier 429 responses receive
 only the configured bounded retries; exhaustion returns a safe structured
-provider failure. Source collectors and pipeline/research-cache integration are
-deferred to later PRs. The classifier never writes QuestDB itself.
+provider failure. Source archives own durable state and callers own optional
+QuestDB publication. The classifier never writes QuestDB itself.
 
 ## SEC EDGAR Research Collector
 
@@ -164,6 +190,77 @@ python scripts/check_sec_edgar.py --live --ticker LMT --form 8-K --max-filings 1
 
 See `docs/sec_edgar.md` for bounded collection and optional `--classify` /
 `--questdb` operation.
+
+## External News, Social, and Earnings Sources
+
+The pilot defines four disabled-by-default entries under
+`unstructured_sources`:
+
+```yaml
+veritawire_truth_social:
+  enabled: false
+  direct_trade_authority: false
+
+lockheed_martin_rss:
+  enabled: false
+  direct_trade_authority: false
+
+palantir_ir:
+  enabled: false
+  direct_trade_authority: false
+
+company_earnings:
+  enabled: false
+  direct_trade_authority: false
+```
+
+The complete committed entries also pin their official URLs, bounded network
+and item limits, archive root, polling/reconnect behavior, parser/extraction
+versions, fixed ticker ownership where applicable, and classification defaults.
+These are operational settings only. Enabling a source does not schedule it,
+classify records, write QuestDB, or grant policy/trading authority.
+
+VeritaWire uses the environment-variable reference:
+
+```yaml
+api_key_env: VERITAWIRE_API_KEY
+```
+
+`VERITAWARE_API_KEY` is a spelling error. Keep only the correctly spelled blank
+name in `.env.example` and the real value in the ignored `.env`. Never place the
+value in YAML, URLs, logs, exceptions, fixtures, archives, or ledger rows.
+
+Initial normal polling intervals are configurable and start at 30 seconds for
+LMT RSS and PLTR IR. The earnings-window fast interval starts at 10 seconds and
+is used only when polling is explicitly requested. Tests and one-shot checks do
+not sleep for those durations.
+
+Offline validation:
+
+```powershell
+& ".\.venv\Scripts\python.exe" scripts/check_external_event_sources.py
+```
+
+Bounded live examples:
+
+```powershell
+& ".\.venv\Scripts\python.exe" scripts/check_external_event_sources.py --live --source veritawire --max-items 1 --timeout-seconds 20
+& ".\.venv\Scripts\python.exe" scripts/check_external_event_sources.py --live --source lmt-rss --max-items 1 --timeout-seconds 20
+& ".\.venv\Scripts\python.exe" scripts/check_external_event_sources.py --live --source pltr-ir --max-items 1 --timeout-seconds 20
+& ".\.venv\Scripts\python.exe" scripts/check_external_event_sources.py --live --source earnings --ticker PLTR --max-items 1 --timeout-seconds 20
+```
+
+Live collection does not imply classification or QuestDB access. `--classify`
+and `--questdb` are separate explicit opt-ins. `--backfill` remains bounded and
+separately enabled. Optional polling uses `--poll` and, for checks, a finite
+`--max-polls`.
+
+The ignored archive root is `data_lake/context/external_events/`. It owns raw
+source truth, lifecycle revisions, durable canonical classification ownership,
+conflict/resolution state, atomic checkpoints, and generation-pinned coverage.
+QuestDB remains metadata-only. See `docs/external_event_ingestion.md` for exact
+source URLs, availability modes, lifecycle, scope, duplicate/correlation,
+coverage, restart, and safety behavior.
 
 ## YFinance Development Proxy
 

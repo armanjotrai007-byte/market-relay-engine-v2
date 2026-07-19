@@ -36,6 +36,15 @@ ContextRawInput.raw_input_id + raw_input_hash
 -> research-only ContextAIEvent / ContextFlag
 ```
 
+The external pilot adds backward-compatible lifecycle and readiness metadata to
+the same contracts rather than defining a competing source-document or event
+contract. A revisable record can carry `source_fact_id`,
+`source_revision_id`, `revision_sequence`, `supersedes_revision_id`,
+`lifecycle_state`, and `lifecycle_effective_at`. VeritaWire uses the underlying
+Truth Social post ID as `source_fact_id`. Immutable revisions preserve their
+own bytes, normalized text, excerpt, classification result, and timestamps;
+edits and deletion/retraction notices never overwrite an earlier revision.
+
 `ContextRawInput` identifies a trusted-code ingress envelope by source,
 source type, source locator, affected tickers, collection time, and raw-input
 hash. `ContextSourceDocument` adds normalized document identity, document hash,
@@ -43,19 +52,24 @@ and normalization time. Neither contract contains source body text.
 
 `ContextClassificationRequest` is the only Phase 7 contract allowed to carry a
 bounded in-memory excerpt in `input_text`. It also carries deterministic source
-identity, hashes, ticker mappings, source timestamps, request time, and prompt
-version. It is not a durable raw-document record, and the excerpt must never be
-written to QuestDB or emergency ledger rows. PR35 owns the input/output bounds,
-provider call, retry, local call budgets, and bounded process-local
-deduplication. Persistent caching, queues, and broader pipeline backpressure
-remain deferred.
+identity, hashes, trusted ticker/sector/global scope, source timestamps, request
+time, and prompt version. It is not a durable raw-document record, and the
+excerpt must never be written to QuestDB or emergency ledger rows. PR35 owns
+the input/output bounds, provider call, retry, local call budgets, and bounded
+process-local deduplication. The external archive now owns persistent completed
+classification suppression across restarts; pending budget/provider failures
+remain retryable and do not become permanent irrelevance.
 
 `ContextClassificationResponse` records one logical classification attempt without granting
-the provider authority to invent source identity, tickers, hashes, timestamps,
-or risk policy. `ContextValidationResult` records the validator outcome,
+the provider authority to invent source identity, hashes, timestamps, or risk
+policy. Response schema v2 may return strict `affected_tickers`,
+`affected_sectors`, and `global_relevance`, but tickers and sectors must come
+from configured allowlists. Trusted deterministic ticker matches are unioned
+with valid provider scope, so AI cannot remove an explicitly observed approved
+ticker. `ContextValidationResult` records the validator outcome,
 machine-readable reason codes, safe detail, validator version, and validation
 time. Trusted-source enforcement, hash recomputation, prompt-injection checks,
-and cross-record provenance validation belong to PR35.
+scope allowlists, and cross-record provenance validation belong to PR35.
 
 ## Classification vocabulary
 
@@ -156,16 +170,35 @@ tickers, availability, provider metadata, and concise structured output.
 
 `ContextAIEvent` uses only the AI-classifiable event enum. `ContextFlag` keeps
 its legacy generic flag and severity fields so existing EIA and deterministic
-risk adapters remain compatible. Phase 7 metadata is optional until PR35
-enforces complete trusted lineage.
+risk adapters remain compatible. External VeritaWire, company-news, and
+earnings classifications normally materialize one `ContextAIEvent`; they are
+not duplicated into `ContextFlag` by default. The additive plural
+`affected_sectors` and explicit `global_relevance` fields coexist with legacy
+`affected_sector`. Tickers, all effective sectors, and global relevance are
+simultaneous scopes, and decision matching is:
 
-`available_at` means the earliest trusted, demonstrable time the underlying
-fact was publicly available. It is not the local collection time, the source
-event time, or the start of a pre-release risk window. When a `ContextFlag` and
-its legacy `details["provenance"]` both represent availability, their values
-must agree exactly after UTC normalization; malformed values or mismatches are
-rejected. EIA continues to use its reviewed official release time in both
-locations.
+```text
+global_relevance
+OR decision ticker in affected_tickers
+OR decision sector in affected_sectors
+```
+
+An event may truthfully satisfy all three clauses. Collections are uppercase,
+sorted, deduplicated, and bounded by the approved universe; a second applicable
+sector is not silently discarded.
+
+Legacy `available_at` retains its established meaning. For the new external
+`ContextAIEvent` path, the returned, ledgered, and hydrated event's
+`available_at` mirrors its per-revision durable `evidence_ready_at`, while
+`source_available_at` preserves the separate public/source time. The immutable
+pre-readiness event payload leaves both readiness fields null; its separately
+published readiness receipt is authoritative. External records also preserve
+`system_observed_at` and `archived_at` so source publication and
+derived-evidence readiness cannot be confused. When a
+`ContextFlag` and its legacy
+`details["provenance"]` both represent availability, their values must agree
+exactly after UTC normalization; malformed values or mismatches are rejected.
+EIA continues to use its reviewed official release time in both locations.
 
 These records are research-only in PR34. They do not enter
 `approved_risk_context`, approve or block a real trade, resize or delay a real
@@ -196,17 +229,65 @@ must never alter the real risk decision.
 ## Timestamp meanings
 
 - `source_published_at` / `source_updated_at`: source-declared document times.
+- `source_available_at`: earliest trusted source/public availability retained
+  for explicit historical-source-time research.
+- `system_observed_at`: when this collector actually received or fetched the
+  immutable source revision.
 - `collected_at`: when trusted local code accepted the raw input.
+- `archived_at`: when raw bytes and immutable revision metadata were durably
+  published.
 - `normalized_at`: when source document metadata was normalized.
 - `requested_at`: when a classification request was created.
 - `classified_at`: when one classification attempt completed.
-- `available_at`: earliest trusted demonstrable public availability.
+- `available_at`: legacy compatibility availability; for new external
+  `ContextAIEvent` records it mirrors durable `evidence_ready_at`.
 - `validated_at`: when validation completed.
+- `evidence_ready_at`: no earlier than observation, archive/normalization,
+  classification, validation, canonical durable publication, and readiness
+  publication; live-system selection cannot precede it.
 - `event_time`: canonical time of an event or flag record.
 - `valid_from` / `valid_until`: event or policy window bounds; they are not
   proof that the underlying fact was publicly available.
 - `decision_evaluation_time`: the explicit as-of time of a shadow comparison.
 - `write_time`: local ledger write-attempt time.
+
+## Internal research preparation contracts
+
+The public source/classification contracts above normalize into PR37's internal
+`ResearchEvidence`; no second public event contract is introduced.
+`ResearchRunDefinition` pins one legacy SEC profile plus any exact external
+`ResearchSourceClassificationProfile` values. External ownership includes
+source, source type, optional fixed ticker, semantic adapter, extractor,
+normalizer, excerpt, scope, prompt, model, response schema, validator, and
+classifier configuration. This permits separate PLTR and LMT earnings profiles
+and multiple reviewed extractor variants without selecting two profiles for one
+revision.
+
+`ResearchSourceCoverageProfile` pins coverage by source, fixed ticker when
+applicable, and semantic adapter, together with its manifest identity,
+generation, and version. `ResearchAvailabilityMode` is either
+`LIVE_SYSTEM_READY` or `HISTORICAL_SOURCE_TIME`; external evidence cannot be
+prepared with the mode unset. Lifecycle revisions are resolved before exact
+duplicates. `ResearchEvidenceRelationship` records deterministic linkage such
+as a related SEC/company earnings occurrence without merging unequal text or
+transferring availability.
+
+The canonical classification-input fingerprint covers document, normalized,
+and excerpt hashes, trusted input scope, and the exact pinned semantic profile;
+it excludes generated output, IDs, timestamps, and latency. Separate complete-
+and policy-output fingerprints expose contradictory results. Unresolved
+conflicts fail closed. Reviewed resolution artifacts and their manifest
+generation are pinned by the run, and every selection-changing profile,
+coverage, availability, lifecycle, correlation, archive, and resolution setting
+enters the research fingerprint.
+
+`ResearchEvidence.canonical_classification_owner_fingerprint` is nullable and
+internal. Combined preparation assigns a shared value across SEC/company
+observations only when exact document, normalized-text, excerpt, and durable
+trusted-input-scope identity match. It does not replace either source-native
+`classification_input_fingerprint`; missing legacy trusted scope leaves the
+source-specific owner in place. The owner affects new research fingerprints,
+while its absence preserves unchanged legacy SEC-only payloads and hashes.
 
 ## Serialization and validation
 
@@ -221,6 +302,7 @@ Run contract checks offline with the repository virtual environment:
 & ".\.venv\Scripts\python.exe" -m pytest tests/unit/test_contracts_context.py
 ```
 
-PR35 adds live Gemini classification only. PR37 does not add SEC collection,
-news/social collection, raw manual inbox processing, a persistent generic
-research cache, real policy execution, or real risk integration.
+PR35 supplies the shared Gemini boundary; PR36 supplies SEC collection; the
+external pilot now supplies bounded news/social and earnings collection plus
+durable classification ownership. It still adds no raw manual inbox, generic
+AI database, real policy execution, or real risk integration.

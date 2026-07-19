@@ -29,6 +29,15 @@ PR35 appends provider-request count, retry count, deduplication state, and an
 optional reused-attempt ID. One row still represents one logical
 `classify()` attempt; internal Gemini HTTP retries do not create extra rows.
 
+The external-event pilot appends nullable metadata-only suffixes to
+`context_ai_events` and `context_classification_attempts`. The established
+column prefix is unchanged. The suffix records plural/global scope, distinct
+source/observation/archive/readiness timestamps, source-fact lifecycle,
+canonical classification input/output hashes and ownership, related-event
+identifiers, and reviewed conflict-resolution identifiers. These fields are
+audit metadata; raw payloads, normalized bodies, excerpts, prompts and provider
+bodies remain prohibited.
+
 `shadow_context_policy_evaluations` stores a research-only comparison at one
 `decision_evaluation_time`: evaluation/model-signal/optional-risk-decision IDs,
 matched event and flag ID lists, context fingerprint, policy version and config
@@ -66,6 +75,18 @@ It appends only the four nullable accounting/deduplication columns. PR35 does
 not apply the migration automatically and neither the classifier nor its live
 checker writes to QuestDB.
 
+After PR34 and PR35, existing ledgers must apply the external-event metadata
+migration before starting a writer that can emit those fields:
+
+```text
+db/schema/questdb_pr38_add_external_context_metadata.sql
+```
+
+The migration contains only ordered, one-column `ALTER TABLE ... ADD COLUMN IF
+NOT EXISTS` statements. It appends 22 columns to `context_ai_events` and 19 to
+`context_classification_attempts`; it does not reorder or relax validation of
+the deployed prefixes. Legacy rows receive nulls.
+
 Before applying it, back up the QuestDB volume, stop writers, and record counts
 for `context_ai_events` and `context_flags`. Execute the migration statements in
 file order through the local QuestDB Web Console, rerun them to prove
@@ -92,8 +113,9 @@ Both belong to explicit destructive reset workflows, not migration.
 ```
 
 The checker validates fresh-schema definitions, additive migration safety and
-idempotent forms, exact writer/config table agreement, context-snapshot linkage,
-forbidden raw-data names, and the absence of source/prompt/exception text
+idempotent forms, the unchanged deployed prefixes, exact external metadata
+suffixes, exact writer/reset-schema agreement, context-snapshot linkage,
+forbidden raw-data names, and the absence of source/prompt/exception/credential
 columns. It reads SQL only and does not contact QuestDB.
 
 `context_state_snapshots` remains the ledger target referenced by

@@ -1,347 +1,198 @@
 # market-relay-engine-v2
 
-`market-relay-engine-v2` is a local AI-assisted trading research and future paper/live execution system. It will eventually combine Databento market data, structured context, AI-interpreted context flags, a deterministic Python risk gate, Alpaca execution, and a QuestDB bot ledger.
+`market-relay-engine-v2` is a local AI-assisted trading research and
+paper-execution system. It combines official Databento market data, one
+canonical feature path, structured and AI-classified research context, a
+deterministic Python risk gate, Alpaca paper execution, and a QuestDB bot
+ledger.
 
-GitHub is the official source of truth for this project. The actual trading laptop is a separate machine; it must pull this repository from GitHub and run the committed PowerShell validation commands locally. Do not rely on hidden local files, manual setup, or uncommitted changes.
+GitHub is the project source of truth. The trading laptop is a separate machine
+that must pull committed code and run the repository validation locally. Never
+depend on hidden setup or uncommitted source changes.
 
-## PR 1 Scope
+## Safety boundary
 
-This first PR establishes the clean, portable skeleton for Trading System V2:
+- Historical market truth is official Databento DBN/Parquet data, not QuestDB.
+- Historical and live processing use the same canonical feature builder.
+- Per-tick and per-signal paths read bounded in-memory state; they do not query
+  QuestDB, disk archives, or network sources.
+- QuestDB stores bot/audit metadata, not raw market history, source documents,
+  classifier inputs, prompts, or provider bodies.
+- AI context, SEC filings, company news, earnings releases, and social posts are
+  research-only. They cannot alter model output, real risk decisions, order
+  timing or size, Alpaca calls, or positions.
+- The deterministic Python risk filter remains the final pre-trade authority.
+- Alpaca is paper-first and live trading is disabled by default.
+- The default shadow context policy is `NO_CHANGE`.
 
-- Python package layout under `src/market_relay_engine`
-- Minimal project metadata and dependency files
-- Safe placeholder environment and YAML config files
-- Initial documentation for architecture, contracts, risk rules, weekly analysis, and runbook usage
-- Local environment health check script
-- PowerShell test runner
-- Basic unit tests for imports, config files, YAML loading, and UTC time helpers
-- Empty tracked data/log directories through `.gitkeep` files
+See [architecture](docs/architecture.md), [data contracts](docs/data_contracts.md),
+and [agent guidance](AGENTS.md) before changing those boundaries.
 
-## Not Included In PR 1
+## Repository layout
 
-PR 1 intentionally does not include:
+```text
+config/                    committed non-secret operating configuration
+db/schema/                 QuestDB reset schema and additive migrations
+docs/                      architecture, source, and operating guides
+scripts/                   focused checkers and explicit runtime tools
+src/market_relay_engine/   Python package
+tests/unit/                deterministic component tests
+tests/integration/         subsystem-boundary tests
+data/, data_lake/, logs/   ignored local runtime output
+```
 
-- Databento connectivity or DBN ingestion
-- Alpaca broker connectivity
-- QuestDB connection logic, schemas, or market-data ingestion
-- EIA, FRED, USAspending, SEC EDGAR, yfinance, or other live API calls
-- Model training or inference
-- Reinforcement learning
-- Notebook-only logic
-- Live trading
+## Windows PowerShell setup
 
-No external services or APIs are touched by PR 1.
-
-## Windows PowerShell Setup
-
-Run these commands from a fresh clone on Windows PowerShell:
+Python 3.12 or newer is required. `requirements.txt` is the dependency source;
+`pyproject.toml` supplies package metadata and pytest settings.
 
 ```powershell
 py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-pip install -e .
-pytest
-python scripts/check_environment.py
-python scripts/check_config.py
-powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
+& ".\.venv\Scripts\python.exe" -m pip install --upgrade pip
+& ".\.venv\Scripts\python.exe" -m pip install -r requirements.txt
+& ".\.venv\Scripts\python.exe" -m pip install -e .
 ```
+
+The editable install is the repository’s setup/build step. No separate
+distributable-build command is configured.
 
 ## Validation
 
-The environment health check verifies Python 3.12+, required files, required directories, config placeholders, `.env.example`, and package imports:
+Fast offline baseline:
 
 ```powershell
-python scripts/check_environment.py
+& ".\.venv\Scripts\python.exe" scripts/check_environment.py
+& ".\.venv\Scripts\python.exe" scripts/check_config.py
+& ".\.venv\Scripts\python.exe" -m pytest
+git diff --check
 ```
 
-The full local validation runner executes the environment health check, config
-validation, config-required QuestDB health check, QuestDB schema validation, QuestDB
-writer validation, QuestDB analysis validation, contract validation, fixture
-validation, local market-data checks, feature builder checks, feature parity
-checks, cost model checks, label builder checks, and then pytest:
+Run the focused checker and tests for each changed subsystem. Important Phase 7
+offline checks include:
+
+```powershell
+& ".\.venv\Scripts\python.exe" scripts/check_contracts.py
+& ".\.venv\Scripts\python.exe" scripts/check_gemini_context.py
+& ".\.venv\Scripts\python.exe" scripts/check_sec_edgar.py
+& ".\.venv\Scripts\python.exe" scripts/check_context_shadow_evaluation.py
+& ".\.venv\Scripts\python.exe" scripts/check_external_event_sources.py
+& ".\.venv\Scripts\python.exe" scripts/check_questdb_schema.py
+& ".\.venv\Scripts\python.exe" scripts/check_questdb_writer.py
+```
+
+The external-source checker is offline by default. If it is unavailable on the
+checked-out branch, that pilot has not landed yet; do not substitute an
+invented command.
+
+Repository-wide validation:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts/run_tests.ps1
 ```
 
-These same commands must be run on the separate trading laptop after it pulls from GitHub.
+The full runner invokes the configured QuestDB health check, which is required
+by default. If local QuestDB is unavailable, report that environmental blocker
+and separately report the offline checks that passed.
 
-## Configuration
+No repository linter, formatter, static type checker, or GitHub Actions
+workflow is currently configured. Do not claim those checks ran. More detail is
+in [Development and validation](docs/development.md).
 
-Trading System V2 config files live under `config/`. They separate the final
-10-stock tradable universe (`PLTR`, `LMT`, `RTX`, `GD`, `AVAV`, `XOM`, `OXY`,
-`SLB`, `COP`, and `VLO`) from context symbols. The built structured sources are
-enabled for bounded, explicit collection outside the per-tick loop; yfinance
-remains development-only, unstructured sources and the AI context filter remain
-disabled, QuestDB remains ledger-only, and live trading remains disabled.
+## Configuration and secrets
 
-Validate configuration locally with:
-
-```powershell
-python scripts/check_config.py
-```
-
-See `docs/configuration.md` for the config file map and safety rules.
-
-PR26 adds a one-shot EIA WPSR collector for reviewed release-window flags and
-sector-level `OIL` numeric research context. Repository configuration
-intentionally enables it for explicit collection, but does not schedule it or
-grant it independent trading authority. Run
-`python scripts/check_eia_wpsr.py` for its offline fixture check and see
-`docs/eia_wpsr.md` for schedule, timing, provenance, and live-read guidance.
-
-## Phase 7 PR34 Contracts and PR35 Gemini Classifier
-
-PR34 defines provider-neutral raw-input, source-document, classification,
-validation, research event/flag, and hypothetical shadow-evaluation contracts.
-It also adds metadata-only QuestDB schemas for classification attempts and
-shadow evaluations. PR35 adds the reusable live Gemini implementation for this
-contract boundary; it does not collect SEC or news documents, archive source
-material, execute a shadow policy, or change a real `RiskDecision`.
-
-AI classification uses strict SEC 8-K/general event values. Deterministic Form 4
-purchase/sale values have a separate enum and are not valid classification
-responses. Only a bounded in-memory request may carry an excerpt; QuestDB must
-not store source bodies, request excerpts, prompts, or full provider exceptions.
-
-See `docs/data_contracts.md` and `docs/architecture.md`.
-
-The classifier uses `google-genai==2.10.0`, the Gemini Interactions API,
-`gemini-3.5-flash`, and the versioned `context_filter_v1` prompt. Automatic use
-is disabled. To configure the explicitly gated checker, copy the safe
-`GEMINI_API_KEY=` placeholder from `.env.example` to the ignored repository
-`.env` and supply the real value there. Never commit that file.
-
-```powershell
-python scripts/check_gemini_context.py --help
-python scripts/check_gemini_context.py
-python scripts/check_gemini_context.py --live --required
-```
-
-The default command is offline. `--live` makes one logical classification of
-short synthetic text. Every provider request uses `store=False`, no previous
-interaction, and no tools, browsing, code execution, agents, or server-side
-conversation history. Gemini output remains research context only and has no
-trade, risk, sizing, order, broker, or execution authority.
-
-## QuestDB Health Check
-
-The QuestDB health check validates the local HTTP `/exec` endpoint with
-`SELECT 1`. Repository configuration intentionally requires the local service
-by default:
-
-```powershell
-python scripts/check_questdb.py
-```
-
-`--required` makes that intent explicit on the server laptop:
-
-```powershell
-python scripts/check_questdb.py --required
-```
-
-See `docs/questdb_health.md` for the bot-ledger-only scope and PR34 migration
-boundary.
-
-## QuestDB Ledger Schema
-
-The official QuestDB V2 ledger schema lives at:
-
-```powershell
-db/schema/questdb_ledger_v1.sql
-```
-
-It is a destructive local-development reset for the bot ledger only. It drops
-old raw/PDF-era table names, drops existing V2 ledger tables, and recreates the
-V2 ledger schema. QuestDB must not store raw Databento market data or act as a
-historical market-data warehouse.
-
-Run the offline schema validation without QuestDB:
-
-```powershell
-python scripts/check_questdb_schema.py
-```
-
-Do not use the reset against a persistent ledger. After PR34 is merged, stop
-writers and upgrade an existing server with the idempotent additive migration:
+Configuration lives under `config/` and is validated by
+`scripts/check_config.py`. The current tradable universe is:
 
 ```text
-db/schema/questdb_pr34_add_phase7_context_ledger.sql
+PLTR LMT RTX GD AVAV XOM OXY SLB COP VLO
 ```
 
-Record pre/post counts for `context_ai_events` and `context_flags`, rerun the
-migration to prove idempotency, and confirm the counts are unchanged before
-restarting writers. Never use `scripts/check_questdb_schema.py --apply` as a
-persistent-ledger migration. See `docs/live_runbook.md` and
-`docs/questdb_schema.md` for the exact operator procedure.
+None is approved for live trading by default. EIA, FRED, USAspending, the local
+macro calendar, and the yfinance development proxy support bounded explicit
+collection outside the decision loop. Unstructured sources and automatic AI
+classification remain disabled by default.
 
-## QuestDB Ledger Writer
+Copy only needed blank names from `.env.example` into the ignored `.env`.
+Never commit or print `.env`. Relevant Phase 7 names include:
 
-The QuestDB ledger writer maps project records into the current V2 ledger
-tables and writes one safe `INSERT` at a time through the documented `/exec` GET
-path. Offline validation does not require QuestDB:
+```text
+GEMINI_API_KEY
+SEC_ORGANIZATION
+SEC_CONTACT_EMAIL
+VERITAWIRE_API_KEY
+```
+
+`VERITAWARE_API_KEY` is a spelling error and is not a supported committed name.
+See [Configuration](docs/configuration.md).
+
+## Current Phase 7 research flow
+
+```text
+source archive
+-> ContextRawInput
+-> ContextSourceDocument
+-> ContextClassificationRequest
+-> existing Gemini classifier and validator
+-> validated ContextAIEvent
+-> explicit bounded ResearchEvidence preparation
+-> in-memory as-of selection
+-> ShadowContextPolicyEvaluation (default NO_CHANGE)
+```
+
+PR35 owns the strict Gemini classifier. PR36 owns the content-addressed SEC
+archive and collector. PR37 owns leak-free bounded research evidence selection
+and the shadow evaluator. The external-event pilot extends those seams for:
+
+- Donald Trump Truth Social posts delivered by VeritaWire.
+- Lockheed Martin’s official all-news RSS and linked releases.
+- Palantir’s official investor-relations release endpoint.
+- Official PLTR and LMT earnings releases.
+
+External records retain source lifecycle revisions, independent readiness
+times, canonical classification ownership, non-merging relationships, explicit
+coverage, and union ticker/sector/global scope. Details and gated commands are
+in [External event ingestion](docs/external_event_ingestion.md).
+
+## QuestDB
+
+QuestDB is a metadata-only black-box recorder. Health uses the local HTTP
+`/exec` endpoint and is required by repository configuration:
 
 ```powershell
-python scripts/check_questdb_writer.py
+& ".\.venv\Scripts\python.exe" scripts/check_questdb.py
+& ".\.venv\Scripts\python.exe" scripts/check_questdb.py --required
 ```
 
-On the server laptop, run the required writer check only after health and schema
-validation:
+`db/schema/questdb_ledger_v1.sql` is a destructive reset for a disposable local
+ledger. Never use it to upgrade a persistent server. Apply reviewed additive
+migrations in file order with writers stopped, then run schema and writer
+checks. See [QuestDB schema](docs/questdb_schema.md),
+[writer](docs/questdb_writer.md), and [live runbook](docs/live_runbook.md).
 
-```powershell
-python scripts/check_questdb_writer.py --required
-```
+## Focused documentation
 
-See `docs/questdb_writer.md` for SQL length limits, escaping behavior, and PR 14
-fallback notes.
+- [Development and validation](docs/development.md)
+- [Architecture](docs/architecture.md)
+- [Configuration](docs/configuration.md)
+- [Data contracts](docs/data_contracts.md)
+- [External event ingestion](docs/external_event_ingestion.md)
+- [SEC EDGAR](docs/sec_edgar.md)
+- [Shadow context evaluation](docs/context_shadow_evaluation.md)
+- [QuestDB schema](docs/questdb_schema.md)
+- [Live runbook](docs/live_runbook.md)
+- [Testing fixtures](docs/testing_fixtures.md)
 
-## QuestDB Ledger Analysis
+## Contribution completion criteria
 
-The QuestDB ledger analysis reader is read-only. It runs small `SELECT`/`WITH`
-queries against existing V2 ledger tables through the documented `/exec` GET
-path and produces basic counts, slippage, PnL, risk, and system health
-summaries. It does not modify schema, write rows, tune risk, train models, or
-trade.
+Before handing off a change:
 
-Validate analysis behavior without QuestDB:
-
-```powershell
-python scripts/check_questdb_analysis.py
-```
-
-On the server laptop, after required health, schema, and writer checks:
-
-```powershell
-python scripts/check_questdb_analysis.py --required
-```
-
-See `docs/questdb_analysis.md` for read-only SQL guardrails and scope.
-
-## Core Contracts
-
-Core dataclass contracts live under `src/market_relay_engine/contracts`. They
-define lightweight frozen record shapes, strict string enums, UTC timestamp
-standards, UUID-based IDs, hash references, defensive collection copying, and
-JSON serialization for market, feature, model, risk, context, execution,
-ledger, and system-health layers.
-
-Validate contract examples locally with:
-
-```powershell
-python scripts/check_contracts.py
-```
-
-## Test Fixtures
-
-Reusable fake fixtures now live under `tests/fixtures/`. They provide stable
-sample records and scenarios for tests without using real Databento DBN files or
-external services.
-
-Validate them locally with:
-
-```powershell
-python scripts/check_fixtures.py
-```
-
-See `docs/testing_fixtures.md` for fixture scope, scenario descriptions, and the
-fake-data safety rules.
-
-## Historical Parquet Reader
-
-The local historical Parquet reader normalizes small local Parquet samples into
-`MarketRecord` objects for future Databento historical workflows. Test Parquets
-are generated fake files for reader mechanics only; they are not official
-Databento schema fixtures. See `docs/historical_parquet_reader.md`.
-
-Validate the reader without real market data:
-
-```powershell
-python scripts/check_historical_parquet.py
-```
-
-## DBN Inspection Utility
-
-The local DBN inspection utility summarizes ignored Databento `.dbn` and
-`.dbn.zst` files or batch folders without Databento cloud/API calls. File-info
-mode works without the optional Databento package and does not read DBN record
-contents. See `docs/dbn_inspection.md`.
-
-Validate the inspector without real market data:
-
-```powershell
-python scripts/check_dbn_inspector.py
-```
-
-## Canonical Feature Builder
-
-The canonical feature builder converts normalized `MarketRecord` objects into
-`FeatureSnapshot` objects through one shared path for historical and future live
-use. V1 features live inside `FeatureSnapshot.features`; the builder computes
-basic quote normalization and small rolling-window features without DBN parsing,
-QuestDB writes, model logic, or trading behavior. See
-`docs/feature_builder.md`.
-
-Validate the builder without external services:
-
-```powershell
-python scripts/check_feature_builder.py
-```
-
-## Historical/Live Feature Parity
-
-Historical-style and live-style feature paths both use the canonical
-`FeatureBuilder`. PR 8 adds deterministic parity helpers and tests for
-equivalent event-time-ordered `MarketRecord` inputs, while keeping live-style
-processing in caller arrival order. See `docs/feature_parity.md`.
-
-Validate parity without external services:
-
-```powershell
-python scripts/check_feature_parity.py
-```
-
-## Cost Model V1
-
-The cost model estimates whether a mid-to-mid expected move exceeds spread,
-round-trip slippage, size penalty, missed-fill risk, and the minimum edge
-buffer. PR 9 keeps this as a pure calculation module without labels, risk
-logic, broker execution, QuestDB writes, live data, or external APIs. See
-`docs/cost_model.md`.
-
-Validate the cost model without external services:
-
-```powershell
-python scripts/check_cost_model.py
-```
-
-## Label Builder
-
-The label builder creates deterministic cost-aware labels for future supervised
-training. It combines an existing `FeatureSnapshot`, a future normalized
-midprice observation at `1m`, `5m`, or `15m`, regular-hours protection, and the
-PR 9 cost model to produce `profitable_after_costs`. PR 10 does not train a
-model, run inference, call external APIs, read real market files, write QuestDB
-records, or place broker orders. See `docs/label_builder.md`.
-
-Validate the label builder without external services:
-
-```powershell
-python scripts/check_label_builder.py
-```
-
-## Safety Defaults
-
-The repository defaults to local development and future paper trading. `.env.example` contains placeholder variable names only. Do not commit real secrets, live credentials, logs, Databento DBN files, Parquet data, QuestDB data folders, or generated API exports.
-
-QuestDB is reserved for the bot ledger and black-box recorder: signals, risk
-decisions, context metadata and flags, classification attempts, hypothetical
-shadow evaluations, orders, fills, slippage, latency, PnL, outcomes, and system
-health. It must not be used as a historical market-data warehouse or store full
-filings, articles, social posts, normalized documents, prompts, request excerpts,
-credentials, or full provider exceptions.
-
-AI and external context have no direct trade, block, delay, or sizing authority.
-The deterministic Python risk filter remains the final pre-trade authority, and
-Alpaca remains paper-first.
+- Preserve unrelated work and review the complete diff.
+- Add deterministic tests for important success, failure, restart, and as-of
+  behavior.
+- Run focused checks, full pytest, `git diff --check`, and the full PowerShell
+  runner when its required local services are available.
+- Confirm no secret, downloaded source body, generated archive, cache, or local
+  database is tracked.
+- Update the relevant focused documentation.
+- Report files changed, verification and results, explicit blockers, known
+  limitations, and concrete follow-up work.
