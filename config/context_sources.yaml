@@ -103,17 +103,148 @@ unstructured_sources:
     request_rate_per_second: 2.0
     archive_path: "data_lake/context/sec_edgar"
 
-  news:
+  veritawire_truth_social:
     enabled: false
-    purpose: "News text for AI context flags."
+    purpose: "Research-only Donald Trump Truth Social posts delivered by VeritaWire."
     feeds_ai_context_filter: true
     direct_trade_authority: false
+    used_in_per_signal_path: false
+    archive_path: "data_lake/context/external_events"
+    api_key_env: VERITAWIRE_API_KEY
+    websocket_url: "wss://veritawire.com/ws"
+    connect_timeout_seconds: 10.0
+    close_timeout_seconds: 5.0
+    smoke_timeout_seconds: 20.0
+    ping_interval_seconds: 20.0
+    ping_timeout_seconds: 20.0
+    reconnect_base_delay_seconds: 0.5
+    reconnect_max_delay_seconds: 30.0
+    reconnect_jitter_fraction: 0.2
+    max_reconnect_attempts: 5
+    max_message_bytes: 1048576
+    max_records_per_run: 50
+    adapter_version: "veritawire_truth_social_v1"
+    extraction_version: "veritawire_content_html_v1"
+    normalizer_version: "external_html_text_v1"
+    excerpt_version: "scope_aware_excerpt_v1"
+    scope_resolver_version: "external_scope_v2"
+    classification_prompt_version: "context_filter_v2_scope"
+    classification_response_schema_version: "context_classification_response_v2"
+    classification_enabled_by_default: false
+    questdb_write_enabled_by_default: false
+    bootstrap_mode: "live_only"
+    backfill_enabled_by_default: false
 
-  social:
+  lockheed_martin_rss:
     enabled: false
-    purpose: "Social/political posts for AI context flags."
+    purpose: "Research-only Lockheed Martin official all-news RSS and linked articles."
     feeds_ai_context_filter: true
     direct_trade_authority: false
+    used_in_per_signal_path: false
+    archive_path: "data_lake/context/external_events"
+    feed_url: "https://news.lockheedmartin.com/news-releases?pagetemplate=rss"
+    allowed_domains:
+      - "news.lockheedmartin.com"
+      - "lockheedmartin.com"
+      - "www.lockheedmartin.com"
+    ticker: LMT
+    user_agent: "market-relay-engine-v2 external-event research collector"
+    timeout_seconds: 10.0
+    max_retries: 2
+    retry_base_delay_seconds: 0.5
+    retry_max_delay_seconds: 8.0
+    poll_interval_seconds: 30.0
+    max_response_bytes: 5242880
+    max_items_per_poll: 100
+    adapter_version: "lmt_rss_adapter_v1"
+    extraction_version: "lmt_article_html_v1"
+    normalizer_version: "external_html_text_v1"
+    excerpt_version: "scope_aware_excerpt_v1"
+    scope_resolver_version: "external_scope_v2"
+    classification_prompt_version: "context_filter_v2_scope"
+    classification_response_schema_version: "context_classification_response_v2"
+    classification_enabled_by_default: false
+    questdb_write_enabled_by_default: false
+    bootstrap_mode: "establish_checkpoint"
+    backfill_enabled_by_default: false
+
+  palantir_ir:
+    enabled: false
+    purpose: "Research-only Palantir official investor-relations releases."
+    feeds_ai_context_filter: true
+    direct_trade_authority: false
+    used_in_per_signal_path: false
+    archive_path: "data_lake/context/external_events"
+    index_page_url: "https://investors.palantir.com/news-events/news-releases/"
+    year_list_url: "https://investors.palantir.com/feed/PressRelease.svc/GetPressReleaseYearList?languageId=1"
+    release_list_url_template: "https://investors.palantir.com/feed/PressRelease.svc/GetPressReleaseList?languageId=1&bodyType=1&year={year}&includeTags=true&pressReleaseDateFilter=1"
+    allowed_domains:
+      - "investors.palantir.com"
+      - "palantir.com"
+      - "www.palantir.com"
+    ticker: PLTR
+    user_agent: "market-relay-engine-v2 external-event research collector"
+    timeout_seconds: 10.0
+    max_retries: 2
+    retry_base_delay_seconds: 0.5
+    retry_max_delay_seconds: 8.0
+    poll_interval_seconds: 30.0
+    max_response_bytes: 5242880
+    max_items_per_poll: 100
+    adapter_version: "pltr_ir_json_adapter_v1"
+    extraction_version: "pltr_ir_body_html_v1"
+    normalizer_version: "external_html_text_v1"
+    excerpt_version: "scope_aware_excerpt_v1"
+    scope_resolver_version: "external_scope_v2"
+    classification_prompt_version: "context_filter_v2_scope"
+    classification_response_schema_version: "context_classification_response_v2"
+    classification_enabled_by_default: false
+    questdb_write_enabled_by_default: false
+    bootstrap_mode: "establish_checkpoint"
+    backfill_enabled_by_default: false
+
+  company_earnings:
+    enabled: false
+    purpose: "Research-only discovery of official PLTR and LMT earnings releases."
+    feeds_ai_context_filter: true
+    direct_trade_authority: false
+    used_in_per_signal_path: false
+    archive_path: "data_lake/context/external_events"
+    pltr_events_url: "https://investors.palantir.com/events.html"
+    lmt_results_url: "https://investors.lockheedmartin.com/financial-information/quarterly-results/"
+    pltr_allowed_domains:
+      - "investors.palantir.com"
+      - "palantir.com"
+      - "www.palantir.com"
+    lmt_allowed_domains:
+      - "investors.lockheedmartin.com"
+      - "lockheedmartin.com"
+      - "www.lockheedmartin.com"
+    tickers:
+      - PLTR
+      - LMT
+    user_agent: "market-relay-engine-v2 external-event research collector"
+    timeout_seconds: 10.0
+    max_retries: 2
+    retry_base_delay_seconds: 0.5
+    retry_max_delay_seconds: 8.0
+    fast_poll_interval_seconds: 10.0
+    max_response_bytes: 10485760
+    max_items_per_poll: 20
+    adapter_version: "company_earnings_adapter_v1"
+    extraction_version: "company_earnings_release_v1"
+    pdf_extraction_version: "external_pdf_text_v2_bounded"
+    max_pdf_pages: 200
+    max_pdf_text_characters: 1000000
+    normalizer_version: "external_html_text_v1"
+    excerpt_version: "scope_aware_excerpt_v1"
+    scope_resolver_version: "external_scope_v2"
+    classification_prompt_version: "context_filter_v2_scope"
+    classification_response_schema_version: "context_classification_response_v2"
+    classification_enabled_by_default: false
+    questdb_write_enabled_by_default: false
+    bootstrap_mode: "establish_checkpoint"
+    backfill_enabled_by_default: false
 
 ai_context_filter:
   enabled: false

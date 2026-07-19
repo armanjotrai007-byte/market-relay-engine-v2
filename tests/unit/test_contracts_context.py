@@ -12,6 +12,7 @@ from market_relay_engine.contracts.context import (
     ContextClassificationStatus,
     ContextFlag,
     ContextIndicatorSnapshot,
+    ContextLifecycleState,
     ContextRawInput,
     ContextRiskLevel,
     ContextSourceDocument,
@@ -307,6 +308,91 @@ def test_classification_response_defaults_preserve_attempt_accounting_compatibil
     assert response.retry_count == 0
     assert response.deduplicated is False
     assert response.reused_classification_attempt_id is None
+
+
+def test_v2_scope_contracts_are_sorted_deduplicated_and_union_compatible() -> None:
+    request = replace(
+        make_context_classification_request(),
+        prompt_version="context_filter_v2_scope",
+        response_schema_version="context_classification_response_v2",
+        affected_tickers=["pltr", "LMT", "PLTR"],
+        affected_sectors=["defense", "DEFENSE", "oil"],
+        global_relevance=True,
+    )
+    response = replace(
+        make_context_classification_response(request=request),
+        response_schema_version="context_classification_response_v2",
+        affected_tickers=["PLTR", "LMT", "PLTR"],
+        affected_sectors=["oil", "DEFENSE", "defense"],
+        global_relevance=True,
+    )
+    event = replace(
+        make_context_ai_event(),
+        affected_tickers=["pltr", "LMT", "PLTR"],
+        affected_sectors=["oil", "DEFENSE", "defense"],
+        global_relevance=True,
+        prompt_version="context_filter_v2_scope",
+    )
+
+    assert request.affected_tickers == ["LMT", "PLTR"]
+    assert request.affected_sectors == ["DEFENSE", "OIL"]
+    assert response.affected_tickers == ["LMT", "PLTR"]
+    assert response.affected_sectors == ["DEFENSE", "OIL"]
+    assert event.affected_tickers == ["LMT", "PLTR"]
+    assert event.affected_sectors == ["DEFENSE", "OIL"]
+    assert event.global_relevance is True
+
+
+def test_v1_scope_contract_preserves_legacy_ticker_order_and_defaults() -> None:
+    request = replace(
+        make_context_classification_request(),
+        affected_tickers=["RTX", "LMT", "RTX"],
+    )
+    response = make_context_classification_response(request=request)
+
+    assert request.affected_tickers == ["RTX", "LMT", "RTX"]
+    assert request.affected_sectors == []
+    assert request.global_relevance is None
+    assert response.affected_tickers == []
+    assert response.affected_sectors == []
+    assert response.global_relevance is None
+
+
+def test_external_event_lineage_metadata_is_typed_and_normalized() -> None:
+    event = replace(
+        make_context_ai_event(),
+        source_fact_id="truth-123",
+        source_revision_id="truth-123-r2",
+        revision_sequence=2,
+        supersedes_revision_id="truth-123-r1",
+        lifecycle_state=ContextLifecycleState.UPDATED,
+        lifecycle_effective_at=datetime.fromisoformat("2026-07-01T10:00:00-04:00"),
+        source_available_at=datetime.fromisoformat("2026-07-01T10:00:00-04:00"),
+        system_observed_at=datetime.fromisoformat("2026-07-01T10:00:10-04:00"),
+        archived_at=datetime.fromisoformat("2026-07-01T10:00:11-04:00"),
+        evidence_ready_at=datetime.fromisoformat("2026-07-01T10:00:14-04:00"),
+        classification_input_fingerprint="a" * 64,
+        complete_output_fingerprint="b" * 64,
+        policy_output_fingerprint="c" * 64,
+        canonical_classification_attempt_id="classification_attempt_live",
+        correlation_group_id="earnings-PLTR-2026-Q1",
+        related_event_ids=["event_b", "event_a", "event_a"],
+        relationship_types=["SAME_PACKAGE", "SEC_RESULTS_CANDIDATE"],
+        conflict_resolution_generation=3,
+    )
+
+    assert event.lifecycle_effective_at == datetime(2026, 7, 1, 14, 0, tzinfo=UTC)
+    assert event.system_observed_at == datetime(2026, 7, 1, 14, 0, 10, tzinfo=UTC)
+    assert event.evidence_ready_at == datetime(2026, 7, 1, 14, 0, 14, tzinfo=UTC)
+    assert event.related_event_ids == ["event_a", "event_b"]
+
+
+def test_v2_completed_response_requires_explicit_global_scope() -> None:
+    with pytest.raises(ValueError, match="explicit global_relevance"):
+        replace(
+            make_context_classification_response(),
+            response_schema_version="context_classification_response_v2",
+        )
 
 
 @pytest.mark.parametrize(

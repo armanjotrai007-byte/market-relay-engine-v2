@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import timedelta
 import json
 import re
 
 import pytest
 
 from market_relay_engine.ai_context.prompting import (
+    CONTEXT_FILTER_PROMPT_VERSION_V2,
     load_prompt_template,
     render_context_filter_prompt,
 )
 from market_relay_engine.ai_context.schema import (
+    CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
     build_context_filter_response_schema,
 )
 from market_relay_engine.contracts.context import (
@@ -76,6 +79,49 @@ def test_rendered_prompt_and_schema_use_exact_contract_enum_sets() -> None:
     assert schema["properties"]["risk_level"]["enum"] == expected_risk_levels
     assert schema["properties"]["urgency"]["enum"] == expected_urgencies
     assert _json_section(prompt, "RESPONSE_JSON_SCHEMA") == schema
+
+
+def test_external_prompt_excludes_observation_ids_and_timestamps() -> None:
+    base = replace(
+        _request(),
+        prompt_version=CONTEXT_FILTER_PROMPT_VERSION_V2,
+        response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        classification_input_fingerprint="a" * 64,
+        affected_sectors=["DEFENSE"],
+        global_relevance=False,
+    )
+    later_observation = replace(
+        base,
+        classification_request_id="classification-request-later",
+        raw_input_id="raw-input-later",
+        source_document_id="source-document-later",
+        source_locator="source-fact-later",
+        source_uri="https://example.test/later",
+        collected_at=base.collected_at + timedelta(days=1),
+        normalized_at=base.normalized_at + timedelta(days=1),
+        source_published_at=base.source_published_at + timedelta(days=1),
+    )
+
+    first_prompt = render_context_filter_prompt(
+        base,
+        sector_hints=("DEFENSE",),
+        allowed_tickers=("LMT", "PLTR"),
+        allowed_sectors=("DEFENSE",),
+        response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+    )
+    later_prompt = render_context_filter_prompt(
+        later_observation,
+        sector_hints=("DEFENSE",),
+        allowed_tickers=("LMT", "PLTR"),
+        allowed_sectors=("DEFENSE",),
+        response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+    )
+
+    assert later_prompt == first_prompt
+    trusted = _json_section(first_prompt, "TRUSTED_SYSTEM_METADATA_JSON")
+    assert "raw_input_id" not in trusted
+    assert "source_document_id" not in trusted
+    assert "collected_at" not in trusted
 
 
 def test_response_schema_is_strict_bounded_and_model_owned_only() -> None:
@@ -218,3 +264,83 @@ def test_prompt_renderer_rejects_invalid_sector_hints(
             _request(),
             sector_hints=sector_hints,
         )
+
+
+def test_v2_prompt_schema_adds_strict_union_scope_without_changing_v1() -> None:
+    v1_schema = build_context_filter_response_schema()
+    request = replace(
+        _request(),
+        prompt_version=CONTEXT_FILTER_PROMPT_VERSION_V2,
+        response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        affected_tickers=["pltr", "LMT", "PLTR"],
+        affected_sectors=["defense", "DEFENSE"],
+        global_relevance=False,
+    )
+    prompt = render_context_filter_prompt(
+        request,
+        response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        allowed_tickers=("PLTR", "lmt", "PLTR"),
+        allowed_sectors=("defense", "DEFENSE", "oil"),
+    )
+    schema = _json_section(prompt, "RESPONSE_JSON_SCHEMA")
+    metadata = _json_section(prompt, "TRUSTED_SYSTEM_METADATA_JSON")
+
+    assert set(v1_schema["properties"]) == {
+        "status",
+        "event_type",
+        "risk_level",
+        "urgency",
+        "confidence",
+        "summary",
+    }
+    assert request.affected_tickers == ["LMT", "PLTR"]
+    assert request.affected_sectors == ["DEFENSE"]
+    assert metadata["allowed_tickers"] == ["LMT", "PLTR"]
+    assert metadata["allowed_sectors"] == ["DEFENSE", "OIL"]
+    assert metadata["affected_tickers"] == ["LMT", "PLTR"]
+    assert metadata["affected_sectors"] == ["DEFENSE"]
+    assert metadata["global_relevance"] is False
+    assert schema["properties"]["affected_tickers"]["items"]["enum"] == [
+        "LMT",
+        "PLTR",
+    ]
+    assert schema["properties"]["affected_sectors"]["items"]["enum"] == [
+        "DEFENSE",
+        "OIL",
+    ]
+    assert schema["properties"]["global_relevance"] == {"type": "boolean"}
+    assert {
+        "affected_tickers",
+        "affected_sectors",
+        "global_relevance",
+    }.issubset(schema["required"])
+    assert "Ticker, sector, and global scope may all apply" in prompt
+
+
+def test_prompt_and_response_schema_versions_cannot_be_mixed() -> None:
+    with pytest.raises(ValueError, match="prompt and response schema versions"):
+        render_context_filter_prompt(
+            _request(),
+            response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("allowed_tickers", ["LMT"]),
+        ("allowed_sectors", "DEFENSE"),
+    ],
+)
+def test_v2_schema_rejects_non_tuple_scope_allowlists(
+    field_name: str,
+    value: object,
+) -> None:
+    kwargs = {
+        "response_schema_version": CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        "allowed_tickers": ("LMT",),
+        "allowed_sectors": ("DEFENSE",),
+        field_name: value,
+    }
+    with pytest.raises(TypeError, match=field_name):
+        build_context_filter_response_schema(**kwargs)  # type: ignore[arg-type]

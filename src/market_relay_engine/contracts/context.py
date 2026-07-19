@@ -95,6 +95,15 @@ class ContextClassificationStatus(str, Enum):
     PROVIDER_FAILED = "PROVIDER_FAILED"
 
 
+class ContextLifecycleState(str, Enum):
+    """Lifecycle state for a revisable external source fact."""
+
+    ACTIVE = "ACTIVE"
+    UPDATED = "UPDATED"
+    DELETED = "DELETED"
+    RETRACTED = "RETRACTED"
+
+
 class ShadowContextAction(str, Enum):
     """Hypothetical action emitted only by a future shadow evaluator."""
 
@@ -133,6 +142,21 @@ def _copy_string_list(value: object, field_name: str) -> list[str]:
         require_non_empty_string(item, f"{field_name} item")
         copied.append(item)
     return copied
+
+
+def _canonical_scope_list(value: object, field_name: str) -> list[str]:
+    """Return an uppercase, sorted, duplicate-free scope list."""
+
+    copied = _copy_string_list(value, field_name)
+    return sorted({item.strip().upper() for item in copied})
+
+
+def _optional_bool(value: object | None, field_name: str) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise TypeError(f"{field_name} must be bool or None")
+    return value
 
 
 def _require_sha256(value: object, field_name: str) -> str:
@@ -177,6 +201,22 @@ def _non_negative_int(value: object, field_name: str) -> int:
     return value
 
 
+def _optional_positive_int(value: object | None, field_name: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f"{field_name} must be an integer or None")
+    if value < 1:
+        raise ValueError(f"{field_name} must be positive")
+    return value
+
+
+def _optional_non_negative_int(value: object | None, field_name: str) -> int | None:
+    if value is None:
+        return None
+    return _non_negative_int(value, field_name)
+
+
 def _validate_common_record_fields(
     *,
     schema_version: str,
@@ -184,6 +224,39 @@ def _validate_common_record_fields(
 ) -> None:
     require_non_empty_string(schema_version, "schema_version")
     require_optional_non_empty_string(trace_id, "trace_id")
+
+
+def _validate_external_lineage_fields(record: object) -> None:
+    """Validate additive external-source lineage without affecting legacy records."""
+
+    for field_name in (
+        "source_fact_id",
+        "source_revision_id",
+        "supersedes_revision_id",
+    ):
+        require_optional_non_empty_string(getattr(record, field_name), field_name)
+    object.__setattr__(
+        record,
+        "revision_sequence",
+        _optional_positive_int(getattr(record, "revision_sequence"), "revision_sequence"),
+    )
+    _optional_enum(
+        getattr(record, "lifecycle_state"),
+        ContextLifecycleState,
+        "lifecycle_state",
+    )
+    for field_name in (
+        "source_available_at",
+        "system_observed_at",
+        "archived_at",
+        "lifecycle_effective_at",
+        "evidence_ready_at",
+    ):
+        object.__setattr__(
+            record,
+            field_name,
+            optional_utc_datetime(getattr(record, field_name)),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -204,6 +277,18 @@ class ContextRawInput:
     source_uri: str | None = None
     source_published_at: datetime | None = None
     source_updated_at: datetime | None = None
+    affected_sectors: list[str] = field(default_factory=list)
+    global_relevance: bool | None = None
+    source_fact_id: str | None = None
+    source_revision_id: str | None = None
+    revision_sequence: int | None = None
+    supersedes_revision_id: str | None = None
+    lifecycle_state: ContextLifecycleState | None = None
+    lifecycle_effective_at: datetime | None = None
+    source_available_at: datetime | None = None
+    system_observed_at: datetime | None = None
+    archived_at: datetime | None = None
+    evidence_ready_at: datetime | None = None
     schema_version: str = DEFAULT_SCHEMA_VERSION
     trace_id: str | None = None
 
@@ -222,6 +307,16 @@ class ContextRawInput:
             "affected_tickers",
             _copy_string_list(self.affected_tickers, "affected_tickers"),
         )
+        object.__setattr__(
+            self,
+            "affected_sectors",
+            _canonical_scope_list(self.affected_sectors, "affected_sectors"),
+        )
+        object.__setattr__(
+            self,
+            "global_relevance",
+            _optional_bool(self.global_relevance, "global_relevance"),
+        )
         object.__setattr__(self, "collected_at", utc_datetime(self.collected_at))
         object.__setattr__(
             self,
@@ -233,6 +328,7 @@ class ContextRawInput:
             "source_updated_at",
             optional_utc_datetime(self.source_updated_at),
         )
+        _validate_external_lineage_fields(self)
         _validate_common_record_fields(
             schema_version=self.schema_version,
             trace_id=self.trace_id,
@@ -259,6 +355,18 @@ class ContextSourceDocument:
     source_uri: str | None = None
     source_published_at: datetime | None = None
     source_updated_at: datetime | None = None
+    affected_sectors: list[str] = field(default_factory=list)
+    global_relevance: bool | None = None
+    source_fact_id: str | None = None
+    source_revision_id: str | None = None
+    revision_sequence: int | None = None
+    supersedes_revision_id: str | None = None
+    lifecycle_state: ContextLifecycleState | None = None
+    lifecycle_effective_at: datetime | None = None
+    source_available_at: datetime | None = None
+    system_observed_at: datetime | None = None
+    archived_at: datetime | None = None
+    evidence_ready_at: datetime | None = None
     schema_version: str = DEFAULT_SCHEMA_VERSION
     trace_id: str | None = None
 
@@ -278,6 +386,16 @@ class ContextSourceDocument:
             "affected_tickers",
             _copy_string_list(self.affected_tickers, "affected_tickers"),
         )
+        object.__setattr__(
+            self,
+            "affected_sectors",
+            _canonical_scope_list(self.affected_sectors, "affected_sectors"),
+        )
+        object.__setattr__(
+            self,
+            "global_relevance",
+            _optional_bool(self.global_relevance, "global_relevance"),
+        )
         object.__setattr__(self, "collected_at", utc_datetime(self.collected_at))
         object.__setattr__(self, "normalized_at", utc_datetime(self.normalized_at))
         object.__setattr__(
@@ -290,6 +408,7 @@ class ContextSourceDocument:
             "source_updated_at",
             optional_utc_datetime(self.source_updated_at),
         )
+        _validate_external_lineage_fields(self)
         _validate_common_record_fields(
             schema_version=self.schema_version,
             trace_id=self.trace_id,
@@ -320,6 +439,21 @@ class ContextClassificationRequest:
     source_uri: str | None = None
     source_published_at: datetime | None = None
     source_updated_at: datetime | None = None
+    affected_sectors: list[str] = field(default_factory=list)
+    global_relevance: bool | None = None
+    response_schema_version: str | None = None
+    excerpt_hash: str | None = None
+    classification_input_fingerprint: str | None = None
+    source_fact_id: str | None = None
+    source_revision_id: str | None = None
+    revision_sequence: int | None = None
+    supersedes_revision_id: str | None = None
+    lifecycle_state: ContextLifecycleState | None = None
+    lifecycle_effective_at: datetime | None = None
+    source_available_at: datetime | None = None
+    system_observed_at: datetime | None = None
+    archived_at: datetime | None = None
+    evidence_ready_at: datetime | None = None
     schema_version: str = DEFAULT_SCHEMA_VERSION
     trace_id: str | None = None
 
@@ -337,16 +471,48 @@ class ContextClassificationRequest:
             require_non_empty_string(getattr(self, field_name), field_name)
         require_optional_non_empty_string(self.source_platform, "source_platform")
         require_optional_non_empty_string(self.source_uri, "source_uri")
+        require_optional_non_empty_string(
+            self.response_schema_version,
+            "response_schema_version",
+        )
         object.__setattr__(
             self, "raw_input_hash", _require_sha256(self.raw_input_hash, "raw_input_hash")
         )
         object.__setattr__(
             self, "document_hash", _require_sha256(self.document_hash, "document_hash")
         )
+        scope_copy = (
+            _canonical_scope_list
+            if self.prompt_version == "context_filter_v2_scope"
+            else _copy_string_list
+        )
         object.__setattr__(
             self,
             "affected_tickers",
-            _copy_string_list(self.affected_tickers, "affected_tickers"),
+            scope_copy(self.affected_tickers, "affected_tickers"),
+        )
+        object.__setattr__(
+            self,
+            "affected_sectors",
+            _canonical_scope_list(self.affected_sectors, "affected_sectors"),
+        )
+        object.__setattr__(
+            self,
+            "global_relevance",
+            _optional_bool(self.global_relevance, "global_relevance"),
+        )
+        object.__setattr__(
+            self,
+            "excerpt_hash",
+            _optional_sha256(self.excerpt_hash, "excerpt_hash"),
+        )
+        object.__setattr__(
+            self,
+            "classification_input_fingerprint",
+            _optional_sha256(
+                self.classification_input_fingerprint,
+                "classification_input_fingerprint",
+            ),
         )
         object.__setattr__(self, "requested_at", utc_datetime(self.requested_at))
         object.__setattr__(self, "collected_at", utc_datetime(self.collected_at))
@@ -361,6 +527,7 @@ class ContextClassificationRequest:
             "source_updated_at",
             optional_utc_datetime(self.source_updated_at),
         )
+        _validate_external_lineage_fields(self)
         _validate_common_record_fields(
             schema_version=self.schema_version,
             trace_id=self.trace_id,
@@ -392,6 +559,17 @@ class ContextClassificationResponse:
     retry_count: int = 0
     deduplicated: bool = False
     reused_classification_attempt_id: str | None = None
+    response_schema_version: str | None = None
+    affected_tickers: list[str] = field(default_factory=list)
+    affected_sectors: list[str] = field(default_factory=list)
+    global_relevance: bool | None = None
+    classification_input_fingerprint: str | None = None
+    complete_output_fingerprint: str | None = None
+    policy_output_fingerprint: str | None = None
+    canonical_classification_attempt_id: str | None = None
+    classification_conflict_id: str | None = None
+    conflict_resolution_id: str | None = None
+    conflict_resolution_generation: int | None = None
     schema_version: str = DEFAULT_SCHEMA_VERSION
     trace_id: str | None = None
 
@@ -420,6 +598,53 @@ class ContextClassificationResponse:
         require_optional_non_empty_string(
             self.reused_classification_attempt_id,
             "reused_classification_attempt_id",
+        )
+        for field_name in (
+            "response_schema_version",
+            "canonical_classification_attempt_id",
+            "classification_conflict_id",
+            "conflict_resolution_id",
+        ):
+            require_optional_non_empty_string(getattr(self, field_name), field_name)
+        canonical_scope = self.response_schema_version == (
+            "context_classification_response_v2"
+        )
+        object.__setattr__(
+            self,
+            "affected_tickers",
+            (
+                _canonical_scope_list
+                if canonical_scope
+                else _copy_string_list
+            )(self.affected_tickers, "affected_tickers"),
+        )
+        object.__setattr__(
+            self,
+            "affected_sectors",
+            _canonical_scope_list(self.affected_sectors, "affected_sectors"),
+        )
+        object.__setattr__(
+            self,
+            "global_relevance",
+            _optional_bool(self.global_relevance, "global_relevance"),
+        )
+        for field_name in (
+            "classification_input_fingerprint",
+            "complete_output_fingerprint",
+            "policy_output_fingerprint",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _optional_sha256(getattr(self, field_name), field_name),
+            )
+        object.__setattr__(
+            self,
+            "conflict_resolution_generation",
+            _optional_non_negative_int(
+                self.conflict_resolution_generation,
+                "conflict_resolution_generation",
+            ),
         )
         _non_negative_int(self.provider_request_count, "provider_request_count")
         _non_negative_int(self.retry_count, "retry_count")
@@ -465,6 +690,11 @@ class ContextClassificationResponse:
             and self.risk_level is ContextRiskLevel.UNKNOWN
             and self.urgency is ContextUrgency.UNKNOWN
         )
+        scope_is_empty = (
+            not self.affected_tickers
+            and not self.affected_sectors
+            and self.global_relevance is None
+        )
         if self.status is ContextClassificationStatus.VALID:
             if (
                 self.event_type is ContextClassificationEventType.UNKNOWN
@@ -476,28 +706,43 @@ class ContextClassificationResponse:
                 raise ValueError("VALID responses require complete classification fields")
             if self.safe_failure_category is not None or self.safe_failure_summary is not None:
                 raise ValueError("VALID responses cannot include provider failure fields")
+            self._validate_v2_scope_shape()
             return
         if not classification_is_unknown or self.confidence is not None:
             raise ValueError(f"{self.status.value} responses cannot include classification fields")
         if self.status is ContextClassificationStatus.ABSTAINED:
             if self.safe_failure_category is not None or self.safe_failure_summary is not None:
                 raise ValueError("ABSTAINED responses cannot include provider failure fields")
+            self._validate_v2_scope_shape()
             return
         if self.status is ContextClassificationStatus.VALIDATION_REJECTED:
             if (
                 self.summary is not None
                 or self.safe_failure_category is not None
                 or self.safe_failure_summary is not None
+                or not scope_is_empty
             ):
                 raise ValueError("VALIDATION_REJECTED responses cannot include result payloads")
             return
         if self.status is ContextClassificationStatus.PROVIDER_FAILED:
-            if self.summary is not None or self.safe_failure_category is None:
+            if (
+                self.summary is not None
+                or self.safe_failure_category is None
+                or not scope_is_empty
+            ):
                 raise ValueError(
                     "PROVIDER_FAILED responses require a safe failure category and no summary"
                 )
             return
         raise AssertionError("unhandled classification status")
+
+    def _validate_v2_scope_shape(self) -> None:
+        if self.response_schema_version != "context_classification_response_v2":
+            return
+        if self.global_relevance is None:
+            raise ValueError(
+                "v2 VALID and ABSTAINED responses require explicit global_relevance"
+            )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -598,6 +843,8 @@ class ContextAIEvent:
     event_type: ContextClassificationEventType
     context_event_id: str = field(default_factory=lambda: new_record_id("context_event"))
     affected_sector: str | None = None
+    affected_sectors: list[str] = field(default_factory=list)
+    global_relevance: bool | None = None
     sentiment: str | None = None
     urgency: ContextUrgency | None = None
     risk_level: ContextRiskLevel | None = None
@@ -626,6 +873,26 @@ class ContextAIEvent:
     available_at: datetime | None = None
     validated_at: datetime | None = None
     provider: str | None = None
+    source_available_at: datetime | None = None
+    system_observed_at: datetime | None = None
+    archived_at: datetime | None = None
+    evidence_ready_at: datetime | None = None
+    source_fact_id: str | None = None
+    source_revision_id: str | None = None
+    revision_sequence: int | None = None
+    supersedes_revision_id: str | None = None
+    lifecycle_state: ContextLifecycleState | None = None
+    lifecycle_effective_at: datetime | None = None
+    classification_input_fingerprint: str | None = None
+    complete_output_fingerprint: str | None = None
+    policy_output_fingerprint: str | None = None
+    canonical_classification_attempt_id: str | None = None
+    correlation_group_id: str | None = None
+    related_event_ids: list[str] = field(default_factory=list)
+    relationship_types: list[str] = field(default_factory=list)
+    classification_conflict_id: str | None = None
+    conflict_resolution_id: str | None = None
+    conflict_resolution_generation: int | None = None
     schema_version: str = DEFAULT_SCHEMA_VERSION
     trace_id: str | None = None
 
@@ -665,15 +932,50 @@ class ContextAIEvent:
             "source_uri",
             "source_locator",
             "provider",
+            "canonical_classification_attempt_id",
+            "correlation_group_id",
+            "classification_conflict_id",
+            "conflict_resolution_id",
         ):
             require_optional_non_empty_string(getattr(self, field_name), field_name)
         _require_enum(self.event_type, ContextClassificationEventType, "event_type")
         _optional_enum(self.urgency, ContextUrgency, "urgency")
         _optional_enum(self.risk_level, ContextRiskLevel, "risk_level")
+        uses_explicit_scope = (
+            self.global_relevance is not None
+            or bool(self.affected_sectors)
+            or self.prompt_version == "context_filter_v2_scope"
+        )
         object.__setattr__(
             self,
             "affected_tickers",
-            _copy_string_list(self.affected_tickers, "affected_tickers"),
+            (
+                _canonical_scope_list
+                if uses_explicit_scope
+                else _copy_string_list
+            )(self.affected_tickers, "affected_tickers"),
+        )
+        object.__setattr__(
+            self,
+            "affected_sectors",
+            _canonical_scope_list(self.affected_sectors, "affected_sectors"),
+        )
+        object.__setattr__(
+            self,
+            "global_relevance",
+            _optional_bool(self.global_relevance, "global_relevance"),
+        )
+        object.__setattr__(
+            self,
+            "related_event_ids",
+            sorted(set(_copy_string_list(self.related_event_ids, "related_event_ids"))),
+        )
+        object.__setattr__(
+            self,
+            "relationship_types",
+            sorted(
+                set(_copy_string_list(self.relationship_types, "relationship_types"))
+            ),
         )
         object.__setattr__(
             self,
@@ -690,6 +992,25 @@ class ContextAIEvent:
             "document_hash",
             _optional_sha256(self.document_hash, "document_hash"),
         )
+        for field_name in (
+            "classification_input_fingerprint",
+            "complete_output_fingerprint",
+            "policy_output_fingerprint",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                _optional_sha256(getattr(self, field_name), field_name),
+            )
+        object.__setattr__(
+            self,
+            "conflict_resolution_generation",
+            _optional_non_negative_int(
+                self.conflict_resolution_generation,
+                "conflict_resolution_generation",
+            ),
+        )
+        _validate_external_lineage_fields(self)
         _validate_common_record_fields(
             schema_version=self.schema_version,
             trace_id=self.trace_id,
@@ -900,6 +1221,7 @@ __all__ = [
     "ContextClassificationStatus",
     "ContextFlag",
     "ContextIndicatorSnapshot",
+    "ContextLifecycleState",
     "ContextRawInput",
     "ContextRiskLevel",
     "ContextSourceDocument",

@@ -8,6 +8,8 @@ import json
 from typing import Any, Iterable
 
 from market_relay_engine.ai_context.schema import (
+    CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V1,
+    CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
     DEFAULT_MAX_SUMMARY_CHARACTERS,
     build_context_filter_response_schema,
 )
@@ -20,10 +22,19 @@ from market_relay_engine.contracts.context import (
 
 
 DEFAULT_MAX_INPUT_CHARACTERS = 12_000
-SUPPORTED_PROMPT_VERSIONS = frozenset({"context_filter_v1"})
+CONTEXT_FILTER_PROMPT_VERSION_V1 = "context_filter_v1"
+CONTEXT_FILTER_PROMPT_VERSION_V2 = "context_filter_v2_scope"
+SUPPORTED_PROMPT_VERSIONS = frozenset(
+    {CONTEXT_FILTER_PROMPT_VERSION_V1, CONTEXT_FILTER_PROMPT_VERSION_V2}
+)
 
 _PROMPT_FILE_BY_VERSION = {
-    "context_filter_v1": "context_filter_v1.md",
+    CONTEXT_FILTER_PROMPT_VERSION_V1: "context_filter_v1.md",
+    CONTEXT_FILTER_PROMPT_VERSION_V2: "context_filter_v2_scope.md",
+}
+_RESPONSE_SCHEMA_BY_PROMPT_VERSION = {
+    CONTEXT_FILTER_PROMPT_VERSION_V1: CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V1,
+    CONTEXT_FILTER_PROMPT_VERSION_V2: CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
 }
 _PLACEHOLDERS = {
     "@@TRUSTED_METADATA_JSON@@",
@@ -85,29 +96,56 @@ def _bounded_positive_integer(value: object, field_name: str) -> int:
 def _trusted_metadata(
     request: ContextClassificationRequest,
     sector_hints: Iterable[str],
+    *,
+    allowed_tickers: tuple[str, ...] = (),
+    allowed_sectors: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     if isinstance(sector_hints, (str, bytes)):
         raise ValueError("sector_hints must be an iterable of non-empty strings")
     sectors = list(sector_hints)
     if any(not isinstance(item, str) or not item.strip() for item in sectors):
         raise ValueError("sector_hints must contain only non-empty strings")
-    return {
-        "affected_tickers": list(request.affected_tickers),
-        "collected_at": _isoformat(request.collected_at),
-        "document_hash": request.document_hash,
-        "normalized_at": _isoformat(request.normalized_at),
-        "raw_input_hash": request.raw_input_hash,
-        "raw_input_id": request.raw_input_id,
-        "sector_hints": sectors,
-        "source": request.source,
-        "source_document_id": request.source_document_id,
-        "source_locator": request.source_locator,
-        "source_platform": request.source_platform,
-        "source_published_at": _isoformat(request.source_published_at),
-        "source_type": request.source_type,
-        "source_updated_at": _isoformat(request.source_updated_at),
-        "source_uri": request.source_uri,
-    }
+    if request.classification_input_fingerprint is not None:
+        # External archives own a canonical semantic request fingerprint that
+        # deliberately excludes observation IDs and timestamps.  Keep the
+        # provider-visible trusted metadata aligned with that identity so a
+        # later observation/backfill can safely reuse the first result.
+        metadata = {
+            "affected_tickers": list(request.affected_tickers),
+            "document_hash": request.document_hash,
+            "sector_hints": sectors,
+            "source": request.source,
+            "source_platform": request.source_platform,
+            "source_type": request.source_type,
+        }
+    else:
+        metadata = {
+            "affected_tickers": list(request.affected_tickers),
+            "collected_at": _isoformat(request.collected_at),
+            "document_hash": request.document_hash,
+            "normalized_at": _isoformat(request.normalized_at),
+            "raw_input_hash": request.raw_input_hash,
+            "raw_input_id": request.raw_input_id,
+            "sector_hints": sectors,
+            "source": request.source,
+            "source_document_id": request.source_document_id,
+            "source_locator": request.source_locator,
+            "source_platform": request.source_platform,
+            "source_published_at": _isoformat(request.source_published_at),
+            "source_type": request.source_type,
+            "source_updated_at": _isoformat(request.source_updated_at),
+            "source_uri": request.source_uri,
+        }
+    if request.prompt_version == CONTEXT_FILTER_PROMPT_VERSION_V2:
+        metadata.update(
+            {
+                "affected_sectors": list(request.affected_sectors),
+                "global_relevance": request.global_relevance,
+                "allowed_tickers": list(allowed_tickers),
+                "allowed_sectors": list(allowed_sectors),
+            }
+        )
+    return metadata
 
 
 def render_context_filter_prompt(
@@ -116,6 +154,9 @@ def render_context_filter_prompt(
     sector_hints: Iterable[str] = (),
     max_input_characters: int = DEFAULT_MAX_INPUT_CHARACTERS,
     max_summary_characters: int = DEFAULT_MAX_SUMMARY_CHARACTERS,
+    allowed_tickers: tuple[str, ...] = (),
+    allowed_sectors: tuple[str, ...] = (),
+    response_schema_version: str | None = None,
 ) -> str:
     """Render a source-neutral prompt with bounded, isolated untrusted text."""
     if not isinstance(request, ContextClassificationRequest):
@@ -125,6 +166,12 @@ def render_context_filter_prompt(
         "max_input_characters",
     )
     template = load_prompt_template(request.prompt_version)
+    expected_schema_version = _RESPONSE_SCHEMA_BY_PROMPT_VERSION[
+        request.prompt_version
+    ]
+    selected_schema_version = response_schema_version or expected_schema_version
+    if selected_schema_version != expected_schema_version:
+        raise ValueError("prompt and response schema versions must match")
     source_text = request.input_text[:input_limit]
     source_payload = {
         "character_count": len(source_text),
@@ -132,11 +179,29 @@ def render_context_filter_prompt(
         "truncated": len(request.input_text) > input_limit,
     }
     response_schema = build_context_filter_response_schema(
-        max_summary_characters=max_summary_characters
+        max_summary_characters=max_summary_characters,
+        response_schema_version=selected_schema_version,
+        allowed_tickers=allowed_tickers,
+        allowed_sectors=allowed_sectors,
     )
+    if selected_schema_version == CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2:
+        canonical_allowed_tickers = tuple(
+            response_schema["properties"]["affected_tickers"]["items"]["enum"]
+        )
+        canonical_allowed_sectors = tuple(
+            response_schema["properties"]["affected_sectors"]["items"]["enum"]
+        )
+    else:
+        canonical_allowed_tickers = ()
+        canonical_allowed_sectors = ()
     replacements = {
         "@@TRUSTED_METADATA_JSON@@": _prompt_json(
-            _trusted_metadata(request, sector_hints)
+            _trusted_metadata(
+                request,
+                sector_hints,
+                allowed_tickers=canonical_allowed_tickers,
+                allowed_sectors=canonical_allowed_sectors,
+            )
         ),
         "@@ALLOWED_EVENT_TYPES_JSON@@": _prompt_json(
             [member.value for member in ContextClassificationEventType]
@@ -159,6 +224,8 @@ def render_context_filter_prompt(
 
 
 __all__ = [
+    "CONTEXT_FILTER_PROMPT_VERSION_V1",
+    "CONTEXT_FILTER_PROMPT_VERSION_V2",
     "DEFAULT_MAX_INPUT_CHARACTERS",
     "SUPPORTED_PROMPT_VERSIONS",
     "load_prompt_template",

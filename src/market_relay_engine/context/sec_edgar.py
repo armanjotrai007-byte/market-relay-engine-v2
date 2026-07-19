@@ -1076,6 +1076,12 @@ class SECEDGARCollector:
             classifications = state.setdefault("classifications", {})
             saved = classifications.get(key)
             if isinstance(saved, dict) and saved.get("classification_complete") is True:
+                if not saved.get("evidence_ready_at"):
+                    # Repair the narrow PR37-to-external-readiness transition
+                    # without paying for a second provider call.  The delayed
+                    # readiness is conservative and remains restart-safe.
+                    saved["evidence_ready_at"] = utc_now().isoformat()
+                    self.archive.save_manifest(manifest)
                 counts["persistent_suppressions"] += 1
                 continue
 
@@ -1109,6 +1115,7 @@ class SECEDGARCollector:
                     response=response,
                     ledger_row=row,
                 )
+                saved["evidence_ready_at"] = utc_now().isoformat()
                 classifications[key] = saved
                 self.archive.save_manifest(manifest)
                 if write_questdb:
