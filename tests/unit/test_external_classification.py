@@ -10,6 +10,7 @@ import pytest
 
 from market_relay_engine.ai_context.classifier import ContextClassificationAttemptResult
 from market_relay_engine.context.external_classification import (
+    ExternalClassificationError,
     ExternalClassificationPipeline,
 )
 from market_relay_engine.context.external_event_archive import (
@@ -66,6 +67,7 @@ class FakeResultSpec:
     prompt_version: str = "context_filter_v2_scope"
     response_schema_version: str = "context_classification_response_v2"
     validator_version: str = "context_filter_validator_v2_scope"
+    validation_result_id: str | None = None
 
 
 class FakeClassifier:
@@ -116,6 +118,7 @@ class FakeClassifier:
                 reason_codes=[],
                 validator_version=spec.validator_version,
                 validated_at=self._clock(),
+                **_validation_result_id_argument(spec),
             )
             return ContextClassificationAttemptResult(
                 response=response,
@@ -143,6 +146,7 @@ class FakeClassifier:
                 reason_codes=[],
                 validator_version=spec.validator_version,
                 validated_at=self._clock(),
+                **_validation_result_id_argument(spec),
             )
             return ContextClassificationAttemptResult(
                 response=response,
@@ -186,11 +190,20 @@ class FakeClassifier:
             reason_codes=["SCHEMA_REJECTED"],
             validator_version="context_filter_validator_v2_scope",
             validated_at=self._clock(),
+            **_validation_result_id_argument(spec),
         )
         return ContextClassificationAttemptResult(
             response=response,
             validation_result=validation,
         )
+
+
+def _validation_result_id_argument(spec: FakeResultSpec) -> dict[str, str]:
+    return (
+        {}
+        if spec.validation_result_id is None
+        else {"validation_result_id": spec.validation_result_id}
+    )
 
 
 def _profile() -> ResearchSourceClassificationProfile:
@@ -479,6 +492,122 @@ def test_matching_classifier_profile_publishes_canonical_result(tmp_path) -> Non
     ) is not None
 
 
+def test_materialized_event_preserves_durable_validation_result_identity(
+    tmp_path,
+) -> None:
+    clock = MutableClock(T0 + timedelta(seconds=4))
+    archive = ExternalEventArchive(tmp_path, now=clock)
+    revision = _archive_revision(archive, text="Palantir announced results.")
+    validation_result_id = "validation-result-returned-by-validator"
+
+    outcome = _pipeline(
+        archive,
+        FakeClassifier(
+            clock=clock,
+            results=[
+                FakeResultSpec(
+                    status=ContextClassificationStatus.VALID,
+                    affected_tickers=("PLTR",),
+                    validation_result_id=validation_result_id,
+                )
+            ],
+        ),
+        clock,
+    ).process_revision(revision)
+
+    assert outcome.context_event is not None
+    fingerprint = outcome.classification_input_fingerprint
+    assert fingerprint is not None
+    attempts = archive.iter_classification_attempts(fingerprint)
+    assert len(attempts) == 1
+    attempt = attempts[0]
+    event = outcome.context_event
+    assert attempt["validation_result_id"] == validation_result_id
+    assert event.validation_result_id == validation_result_id
+    assert event.classification_attempt_id == attempt["classification_attempt_id"]
+    assert event.classification_request_id == attempt["classification_request_id"]
+    assert event.validated_at == clock.value
+    assert attempt["validation_outcome"] is True
+    stored_event = archive.read_materialized_event(
+        revision.source_revision_id,
+        classification_input_fingerprint=fingerprint,
+    )
+    assert stored_event is not None
+    assert stored_event["validation_result_id"] == validation_result_id
+
+
+def test_missing_validation_result_id_in_durable_valid_attempt_fails_closed(
+    tmp_path,
+) -> None:
+    clock = MutableClock(T0 + timedelta(seconds=4))
+    archive = ExternalEventArchive(tmp_path, now=clock)
+    revision = _archive_revision(archive, text="Palantir announced results.")
+    pipeline = _pipeline(archive, FakeClassifier(clock=clock, results=[]), clock)
+    prepared = pipeline.prepare(revision)
+    assert prepared is not None
+    fingerprint = prepared.request.classification_input_fingerprint
+    assert fingerprint is not None
+    output = {
+        "status": "VALID",
+        "event_type": "OTHER",
+        "risk_level": "LOW",
+        "urgency": "LOW",
+        "confidence": 0.75,
+        "summary": "A durable legacy-shaped attempt.",
+        "affected_tickers": ["PLTR"],
+        "affected_sectors": [],
+        "global_relevance": False,
+    }
+    complete_output_hash, policy_output_hash = output_fingerprints(output)
+    archive.publish_classification_attempt(
+        classification_input_fingerprint=fingerprint,
+        attempt_id="missing-validation-id-attempt",
+        payload={
+            "classification_attempt_id": "missing-validation-id-attempt",
+            "classification_request_id": prepared.request.classification_request_id,
+            "classification_input_fingerprint": fingerprint,
+            "profile_hash": prepared.profile.profile_hash,
+            "profile": prepared.profile.to_fingerprint_payload(),
+            "document_hash": prepared.request.document_hash,
+            "normalized_text_hash": revision.normalized_text_hash,
+            "classification_text_hash": prepared.excerpt.full_hash,
+            "excerpt_hash": prepared.excerpt.excerpt_hash,
+            "trusted_input_scope": {
+                "affected_tickers": prepared.request.affected_tickers,
+                "affected_sectors": prepared.request.affected_sectors,
+                "global_relevance": prepared.request.global_relevance,
+            },
+            "status": "VALID",
+            "classified_at": clock.value.isoformat(),
+            "validated_at": clock.value.isoformat(),
+            "validation_outcome": True,
+            "validator_version": prepared.profile.validator_version,
+            "complete_output_fingerprint": complete_output_hash,
+            "policy_output_fingerprint": policy_output_hash,
+            "normalized_output": output,
+            "durably_published": True,
+            "classification_origin": "LIVE_SYSTEM",
+        },
+    )
+    archive.claim_canonical_result(
+        classification_input_fingerprint=fingerprint,
+        attempt_id="missing-validation-id-attempt",
+        complete_output_fingerprint=complete_output_hash,
+        policy_output_fingerprint=policy_output_hash,
+        profile_hash=prepared.profile.profile_hash,
+        evidence_ready_at=clock.value,
+    )
+
+    no_call_classifier = FakeClassifier(clock=clock, results=[])
+    with pytest.raises(
+        ExternalClassificationError,
+        match="missing validation_result_id",
+    ):
+        _pipeline(archive, no_call_classifier, clock).process_revision(revision)
+
+    assert no_call_classifier.calls == []
+
+
 def test_allowed_scope_universe_changes_canonical_classification_input(
     tmp_path,
 ) -> None:
@@ -605,6 +734,7 @@ def test_valid_result_is_reused_after_restart_without_another_provider_call(
             FakeResultSpec(
                 status=ContextClassificationStatus.VALID,
                 affected_tickers=("PLTR",),
+                validation_result_id="validation-result-canonical-reuse",
             )
         ],
     )
@@ -631,6 +761,12 @@ def test_valid_result_is_reused_after_restart_without_another_provider_call(
     assert first.context_event.available_at == first.evidence_ready_at
     assert second.context_event.available_at == second.evidence_ready_at
     assert first.context_event.source_available_at == revision.source_available_at
+    assert first.context_event.validation_result_id == (
+        "validation-result-canonical-reuse"
+    )
+    assert second.context_event.validation_result_id == (
+        "validation-result-canonical-reuse"
+    )
     assert len(first_classifier.calls) == 1
     assert no_call_classifier.calls == []
     assert second.reused_canonical_result is True

@@ -493,6 +493,7 @@ class ExternalClassificationPipeline:
             ):
                 continue
             try:
+                _required_validation_result_id(attempt)
                 parse_utc_iso(str(attempt["classified_at"]))
                 parse_utc_iso(str(attempt["validated_at"]))
                 parse_utc_iso(str(attempt["archive_published_at"]))
@@ -600,6 +601,9 @@ class ExternalClassificationPipeline:
             "status": response.status.value,
             "classified_at": to_utc_iso(response.classified_at),
             "validated_at": None if validation is None else to_utc_iso(validation.validated_at),
+            "validation_result_id": (
+                None if validation is None else validation.validation_result_id
+            ),
             "validation_outcome": None if validation is None else validation.validation_outcome,
             "validator_version": None if validation is None else validation.validator_version,
             "complete_output_fingerprint": complete_output_hash,
@@ -692,6 +696,11 @@ class ExternalClassificationPipeline:
         output = attempt.get("normalized_output")
         if not isinstance(output, Mapping):
             raise ExternalClassificationError("canonical classification output is malformed")
+        if status in {
+            ContextClassificationStatus.VALID.value,
+            ContextClassificationStatus.ABSTAINED.value,
+        }:
+            _required_validation_result_id(attempt)
         context_event: ContextAIEvent | None = None
         policy_eligible = status == ContextClassificationStatus.VALID.value and _has_scope(output)
         if status == ContextClassificationStatus.VALID.value:
@@ -920,10 +929,7 @@ def _materialized_event(
         source_document_id=prepared.source_document.source_document_id,
         classification_request_id=str(attempt["classification_request_id"]),
         classification_attempt_id=str(attempt["classification_attempt_id"]),
-        validation_result_id=_stable_id(
-            "validation_result_external",
-            str(attempt["classification_attempt_id"]),
-        ),
+        validation_result_id=_required_validation_result_id(attempt),
         source_type=revision.source_type,
         source_platform=revision.source_platform,
         source_uri=revision.source_uri,
@@ -959,6 +965,17 @@ def _materialized_event(
         relationship_types=list(revision.relationship_types),
         trace_id=revision.trace_id,
     )
+
+
+def _required_validation_result_id(attempt: Mapping[str, Any]) -> str:
+    """Return the original validation identity for a durable valid attempt."""
+
+    value = attempt.get("validation_result_id")
+    if not isinstance(value, str) or not value.strip():
+        raise ExternalClassificationError(
+            "durable validated classification attempt is missing validation_result_id"
+        )
+    return value
 
 
 def _pinned_profile_mismatch_fields(
