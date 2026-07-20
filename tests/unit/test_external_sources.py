@@ -1323,6 +1323,141 @@ def test_palantir_earnings_page_url_matches_feed_default_aspx_form(
     assert release.press_release_id == "901"
 
 
+def test_pltr_q4_earnings_release_uses_next_calendar_year_and_is_duplicate_safe(
+    tmp_path: Path,
+) -> None:
+    events_url = EarningsSettings().pltr_events_url
+    release_path = "/news-details/2026/q4-2025-results"
+    release_url = f"https://investors.palantir.com{release_path}"
+    page = f"""<html><section><h2>Q4 2025 Earnings</h2>
+      <a href=\"{release_path}\">Earnings Release</a></section></html>""".encode()
+    endpoint_2025 = PalantirIRSettings().endpoint_template.format(year=2025)
+    endpoint_2026 = PalantirIRSettings().endpoint_template.format(year=2026)
+    client, session = _client(
+        [
+            _http_result(page, url=events_url, content_type="text/html"),
+            _http_result(
+                _pltr_payload(url="/news-details/2025/other-release"),
+                url=endpoint_2025,
+                content_type="application/json",
+            ),
+            _http_result(
+                _pltr_payload(url=release_path, body="<p>Q4 official release</p>"),
+                url=endpoint_2026,
+                content_type="application/json",
+            ),
+            _http_result(page, url=events_url, content_type="text/html"),
+            _http_result(
+                _pltr_payload(url="/news-details/2025/other-release"),
+                url=endpoint_2025,
+                content_type="application/json",
+            ),
+            _http_result(
+                _pltr_payload(url=release_path, body="<p>Q4 official release</p>"),
+                url=endpoint_2026,
+                content_type="application/json",
+            ),
+        ]
+    )
+    archive = ExternalEventArchive(tmp_path / "archive", now=lambda: NOW)
+    palantir = PalantirIRAdapter(client=client, archive=archive, now=lambda: NOW)
+    earnings = EarningsDiscoveryAdapter(
+        client=client, archive=archive, palantir_ir=palantir, now=lambda: NOW
+    )
+
+    first = earnings.collect_once(ticker="PLTR", max_items=1)
+    repeated = earnings.collect_once(ticker="PLTR", max_items=1)
+
+    assert first.new_count == 1
+    assert repeated.new_count == 0
+    assert repeated.duplicate_count == 1
+    assert [call[0] for call in session.calls] == [
+        events_url,
+        canonicalize_url(endpoint_2025),
+        canonicalize_url(endpoint_2026),
+        events_url,
+        canonicalize_url(endpoint_2025),
+        canonicalize_url(endpoint_2026),
+    ]
+    revision = next(archive.iter_revisions(sources=("company_earnings",)))
+    assert revision.earnings_package_id == "PLTR:2025:Q4"
+    assert revision.source_uri == release_url
+
+
+def test_pltr_q4_earnings_lookup_fails_closed_when_neither_candidate_year_matches(
+    tmp_path: Path,
+) -> None:
+    events_url = EarningsSettings().pltr_events_url
+    page = b"""<html><section><h2>Q4 2025 Earnings</h2>
+      <a href=\"/news-details/2026/q4-2025-results\">Earnings Release</a>
+      </section></html>"""
+    endpoint_2025 = PalantirIRSettings().endpoint_template.format(year=2025)
+    endpoint_2026 = PalantirIRSettings().endpoint_template.format(year=2026)
+    client, session = _client(
+        [
+            _http_result(page, url=events_url, content_type="text/html"),
+            _http_result(
+                _pltr_payload(url="/news-details/2025/other-release"),
+                url=endpoint_2025,
+                content_type="application/json",
+            ),
+            _http_result(
+                _pltr_payload(url="/news-details/2026/other-release"),
+                url=endpoint_2026,
+                content_type="application/json",
+            ),
+        ]
+    )
+    archive = ExternalEventArchive(tmp_path / "archive", now=lambda: NOW)
+    earnings = EarningsDiscoveryAdapter(
+        client=client,
+        archive=archive,
+        palantir_ir=PalantirIRAdapter(client=client, archive=archive),
+    )
+
+    with pytest.raises(ExternalSourceError, match="candidate years"):
+        earnings.collect_once(ticker="PLTR", max_items=1)
+
+    assert [call[0] for call in session.calls] == [
+        events_url,
+        canonicalize_url(endpoint_2025),
+        canonicalize_url(endpoint_2026),
+    ]
+    assert tuple(archive.iter_revisions(sources=("company_earnings",))) == ()
+
+
+def test_pltr_non_q4_earnings_lookup_keeps_fiscal_year_only(tmp_path: Path) -> None:
+    events_url = EarningsSettings().pltr_events_url
+    release_path = "/news-details/2026/q3-2025-results"
+    endpoint_2025 = PalantirIRSettings().endpoint_template.format(year=2025)
+    page = f"""<html><section><h2>Q3 2025 Earnings</h2>
+      <a href=\"{release_path}\">Earnings Release</a></section></html>""".encode()
+    client, session = _client(
+        [
+            _http_result(page, url=events_url, content_type="text/html"),
+            _http_result(
+                _pltr_payload(url=release_path),
+                url=endpoint_2025,
+                content_type="application/json",
+            ),
+        ]
+    )
+    archive = ExternalEventArchive(tmp_path / "archive", now=lambda: NOW)
+    earnings = EarningsDiscoveryAdapter(
+        client=client,
+        archive=archive,
+        palantir_ir=PalantirIRAdapter(client=client, archive=archive),
+    )
+
+    result = earnings.collect_once(ticker="PLTR", max_items=1)
+
+    assert result.new_count == 1
+    assert [call[0] for call in session.calls] == [
+        events_url,
+        canonicalize_url(endpoint_2025),
+    ]
+
+
 def test_earnings_discovery_records_release_and_supporting_links_only() -> None:
     page = b"""<html><section><h2>Q1 2026 Earnings</h2>
       <a href="/news-details/2026/q1-results">Earnings Release</a>

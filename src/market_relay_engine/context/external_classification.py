@@ -398,6 +398,27 @@ class ExternalClassificationPipeline:
                     if canonical is None:
                         result = self._classifier.classify(prepared.request)
                         provider_called = result.response.provider_request_count > 0
+                        mismatch_fields = _pinned_profile_mismatch_fields(
+                            prepared=prepared,
+                            response=result.response,
+                            validation=result.validation_result,
+                        )
+                        if mismatch_fields:
+                            self._publish_profile_mismatch_observation(
+                                revision=revision,
+                                prepared=prepared,
+                                mismatch_fields=mismatch_fields,
+                                classification_status=result.response.status.value,
+                            )
+                            return ExternalClassificationOutcome(
+                                source_revision_id=revision.source_revision_id,
+                                classification_input_fingerprint=fingerprint,
+                                status="PROFILE_MISMATCH",
+                                provider_called=provider_called,
+                                reused_canonical_result=False,
+                                policy_eligible=False,
+                                evidence_ready_at=None,
+                            )
                         canonical = self._publish_attempt(revision, prepared, result)
                     else:
                         reused = True
@@ -447,7 +468,6 @@ class ExternalClassificationPipeline:
         fingerprint = prepared.request.classification_input_fingerprint
         if fingerprint is None:
             raise ExternalClassificationError("classification fingerprint is missing")
-        expected_profile = prepared.profile.to_fingerprint_payload()
         candidates: list[dict[str, Any]] = []
         for attempt in self._archive.iter_classification_attempts(fingerprint):
             if (
@@ -458,8 +478,10 @@ class ExternalClassificationPipeline:
                     ContextClassificationStatus.VALID.value,
                     ContextClassificationStatus.ABSTAINED.value,
                 }
-                or attempt.get("profile_hash") != prepared.profile.profile_hash
-                or attempt.get("profile") != expected_profile
+                or _pinned_profile_mismatch_fields(
+                    prepared=prepared,
+                    attempt=attempt,
+                )
                 or attempt.get("classification_input_fingerprint") != fingerprint
                 or attempt.get("document_hash") != prepared.request.document_hash
                 or attempt.get("normalized_text_hash")
@@ -467,7 +489,6 @@ class ExternalClassificationPipeline:
                 or attempt.get("classification_text_hash")
                 != prepared.excerpt.full_hash
                 or attempt.get("excerpt_hash") != prepared.excerpt.excerpt_hash
-                or attempt.get("validator_version") != prepared.profile.validator_version
                 or not isinstance(attempt.get("normalized_output"), Mapping)
             ):
                 continue
@@ -529,6 +550,15 @@ class ExternalClassificationPipeline:
     ) -> dict[str, Any] | None:
         response = result.response
         validation = result.validation_result
+        mismatch_fields = _pinned_profile_mismatch_fields(
+            prepared=prepared,
+            response=response,
+            validation=validation,
+        )
+        if mismatch_fields:
+            raise ExternalClassificationError(
+                "classifier result does not match the pinned profile"
+            )
         output = _normalized_response_output(response)
         if response.status in {
             ContextClassificationStatus.VALID,
@@ -632,11 +662,10 @@ class ExternalClassificationPipeline:
         )
         if attempt is None:
             raise ExternalClassificationError("canonical classification attempt is missing")
-        expected_profile = prepared.profile.to_fingerprint_payload()
-        if (
-            canonical.get("profile_hash") != prepared.profile.profile_hash
-            or attempt.get("profile_hash") != prepared.profile.profile_hash
-            or attempt.get("profile") != expected_profile
+        if _pinned_profile_mismatch_fields(
+            prepared=prepared,
+            attempt=attempt,
+            canonical=canonical,
         ):
             raise ExternalClassificationError(
                 "canonical classification profile does not match this materialization"
@@ -806,6 +835,30 @@ class ExternalClassificationPipeline:
             return None
         raise ExternalClassificationError("classification resolution decision is invalid")
 
+    def _publish_profile_mismatch_observation(
+        self,
+        *,
+        revision: ExternalSourceRevision,
+        prepared: PreparedExternalClassification,
+        mismatch_fields: tuple[str, ...],
+        classification_status: str,
+    ) -> None:
+        """Persist only safe mismatch metadata; never retain provider output."""
+
+        self._archive.publish_observation(
+            source=revision.source,
+            payload={
+                "observation_type": "classification_profile_mismatch",
+                "source_revision_id": revision.source_revision_id,
+                "classification_input_fingerprint": (
+                    prepared.request.classification_input_fingerprint
+                ),
+                "profile_hash": prepared.profile.profile_hash,
+                "classification_status": classification_status,
+                "mismatch_fields": list(mismatch_fields),
+            },
+        )
+
     def _validate_revision_profile(self, revision: ExternalSourceRevision) -> None:
         if revision.source != self._profile.source or revision.source_type != self._profile.source_type:
             raise ExternalClassificationError("revision does not match the source profile")
@@ -906,6 +959,51 @@ def _materialized_event(
         relationship_types=list(revision.relationship_types),
         trace_id=revision.trace_id,
     )
+
+
+def _pinned_profile_mismatch_fields(
+    *,
+    prepared: PreparedExternalClassification,
+    response: ContextClassificationResponse | None = None,
+    validation: ContextValidationResult | None = None,
+    attempt: Mapping[str, Any] | None = None,
+    canonical: Mapping[str, Any] | None = None,
+) -> tuple[str, ...]:
+    """Return exact pinned-profile disagreements without trusting injection."""
+
+    profile = prepared.profile
+    mismatches: list[str] = []
+    if response is not None:
+        for field_name, actual, expected in (
+            ("response.model_version", response.model_version, profile.model_version),
+            ("response.prompt_version", response.prompt_version, profile.prompt_version),
+            (
+                "response.response_schema_version",
+                response.response_schema_version,
+                profile.response_schema_version,
+            ),
+        ):
+            if actual != expected:
+                mismatches.append(field_name)
+    if validation is not None and validation.validator_version != profile.validator_version:
+        mismatches.append("validation.validator_version")
+    if attempt is not None:
+        if attempt.get("profile_hash") != profile.profile_hash:
+            mismatches.append("attempt.profile_hash")
+        if attempt.get("profile") != profile.to_fingerprint_payload():
+            mismatches.append("attempt.profile")
+        if (
+            attempt.get("status")
+            in {
+                ContextClassificationStatus.VALID.value,
+                ContextClassificationStatus.ABSTAINED.value,
+            }
+            and attempt.get("validator_version") != profile.validator_version
+        ):
+            mismatches.append("attempt.validator_version")
+    if canonical is not None and canonical.get("profile_hash") != profile.profile_hash:
+        mismatches.append("canonical.profile_hash")
+    return tuple(sorted(set(mismatches)))
 
 
 def _normalized_response_output(response: ContextClassificationResponse) -> dict[str, Any]:

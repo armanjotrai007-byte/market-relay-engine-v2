@@ -4,6 +4,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+import json
 
 import pytest
 
@@ -61,6 +62,10 @@ class FakeResultSpec:
     affected_tickers: tuple[str, ...] = ()
     affected_sectors: tuple[str, ...] = ()
     global_relevance: bool = False
+    model_version: str = "gemini-test"
+    prompt_version: str = "context_filter_v2_scope"
+    response_schema_version: str = "context_classification_response_v2"
+    validator_version: str = "context_filter_validator_v2_scope"
 
 
 class FakeClassifier:
@@ -88,9 +93,9 @@ class FakeClassifier:
                 classification_attempt_id=attempt_id,
                 classified_at=self._clock(),
                 provider="gemini",
-                model_version="gemini-test",
-                prompt_version="context_filter_v2_scope",
-                response_schema_version="context_classification_response_v2",
+                model_version=spec.model_version,
+                prompt_version=spec.prompt_version,
+                response_schema_version=spec.response_schema_version,
                 status=spec.status,
                 event_type=spec.event_type,
                 risk_level=spec.risk_level,
@@ -109,7 +114,7 @@ class FakeClassifier:
                 classification_attempt_id=attempt_id,
                 validation_outcome=True,
                 reason_codes=[],
-                validator_version="context_filter_validator_v2_scope",
+                validator_version=spec.validator_version,
                 validated_at=self._clock(),
             )
             return ContextClassificationAttemptResult(
@@ -122,9 +127,9 @@ class FakeClassifier:
                 classification_attempt_id=attempt_id,
                 classified_at=self._clock(),
                 provider="gemini",
-                model_version="gemini-test",
-                prompt_version="context_filter_v2_scope",
-                response_schema_version="context_classification_response_v2",
+                model_version=spec.model_version,
+                prompt_version=spec.prompt_version,
+                response_schema_version=spec.response_schema_version,
                 status=spec.status,
                 global_relevance=False,
                 provider_latency_ms=5.0,
@@ -136,7 +141,7 @@ class FakeClassifier:
                 classification_attempt_id=attempt_id,
                 validation_outcome=True,
                 reason_codes=[],
-                validator_version="context_filter_validator_v2_scope",
+                validator_version=spec.validator_version,
                 validated_at=self._clock(),
             )
             return ContextClassificationAttemptResult(
@@ -280,6 +285,18 @@ def _pipeline(
     )
 
 
+def _observation_payloads(
+    archive: ExternalEventArchive, source: str
+) -> list[dict[str, object]]:
+    directory = archive.observations / source
+    if not directory.exists():
+        return []
+    return [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in directory.glob("*.json")
+    ]
+
+
 def _publish_conflicting_backfill_attempt(
     archive: ExternalEventArchive,
     *,
@@ -356,6 +373,110 @@ def test_prepare_builds_existing_contract_chain_and_semantic_input_identity(
     )
     assert prepared_first.request.input_text == "Palantir announced a new program."
     assert prepared_first.request.affected_tickers == ["PLTR"]
+
+
+@pytest.mark.parametrize(
+    ("override", "expected_field"),
+    (
+        ({"model_version": "unexpected-model"}, "response.model_version"),
+        ({"prompt_version": "unexpected-prompt"}, "response.prompt_version"),
+        (
+            {"response_schema_version": "unexpected-schema"},
+            "response.response_schema_version",
+        ),
+        (
+            {"validator_version": "unexpected-validator"},
+            "validation.validator_version",
+        ),
+    ),
+)
+def test_profile_mismatch_never_publishes_or_reuses_classifier_result(
+    tmp_path,
+    override: dict[str, str],
+    expected_field: str,
+) -> None:
+    clock = MutableClock(T0 + timedelta(seconds=4))
+    archive = ExternalEventArchive(tmp_path, now=clock)
+    revision = _archive_revision(archive, text="Palantir announced results.")
+    mismatched = FakeClassifier(
+        clock=clock,
+        results=[
+            FakeResultSpec(
+                status=ContextClassificationStatus.VALID,
+                affected_tickers=("PLTR",),
+                **override,
+            )
+        ],
+    )
+
+    outcome = _pipeline(archive, mismatched, clock).process_revision(revision)
+
+    assert outcome.status == "PROFILE_MISMATCH"
+    assert outcome.policy_eligible is False
+    assert outcome.context_event is None
+    assert outcome.evidence_ready_at is None
+    fingerprint = outcome.classification_input_fingerprint
+    assert fingerprint is not None
+    assert archive.read_canonical_claim(fingerprint) is None
+    assert archive.iter_classification_attempts(fingerprint) == ()
+    assert archive.read_materialized_event(
+        revision.source_revision_id,
+        classification_input_fingerprint=fingerprint,
+    ) is None
+    assert archive.read_readiness(
+        revision.source_revision_id,
+        classification_input_fingerprint=fingerprint,
+    ) is None
+    safe_observations = [
+        value
+        for value in _observation_payloads(archive, revision.source)
+        if value.get("observation_type") == "classification_profile_mismatch"
+    ]
+    assert len(safe_observations) == 1
+    assert safe_observations[0]["mismatch_fields"] == [expected_field]
+    assert "bounded research-only classification" not in str(safe_observations)
+
+    restarted_classifier = FakeClassifier(
+        clock=clock,
+        results=[
+            FakeResultSpec(
+                status=ContextClassificationStatus.VALID,
+                affected_tickers=("PLTR",),
+            )
+        ],
+    )
+    restarted = _pipeline(
+        ExternalEventArchive(tmp_path, now=clock), restarted_classifier, clock
+    ).process_revision(revision)
+    assert restarted.status == "VALID"
+    assert restarted.reused_canonical_result is False
+    assert len(restarted_classifier.calls) == 1
+
+
+def test_matching_classifier_profile_publishes_canonical_result(tmp_path) -> None:
+    clock = MutableClock(T0 + timedelta(seconds=4))
+    archive = ExternalEventArchive(tmp_path, now=clock)
+    revision = _archive_revision(archive, text="Palantir announced results.")
+
+    outcome = _pipeline(
+        archive,
+        FakeClassifier(
+            clock=clock,
+            results=[
+                FakeResultSpec(
+                    status=ContextClassificationStatus.VALID,
+                    affected_tickers=("PLTR",),
+                )
+            ],
+        ),
+        clock,
+    ).process_revision(revision)
+
+    assert outcome.status == "VALID"
+    assert outcome.classification_input_fingerprint is not None
+    assert archive.read_canonical_claim(
+        outcome.classification_input_fingerprint
+    ) is not None
 
 
 def test_allowed_scope_universe_changes_canonical_classification_input(

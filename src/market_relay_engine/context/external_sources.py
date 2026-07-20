@@ -1463,6 +1463,38 @@ class PalantirIRAdapter:
             )
         return matches[0], response
 
+    def find_earnings_release_with_response(
+        self,
+        *,
+        fiscal_year: int,
+        fiscal_quarter: int,
+        canonical_url: str,
+    ) -> tuple[PalantirRelease, HTTPFetchResult]:
+        """Find one official earnings link in its bounded publication years."""
+
+        target = _palantir_release_url_key(canonical_url)
+        for year in _palantir_earnings_release_years(
+            fiscal_year=fiscal_year,
+            fiscal_quarter=fiscal_quarter,
+        ):
+            response, releases, _checkpoint = self._fetch_releases(
+                year=year, use_conditional=False
+            )
+            matches = [
+                value
+                for value in releases
+                if _palantir_release_url_key(value.canonical_url) == target
+            ]
+            if len(matches) == 1:
+                return matches[0], response
+            if len(matches) > 1:
+                raise ExternalSourceError(
+                    "Palantir earnings URL mapped to multiple official releases"
+                )
+        raise ExternalSourceError(
+            "Palantir earnings URL did not map to an official release in its candidate years"
+        )
+
     def archive_release(
         self,
         release: PalantirRelease,
@@ -2211,8 +2243,9 @@ class EarningsDiscoveryAdapter:
     ) -> _ArchivedEarningsPrimary:
         fact_id = f"{package.package_id}:EARNINGS_RELEASE"
         if package.ticker == "PLTR":
-            release, release_response = self.palantir_ir.find_release_with_response(
-                year=package.fiscal_year,
+            release, release_response = self.palantir_ir.find_earnings_release_with_response(
+                fiscal_year=package.fiscal_year,
+                fiscal_quarter=package.fiscal_quarter,
                 canonical_url=package.primary_url,
             )
             synthetic_response = HTTPFetchResult(
@@ -2625,6 +2658,22 @@ def discover_earnings_packages(
             key=lambda value: (value.fiscal_year, value.fiscal_quarter),
             reverse=True,
         )
+    )
+
+
+def _palantir_earnings_release_years(
+    *, fiscal_year: int, fiscal_quarter: int
+) -> tuple[int, ...]:
+    """Use fiscal year first; Q4 may publish in the next calendar year."""
+
+    if fiscal_year < 2000 or fiscal_year > 9999:
+        raise ExternalSourceError("Palantir earnings fiscal year is invalid")
+    if fiscal_quarter not in {1, 2, 3, 4}:
+        raise ExternalSourceError("Palantir earnings fiscal quarter is invalid")
+    return (
+        (fiscal_year, fiscal_year + 1)
+        if fiscal_quarter == 4
+        else (fiscal_year,)
     )
 
 
