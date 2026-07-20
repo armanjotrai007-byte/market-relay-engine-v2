@@ -1273,6 +1273,16 @@ class ExternalEventArchive:
                 raise ExternalEventArchiveError(
                     "materialized event canonical ownership changed"
                 )
+        revision = self._read_revision_by_id(source_revision_id)
+        if (
+            event.get("source") != revision.source
+            or event.get("source_fact_id") != revision.source_fact_id
+            or event.get("source_id") != revision.source_fact_id
+            or event.get("document_hash") != revision.document_hash
+        ):
+            raise ExternalEventArchiveError(
+                "materialized event source revision lineage changed"
+            )
         event_times = {
             name: _required_archive_publication_time(
                 event.get(name), f"materialized event {name}"
@@ -1286,15 +1296,13 @@ class ExternalEventArchive:
                 "lifecycle_effective_at",
             )
         }
-        if not (
-            event_times["system_observed_at"]
-            <= event_times["archived_at"]
-            <= event_times["normalized_at"]
-            <= event_times["classified_at"]
-            <= event_times["validated_at"]
+        if (
+            event_times["system_observed_at"] != revision.system_observed_at
+            or event_times["archived_at"] != revision.archived_at
+            or event_times["normalized_at"] != revision.normalized_at
         ):
             raise ExternalEventArchiveError(
-                "materialized event timestamps are non-monotonic"
+                "materialized event source timestamps changed"
             )
         for name in ("classified_at", "validated_at"):
             if event_times[name] != _required_archive_publication_time(
@@ -1303,15 +1311,17 @@ class ExternalEventArchive:
                 raise ExternalEventArchiveError(
                     "materialized event attempt timestamp changed"
                 )
-        if event.get("evidence_ready_at") is not None:
-            ready_at = _required_archive_publication_time(
-                event.get("evidence_ready_at"),
-                "materialized event evidence readiness",
-            )
-            if ready_at < event_times["validated_at"]:
-                raise ExternalEventArchiveError(
-                    "materialized event readiness predates validation"
-                )
+        validate_external_event_lineage_chronology(
+            system_observed_at=revision.system_observed_at,
+            archived_at=revision.archived_at,
+            normalized_at=revision.normalized_at,
+            classified_at=event_times["classified_at"],
+            validated_at=event_times["validated_at"],
+            attempt_published_at=attempt.get("archive_published_at"),
+            canonical_published_at=canonical.get("durably_published_at"),
+            readiness_published_at=None,
+            evidence_ready_at=event.get("evidence_ready_at"),
+        )
         self._register_classification_artifact(
             "events",
             (source_revision_id, classification_input_fingerprint),
@@ -1394,6 +1404,18 @@ class ExternalEventArchive:
                     raise ExternalEventArchiveError(
                         "unclassified readiness contains classification identity"
                     )
+                revision = self._read_revision_by_id(embedded_revision_id)
+                validate_external_event_lineage_chronology(
+                    system_observed_at=revision.system_observed_at,
+                    archived_at=revision.archived_at,
+                    normalized_at=revision.normalized_at,
+                    classified_at=None,
+                    validated_at=None,
+                    attempt_published_at=None,
+                    canonical_published_at=None,
+                    readiness_published_at=archive_published_at,
+                    evidence_ready_at=evidence_ready_at,
+                )
             else:
                 canonical, attempt = self._canonical_artifact_lineage(
                     readiness_key
@@ -1435,13 +1457,18 @@ class ExternalEventArchive:
                     raise ExternalEventArchiveError(
                         "readiness classification status changed"
                     )
-                for name in ("classified_at", "validated_at"):
-                    if evidence_ready_at < _required_archive_publication_time(
-                        attempt.get(name), f"canonical attempt {name}"
-                    ):
-                        raise ExternalEventArchiveError(
-                            "evidence readiness predates classification"
-                        )
+                revision = self._read_revision_by_id(embedded_revision_id)
+                validate_external_event_lineage_chronology(
+                    system_observed_at=revision.system_observed_at,
+                    archived_at=revision.archived_at,
+                    normalized_at=revision.normalized_at,
+                    classified_at=attempt.get("classified_at"),
+                    validated_at=attempt.get("validated_at"),
+                    attempt_published_at=attempt.get("archive_published_at"),
+                    canonical_published_at=canonical.get("durably_published_at"),
+                    readiness_published_at=archive_published_at,
+                    evidence_ready_at=evidence_ready_at,
+                )
             self._register_classification_artifact(
                 "readiness",
                 (embedded_revision_id, readiness_key),
@@ -1496,6 +1523,22 @@ class ExternalEventArchive:
                 "canonical attempt profile hash changed"
             )
         return canonical, attempt
+
+    def _read_revision_by_id(
+        self, source_revision_id: str
+    ) -> ExternalSourceRevision:
+        """Find one registered source revision without inferring its owner."""
+
+        matches = [
+            revision
+            for revision in self.iter_revisions()
+            if revision.source_revision_id == source_revision_id
+        ]
+        if len(matches) != 1:
+            raise ExternalEventArchiveError(
+                "materialized artifact source revision ownership is ambiguous"
+            )
+        return matches[0]
 
     def detect_classification_conflict(self, classification_input_fingerprint: str) -> dict[str, Any] | None:
         attempts = self.iter_classification_attempts(classification_input_fingerprint)
@@ -2468,6 +2511,86 @@ def classification_input_fingerprint(payload: Mapping[str, Any], profile: Mappin
     if forbidden.intersection(payload):
         raise ExternalEventArchiveError("classification input payload contains non-semantic identity fields")
     return _hash_payload({"semantic_request": dict(payload), "profile": dict(profile)})
+
+
+def validate_external_event_lineage_chronology(
+    *,
+    system_observed_at: datetime | str,
+    archived_at: datetime | str,
+    normalized_at: datetime | str,
+    classified_at: datetime | str | None,
+    validated_at: datetime | str | None,
+    attempt_published_at: datetime | str | None,
+    canonical_published_at: datetime | str | None,
+    readiness_published_at: datetime | str | None,
+    evidence_ready_at: datetime | str | None,
+) -> None:
+    """Validate independent source and canonical-result chronology.
+
+    A later observation may reuse a canonical result classified earlier.  The
+    source-revision and canonical-classification chains are therefore checked
+    independently; only a per-revision readiness receipt must dominate both.
+    """
+
+    def chronology_time(value: datetime | str, label: str) -> datetime:
+        if isinstance(value, datetime):
+            return ensure_timezone_aware_utc(value)
+        return _required_archive_publication_time(value, label)
+
+    observed = chronology_time(system_observed_at, "system_observed_at")
+    archived = chronology_time(archived_at, "archived_at")
+    normalized = chronology_time(normalized_at, "normalized_at")
+    if not observed <= archived <= normalized:
+        raise ExternalEventArchiveError(
+            "external source revision chronology is non-monotonic"
+        )
+
+    classification_values = (
+        classified_at,
+        validated_at,
+        attempt_published_at,
+        canonical_published_at,
+    )
+    if any(value is not None for value in classification_values) and any(
+        value is None for value in classification_values
+    ):
+        raise ExternalEventArchiveError(
+            "external canonical classification chronology is incomplete"
+        )
+    required_artifacts = [observed, archived, normalized]
+    if all(value is not None for value in classification_values):
+        classified = chronology_time(classified_at, "classified_at")
+        validated = chronology_time(validated_at, "validated_at")
+        attempt_published = chronology_time(
+            attempt_published_at, "attempt.archive_published_at"
+        )
+        canonical_published = chronology_time(
+            canonical_published_at, "canonical.durably_published_at"
+        )
+        if not classified <= validated <= attempt_published <= canonical_published:
+            raise ExternalEventArchiveError(
+                "external canonical classification chronology is non-monotonic"
+            )
+        required_artifacts.extend(
+            [classified, validated, attempt_published, canonical_published]
+        )
+
+    if readiness_published_at is not None:
+        readiness_published = chronology_time(
+            readiness_published_at, "readiness.archive_published_at"
+        )
+        required_artifacts.append(readiness_published)
+    elif evidence_ready_at is not None:
+        raise ExternalEventArchiveError(
+            "evidence readiness lacks its durable readiness receipt"
+        )
+
+    if evidence_ready_at is not None:
+        evidence_ready = chronology_time(evidence_ready_at, "evidence_ready_at")
+        if evidence_ready < max(required_artifacts):
+            raise ExternalEventArchiveError(
+                "external evidence readiness predates a durable artifact"
+            )
 
 
 def output_fingerprints(

@@ -12,6 +12,7 @@ from market_relay_engine.context.external_classification import (
     ExternalClassificationPipeline,
 )
 from market_relay_engine.context.external_event_archive import (
+    ConflictResolutionDecision,
     ExternalEventArchive,
     ExternalEventArchiveError,
     ExternalSourceRevision,
@@ -277,6 +278,46 @@ def _pipeline(
         questdb_writer=questdb_writer,  # type: ignore[arg-type]
         now=clock,
     )
+
+
+def _publish_conflicting_backfill_attempt(
+    archive: ExternalEventArchive,
+    *,
+    fingerprint: str,
+    profile: ResearchSourceClassificationProfile,
+) -> tuple[str, str]:
+    """Publish a safe synthetic contradictory backfill for conflict tests."""
+
+    contradictory_output = {
+        "status": "VALID",
+        "event_type": "LEGAL",
+        "risk_level": "HIGH",
+        "urgency": "HIGH",
+        "confidence": 0.95,
+        "summary": "Synthetic contradictory classification.",
+        "affected_tickers": ["PLTR"],
+        "affected_sectors": [],
+        "global_relevance": False,
+    }
+    complete_hash, policy_hash = output_fingerprints(contradictory_output)
+    archive.publish_classification_attempt(
+        classification_input_fingerprint=fingerprint,
+        attempt_id="imported-backfill-attempt",
+        payload={
+            "classification_attempt_id": "imported-backfill-attempt",
+            "classification_input_fingerprint": fingerprint,
+            "profile_hash": profile.profile_hash,
+            "profile": profile.to_fingerprint_payload(),
+            "status": "VALID",
+            "validation_outcome": True,
+            "durably_published": True,
+            "complete_output_fingerprint": complete_hash,
+            "policy_output_fingerprint": policy_hash,
+            "normalized_output": contradictory_output,
+            "classification_origin": "BACKFILL",
+        },
+    )
+    return complete_hash, policy_hash
 
 
 def test_prepare_builds_existing_contract_chain_and_semantic_input_identity(
@@ -761,6 +802,70 @@ def test_restart_adopts_materialized_event_written_before_manifest_registration_
     ) is not None
 
 
+def test_orphan_reconciliation_reuses_older_canonical_result_for_later_observation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A later revision need not place normalization before old classification."""
+
+    clock = MutableClock(T0 + timedelta(seconds=4))
+    archive = ExternalEventArchive(tmp_path, now=clock)
+    original = _archive_revision(
+        archive, text="Palantir announced results.", fact_id="truth-original"
+    )
+    classifier = FakeClassifier(
+        clock=clock,
+        results=[
+            FakeResultSpec(
+                status=ContextClassificationStatus.VALID,
+                affected_tickers=("PLTR",),
+            )
+        ],
+    )
+    _pipeline(archive, classifier, clock).process_revision(original)
+
+    clock.value = T0 + timedelta(minutes=5)
+    later = _archive_revision(
+        archive,
+        text="Palantir announced results.",
+        fact_id="truth-later-observation",
+        observed_at=clock.value,
+    )
+    original_register = archive._register_classification_artifact
+
+    def crash_after_event_write(
+        category: str, identities: tuple[str, ...], path: object
+    ) -> None:
+        if category == "events":
+            raise ExternalEventArchiveError("simulated crash after event write")
+        original_register(category, identities, path)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(
+        archive, "_register_classification_artifact", crash_after_event_write
+    )
+    no_call_classifier = FakeClassifier(clock=clock, results=[])
+    with pytest.raises(ExternalEventArchiveError, match="simulated crash"):
+        _pipeline(archive, no_call_classifier, clock).process_revision(later)
+    assert no_call_classifier.calls == []
+
+    clock.value = T0 + timedelta(minutes=10)
+    restarted = ExternalEventArchive(tmp_path, now=clock)
+    recovered_classifier = FakeClassifier(clock=clock, results=[])
+    recovered = _pipeline(
+        restarted, recovered_classifier, clock
+    ).process_revision(later)
+
+    assert recovered.status == "VALID"
+    assert recovered.reused_canonical_result is True
+    assert recovered.evidence_ready_at == clock.value
+    assert recovered_classifier.calls == []
+    assert restarted.read_materialized_event(
+        later.source_revision_id,
+        classification_input_fingerprint=(
+            recovered.classification_input_fingerprint or ""
+        ),
+    ) is not None
+
+
 def test_restart_adopts_readiness_written_before_manifest_registration_without_provider_call(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1080,6 +1185,133 @@ def test_contradictory_import_blocks_materialization_without_another_call(
     assert conflicted.context_event is None
     assert no_call_classifier.calls == []
     assert archive.detect_classification_conflict(fingerprint) is not None
+
+
+def test_reviewed_keep_first_conflict_reuses_canonical_result_for_new_observation(
+    tmp_path,
+) -> None:
+    clock = MutableClock(T0 + timedelta(seconds=4))
+    archive = ExternalEventArchive(tmp_path, now=clock)
+    original = _archive_revision(
+        archive, text="Palantir announced results.", fact_id="truth-live"
+    )
+    live_classifier = FakeClassifier(
+        clock=clock,
+        results=[
+            FakeResultSpec(
+                status=ContextClassificationStatus.VALID,
+                affected_tickers=("PLTR",),
+            )
+        ],
+    )
+    live = _pipeline(archive, live_classifier, clock).process_revision(original)
+    fingerprint = live.classification_input_fingerprint
+    assert fingerprint is not None
+    canonical = archive.read_canonical_claim(fingerprint)
+    assert canonical is not None
+
+    clock.value = T0 + timedelta(minutes=1)
+    _publish_conflicting_backfill_attempt(
+        archive, fingerprint=fingerprint, profile=_profile()
+    )
+    conflict = archive.detect_classification_conflict(fingerprint)
+    assert conflict is not None
+    archive.publish_conflict_resolution(
+        conflict_id=str(conflict["classification_conflict_id"]),
+        decision=ConflictResolutionDecision.KEEP_FIRST_DURABLY_PUBLISHED,
+        reviewer="fixture-reviewer",
+        reason="The live canonical attempt was durably first.",
+        chosen_attempt_id=str(canonical["canonical_classification_attempt_id"]),
+        chosen_complete_output_fingerprint=str(
+            canonical["complete_output_fingerprint"]
+        ),
+        chosen_policy_output_fingerprint=str(
+            canonical["policy_output_fingerprint"]
+        ),
+    )
+
+    clock.value = T0 + timedelta(minutes=5)
+    replay = _archive_revision(
+        archive,
+        text="Palantir announced results.",
+        fact_id="truth-replayed-observation",
+        observed_at=clock.value,
+    )
+    no_call_classifier = FakeClassifier(clock=clock, results=[])
+    replayed = _pipeline(archive, no_call_classifier, clock).process_revision(
+        replay
+    )
+
+    assert replayed.status == "VALID"
+    assert replayed.reused_canonical_result is True
+    assert replayed.context_event is not None
+    assert replayed.evidence_ready_at == clock.value + timedelta(milliseconds=25)
+    assert no_call_classifier.calls == []
+    readiness = archive.read_readiness(
+        replay.source_revision_id,
+        classification_input_fingerprint=fingerprint,
+    )
+    assert readiness is not None
+    assert readiness["canonical_classification_attempt_id"] == canonical[
+        "canonical_classification_attempt_id"
+    ]
+
+
+def test_reviewed_abstain_conflict_does_not_materialize_a_replayed_observation(
+    tmp_path,
+) -> None:
+    clock = MutableClock(T0 + timedelta(seconds=4))
+    archive = ExternalEventArchive(tmp_path, now=clock)
+    original = _archive_revision(
+        archive, text="Palantir announced results.", fact_id="truth-live"
+    )
+    completed = _pipeline(
+        archive,
+        FakeClassifier(
+            clock=clock,
+            results=[
+                FakeResultSpec(
+                    status=ContextClassificationStatus.VALID,
+                    affected_tickers=("PLTR",),
+                )
+            ],
+        ),
+        clock,
+    ).process_revision(original)
+    fingerprint = completed.classification_input_fingerprint
+    assert fingerprint is not None
+
+    clock.value = T0 + timedelta(minutes=1)
+    _publish_conflicting_backfill_attempt(
+        archive, fingerprint=fingerprint, profile=_profile()
+    )
+    conflict = archive.detect_classification_conflict(fingerprint)
+    assert conflict is not None
+    archive.publish_conflict_resolution(
+        conflict_id=str(conflict["classification_conflict_id"]),
+        decision=ConflictResolutionDecision.ABSTAIN_INPUT,
+        reviewer="fixture-reviewer",
+        reason="The contradictory output is deliberately abstained.",
+    )
+
+    clock.value = T0 + timedelta(minutes=5)
+    replay = _archive_revision(
+        archive,
+        text="Palantir announced results.",
+        fact_id="truth-replayed-observation",
+        observed_at=clock.value,
+    )
+    no_call_classifier = FakeClassifier(clock=clock, results=[])
+    outcome = _pipeline(archive, no_call_classifier, clock).process_revision(replay)
+
+    assert outcome.status == "ABSTAIN_INPUT"
+    assert outcome.context_event is None
+    assert outcome.evidence_ready_at is None
+    assert no_call_classifier.calls == []
+    assert archive.read_readiness(
+        replay.source_revision_id,
+        classification_input_fingerprint=fingerprint,
+    ) is None
 
 
 def test_empty_or_media_only_revision_is_archived_without_classifier_call(

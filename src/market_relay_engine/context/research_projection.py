@@ -30,6 +30,7 @@ from market_relay_engine.context.external_event_archive import (
     ExternalEventArchive,
     ExternalEventArchiveError,
     output_fingerprints,
+    validate_external_event_lineage_chronology,
 )
 from market_relay_engine.contracts.context import (
     ContextAIEvent,
@@ -2585,68 +2586,23 @@ def _validate_external_event_lineage(
                 f"canonical classification lineage differs on {name}"
             )
 
-    observed_at = _required_datetime(
-        getattr(revision, "system_observed_at"),
-        "system_observed_at",
-    )
-    archived_at = _required_datetime(
-        getattr(revision, "archived_at"),
-        "archived_at",
-    )
-    normalized_at = _required_datetime(event.normalized_at, "normalized_at")
-    classified_at = _required_datetime(
-        attempt.get("classified_at"), "classified_at"
-    )
-    validated_at = _required_datetime(
-        attempt.get("validated_at"), "validated_at"
-    )
-    attempt_published_at = _required_datetime(
-        attempt.get("archive_published_at"),
-        "attempt.archive_published_at",
-    )
-    canonical_published_at = _required_datetime(
-        canonical_claim.get("durably_published_at"),
-        "canonical.durably_published_at",
-    )
-    readiness_published_at = _required_datetime(
-        readiness.get("archive_published_at"),
-        "readiness.archive_published_at",
-    )
-    evidence_ready_at = _required_datetime(
-        readiness.get("evidence_ready_at"),
-        "evidence_ready_at",
-    )
+    classified_at = _required_datetime(attempt.get("classified_at"), "classified_at")
+    validated_at = _required_datetime(attempt.get("validated_at"), "validated_at")
     if event.classified_at != classified_at or event.validated_at != validated_at:
         raise ResearchProjectionError(
             "materialized event classification timestamps changed"
         )
-    # A canonical semantic result may be reused by a later exact observation or
-    # backfill.  Its classification chronology is therefore independent of the
-    # later source revision's observation/normalization chronology.  Evidence
-    # readiness must dominate both chains; it must never backdate the reused
-    # output to the later observation.
-    if not (
-        observed_at <= archived_at <= normalized_at
-        and classified_at
-        <= validated_at
-        <= attempt_published_at
-        <= canonical_published_at
-        <= readiness_published_at
-        and evidence_ready_at
-        >= max(
-            observed_at,
-            archived_at,
-            normalized_at,
-            classified_at,
-            validated_at,
-            attempt_published_at,
-            canonical_published_at,
-            readiness_published_at,
-        )
-    ):
-        raise ResearchProjectionError(
-            "external evidence readiness chronology is invalid"
-        )
+    validate_external_event_lineage_chronology(
+        system_observed_at=getattr(revision, "system_observed_at"),
+        archived_at=getattr(revision, "archived_at"),
+        normalized_at=event.normalized_at,
+        classified_at=classified_at,
+        validated_at=validated_at,
+        attempt_published_at=attempt.get("archive_published_at"),
+        canonical_published_at=canonical_claim.get("durably_published_at"),
+        readiness_published_at=readiness.get("archive_published_at"),
+        evidence_ready_at=readiness.get("evidence_ready_at"),
+    )
 
 
 def _canonical_external_attempt(

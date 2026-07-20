@@ -632,17 +632,33 @@ class ExternalClassificationPipeline:
         )
         if attempt is None:
             raise ExternalClassificationError("canonical classification attempt is missing")
+        expected_profile = prepared.profile.to_fingerprint_payload()
+        if (
+            canonical.get("profile_hash") != prepared.profile.profile_hash
+            or attempt.get("profile_hash") != prepared.profile.profile_hash
+            or attempt.get("profile") != expected_profile
+        ):
+            raise ExternalClassificationError(
+                "canonical classification profile does not match this materialization"
+            )
         conflict = self._archive.detect_classification_conflict(fingerprint)
         if conflict is not None:
-            return ExternalClassificationOutcome(
-                source_revision_id=revision.source_revision_id,
-                classification_input_fingerprint=fingerprint,
-                status="CLASSIFICATION_CONFLICT",
-                provider_called=provider_called,
-                reused_canonical_result=reused,
-                policy_eligible=False,
-                evidence_ready_at=None,
+            resolution_status = self._reviewed_conflict_materialization_status(
+                fingerprint=fingerprint,
+                canonical=canonical,
+                conflict=conflict,
+                profile=prepared.profile,
             )
+            if resolution_status is not None:
+                return ExternalClassificationOutcome(
+                    source_revision_id=revision.source_revision_id,
+                    classification_input_fingerprint=fingerprint,
+                    status=resolution_status,
+                    provider_called=provider_called,
+                    reused_canonical_result=reused,
+                    policy_eligible=False,
+                    evidence_ready_at=None,
+                )
         status = str(attempt.get("status"))
         output = attempt.get("normalized_output")
         if not isinstance(output, Mapping):
@@ -725,6 +741,70 @@ class ExternalClassificationPipeline:
             evidence_ready_at=ready_at,
             context_event=context_event,
         )
+
+    def _reviewed_conflict_materialization_status(
+        self,
+        *,
+        fingerprint: str,
+        canonical: Mapping[str, Any],
+        conflict: Mapping[str, Any],
+        profile: ResearchSourceClassificationProfile,
+    ) -> str | None:
+        """Return a fail-closed status unless review authorizes this owner.
+
+        A replacement profile has a distinct classification-input fingerprint,
+        so an old conflicted profile can never silently consume it.  The normal
+        canonical/profile checks above govern the replacement input itself.
+        """
+
+        resolution = self._archive.load_conflict_resolution(fingerprint)
+        if resolution is None:
+            return "CLASSIFICATION_CONFLICT"
+        if resolution.get("conflict_id") != conflict.get(
+            "classification_conflict_id"
+        ):
+            raise ExternalClassificationError(
+                "classification resolution references a different conflict"
+            )
+        decision = str(resolution.get("decision"))
+        if decision == "ABSTAIN_INPUT":
+            return "ABSTAIN_INPUT"
+        if decision == "KEEP_FIRST_DURABLY_PUBLISHED":
+            required_matches = (
+                (
+                    "chosen_attempt_id",
+                    "canonical_classification_attempt_id",
+                ),
+                (
+                    "chosen_complete_output_fingerprint",
+                    "complete_output_fingerprint",
+                ),
+                (
+                    "chosen_policy_output_fingerprint",
+                    "policy_output_fingerprint",
+                ),
+            )
+            if any(
+                resolution.get(resolution_name) != canonical.get(canonical_name)
+                for resolution_name, canonical_name in required_matches
+            ):
+                raise ExternalClassificationError(
+                    "KEEP_FIRST resolution does not authorize the canonical result"
+                )
+            if canonical.get("profile_hash") != profile.profile_hash:
+                raise ExternalClassificationError(
+                    "KEEP_FIRST resolution profile does not match materialization"
+                )
+            return None
+        if decision == "RECLASSIFY_UNDER_NEW_PROFILE":
+            if resolution.get("new_profile_hash") != profile.profile_hash:
+                return "RECLASSIFY_UNDER_NEW_PROFILE_REQUIRED"
+            if canonical.get("profile_hash") != profile.profile_hash:
+                raise ExternalClassificationError(
+                    "replacement profile does not own the canonical result"
+                )
+            return None
+        raise ExternalClassificationError("classification resolution decision is invalid")
 
     def _validate_revision_profile(self, revision: ExternalSourceRevision) -> None:
         if revision.source != self._profile.source or revision.source_type != self._profile.source_type:
