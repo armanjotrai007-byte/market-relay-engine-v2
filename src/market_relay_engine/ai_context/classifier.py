@@ -18,7 +18,10 @@ from typing import Any, Protocol
 import httpx
 import requests
 
-from market_relay_engine.ai_context.prompting import render_context_filter_prompt
+from market_relay_engine.ai_context.prompting import (
+    CONTEXT_FILTER_PROMPT_VERSION_V2,
+    render_context_filter_prompt,
+)
 from market_relay_engine.ai_context.runtime_guards import (
     CachedClassification,
     ClassificationDedupCache,
@@ -27,7 +30,10 @@ from market_relay_engine.ai_context.runtime_guards import (
     classification_fingerprint,
     get_gemini_process_runtime,
 )
-from market_relay_engine.ai_context.schema import build_context_filter_response_schema
+from market_relay_engine.ai_context.schema import (
+    CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+    build_context_filter_response_schema,
+)
 from market_relay_engine.ai_context.settings import AIContextFilterSettings
 from market_relay_engine.common.ids import new_record_id
 from market_relay_engine.common.time import utc_now
@@ -43,15 +49,23 @@ from market_relay_engine.contracts.context import (
 
 
 LOGGER = logging.getLogger(__name__)
-VALIDATOR_VERSION = "context_filter_validator_v1"
+VALIDATOR_VERSION_V1 = "context_filter_validator_v1"
+# Backward-compatible PR35 name.
+VALIDATOR_VERSION = VALIDATOR_VERSION_V1
+VALIDATOR_VERSION_V2 = "context_filter_validator_v2_scope"
 
-_EXPECTED_PROVIDER_KEYS = {
+_EXPECTED_PROVIDER_KEYS_V1 = {
     "status",
     "event_type",
     "risk_level",
     "urgency",
     "confidence",
     "summary",
+}
+_EXPECTED_PROVIDER_KEYS_V2 = _EXPECTED_PROVIDER_KEYS_V1 | {
+    "affected_tickers",
+    "affected_sectors",
+    "global_relevance",
 }
 _SENTENCE_START = r"(?:^\s*|[.!?;:]\s+|\r?\n\s*)"
 _TRADE_INSTRUMENT_NOUN = r"(?:stocks?|shares?|securit(?:y|ies)|equity|equities|positions?)"
@@ -221,6 +235,33 @@ class ContextClassificationAttemptResult:
     validation_result: ContextValidationResult | None = None
 
 
+def merge_classification_scope(
+    request: ContextClassificationRequest,
+    response: ContextClassificationResponse,
+) -> tuple[list[str], list[str], bool]:
+    """Union trusted explicit scope with validated model scope deterministically."""
+
+    if response.classification_request_id != request.classification_request_id:
+        raise ValueError("request and response classification identities must match")
+    tickers = sorted(
+        {
+            *(ticker.strip().upper() for ticker in request.affected_tickers),
+            *(ticker.strip().upper() for ticker in response.affected_tickers),
+        }
+    )
+    sectors = sorted(
+        {
+            *(sector.strip().upper() for sector in request.affected_sectors),
+            *(sector.strip().upper() for sector in response.affected_sectors),
+        }
+    )
+    return (
+        tickers,
+        sectors,
+        bool(request.global_relevance) or bool(response.global_relevance),
+    )
+
+
 class ContextClassifier(Protocol):
     """Small provider-neutral classification interface."""
 
@@ -241,6 +282,13 @@ class InteractionTransport(Protocol):
         temperature: float,
         max_output_tokens: int,
     ) -> object: ...
+
+
+class _NoOpProviderDebugLogger:
+    """Prevent provider SDK debug mode from logging credentials or bodies."""
+
+    def debug(self, _message: str, *_args: object, **_kwargs: object) -> None:
+        return None
 
 
 class GeminiInteractionTransport:
@@ -264,6 +312,17 @@ class GeminiInteractionTransport:
                 retry_options=types.HttpRetryOptions(attempts=1),
             ),
         )
+        interactions = getattr(self._client, "interactions")
+        sdk_configuration = getattr(interactions, "sdk_configuration", None)
+        if sdk_configuration is not None:
+            # google-genai's generated Interactions client logs API-key
+            # headers, full prompts, and response bodies when its debug mode is
+            # enabled.  This transport never permits that logger.
+            setattr(
+                sdk_configuration,
+                "debug_logger",
+                _NoOpProviderDebugLogger(),
+            )
 
     def create(
         self,
@@ -461,6 +520,27 @@ class GeminiContextClassifier:
             str(ticker): str(sector)
             for ticker, sector in (ticker_sector_hints or {}).items()
         }
+        self._scope_config_error = False
+        canonical_scope_hints: dict[str, str] = {}
+        for ticker, sector in (ticker_sector_hints or {}).items():
+            if (
+                not isinstance(ticker, str)
+                or not ticker.strip()
+                or not isinstance(sector, str)
+                or not sector.strip()
+            ):
+                self._scope_config_error = True
+                continue
+            normalized_ticker = ticker.strip().upper()
+            normalized_sector = sector.strip().upper()
+            existing = canonical_scope_hints.get(normalized_ticker)
+            if existing is not None and existing != normalized_sector:
+                self._scope_config_error = True
+                continue
+            canonical_scope_hints[normalized_ticker] = normalized_sector
+        self._canonical_ticker_sector_hints = canonical_scope_hints
+        self._allowed_tickers = tuple(sorted(canonical_scope_hints))
+        self._allowed_sectors = tuple(sorted(set(canonical_scope_hints.values())))
         self._now = now
         self._monotonic_clock = monotonic_clock
         self._sleeper = sleeper
@@ -505,17 +585,31 @@ class GeminiContextClassifier:
 
         try:
             response_schema = build_context_filter_response_schema(
-                max_summary_characters=self._settings.max_summary_characters
+                max_summary_characters=self._settings.max_summary_characters,
+                response_schema_version=self._settings.response_schema_version,
+                allowed_tickers=self._allowed_tickers,
+                allowed_sectors=self._allowed_sectors,
             )
-            sector_hints = tuple(
-                sorted(
-                    {
-                        self._ticker_sector_hints[ticker]
-                        for ticker in request.affected_tickers
-                        if ticker in self._ticker_sector_hints
-                    }
+            if request.prompt_version == CONTEXT_FILTER_PROMPT_VERSION_V2:
+                sector_hints = tuple(
+                    sorted(
+                        {
+                            self._canonical_ticker_sector_hints[ticker]
+                            for ticker in request.affected_tickers
+                            if ticker in self._canonical_ticker_sector_hints
+                        }
+                    )
                 )
-            )
+            else:
+                sector_hints = tuple(
+                    sorted(
+                        {
+                            self._ticker_sector_hints[ticker]
+                            for ticker in request.affected_tickers
+                            if ticker in self._ticker_sector_hints
+                        }
+                    )
+                )
             render_config_hash = _render_config_hash(
                 response_schema=response_schema,
                 sector_hints=sector_hints,
@@ -559,6 +653,9 @@ class GeminiContextClassifier:
                 sector_hints=sector_hints,
                 max_input_characters=self._settings.max_input_characters,
                 max_summary_characters=self._settings.max_summary_characters,
+                allowed_tickers=self._allowed_tickers,
+                allowed_sectors=self._allowed_sectors,
+                response_schema_version=self._settings.response_schema_version,
             )
             if len(prompt) > self._settings.max_prompt_characters:
                 return self._validation_rejected(
@@ -678,6 +775,10 @@ class GeminiContextClassifier:
                 provider=self._settings.provider,
                 model_version=self._settings.model,
                 prompt_version=request.prompt_version,
+                response_schema_version=self._settings.response_schema_version,
+                classification_input_fingerprint=(
+                    request.classification_input_fingerprint
+                ),
                 status=parsed["status"],
                 provider_latency_ms=self._elapsed_ms(started),
                 event_type=parsed["event_type"],
@@ -685,6 +786,9 @@ class GeminiContextClassifier:
                 urgency=parsed["urgency"],
                 confidence=parsed["confidence"],
                 summary=parsed["summary"],
+                affected_tickers=parsed["affected_tickers"],
+                affected_sectors=parsed["affected_sectors"],
+                global_relevance=parsed["global_relevance"],
                 provider_request_count=provider_request_count,
                 retry_count=max(0, provider_request_count - 1),
                 trace_id=request.trace_id,
@@ -728,14 +832,37 @@ class GeminiContextClassifier:
     def _validate_local_request(self, request: ContextClassificationRequest) -> str | None:
         if request.prompt_version != self._settings.prompt_version:
             return "PROMPT_VERSION_MISMATCH"
+        if (
+            request.response_schema_version is not None
+            and request.response_schema_version != self._settings.response_schema_version
+        ):
+            return "RESPONSE_SCHEMA_VERSION_MISMATCH"
         if len(request.input_text) > self._settings.max_input_characters:
             return "INPUT_TOO_LONG"
+        if request.prompt_version == CONTEXT_FILTER_PROMPT_VERSION_V2:
+            if (
+                self._scope_config_error
+                or not self._allowed_tickers
+                or not self._allowed_sectors
+            ):
+                return "INVALID_SCOPE_CONFIGURATION"
+            if any(ticker not in self._allowed_tickers for ticker in request.affected_tickers):
+                return "UNKNOWN_TRUSTED_TICKER_SCOPE"
+            if any(sector not in self._allowed_sectors for sector in request.affected_sectors):
+                return "UNKNOWN_TRUSTED_SECTOR_SCOPE"
         return None
 
     def _validate_provider_payload(
         self, payload: object
     ) -> tuple[dict[str, Any] | None, str | None]:
-        if not isinstance(payload, dict) or set(payload) != _EXPECTED_PROVIDER_KEYS:
+        is_v2 = (
+            self._settings.response_schema_version
+            == CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2
+        )
+        expected_keys = (
+            _EXPECTED_PROVIDER_KEYS_V2 if is_v2 else _EXPECTED_PROVIDER_KEYS_V1
+        )
+        if not isinstance(payload, dict) or set(payload) != expected_keys:
             return None, "SCHEMA_INVALID"
         status_raw = payload["status"]
         if status_raw not in {"VALID", "ABSTAINED"}:
@@ -786,6 +913,27 @@ class GeminiContextClassifier:
                 or confidence is not None
             ):
                 return None, "INVALID_ABSTAINED_SHAPE"
+        affected_tickers: list[str] = []
+        affected_sectors: list[str] = []
+        global_relevance: bool | None = None
+        if is_v2:
+            affected_tickers, scope_reason = _validated_scope_values(
+                payload["affected_tickers"],
+                allowed=self._allowed_tickers,
+                label="TICKER",
+            )
+            if scope_reason is not None:
+                return None, scope_reason
+            affected_sectors, scope_reason = _validated_scope_values(
+                payload["affected_sectors"],
+                allowed=self._allowed_sectors,
+                label="SECTOR",
+            )
+            if scope_reason is not None:
+                return None, scope_reason
+            if not isinstance(payload["global_relevance"], bool):
+                return None, "INVALID_GLOBAL_RELEVANCE"
+            global_relevance = payload["global_relevance"]
         return {
             "status": status,
             "event_type": event_type,
@@ -793,6 +941,9 @@ class GeminiContextClassifier:
             "urgency": urgency,
             "confidence": confidence,
             "summary": summary.strip(),
+            "affected_tickers": affected_tickers,
+            "affected_sectors": affected_sectors,
+            "global_relevance": global_relevance,
         }, None
 
     def _deduplicated_result(
@@ -832,10 +983,19 @@ class GeminiContextClassifier:
             classification_attempt_id=response.classification_attempt_id,
             validation_outcome=True,
             reason_codes=[],
-            validator_version=VALIDATOR_VERSION,
+            validator_version=self._validator_version,
             validated_at=self._now(),
             trace_id=request.trace_id,
         )
+
+    @property
+    def _validator_version(self) -> str:
+        if (
+            self._settings.response_schema_version
+            == CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2
+        ):
+            return VALIDATOR_VERSION_V2
+        return VALIDATOR_VERSION
 
     def _validation_rejected(
         self,
@@ -853,6 +1013,8 @@ class GeminiContextClassifier:
             provider=self._settings.provider,
             model_version=self._settings.model,
             prompt_version=request.prompt_version,
+            response_schema_version=self._settings.response_schema_version,
+            classification_input_fingerprint=request.classification_input_fingerprint,
             status=ContextClassificationStatus.VALIDATION_REJECTED,
             provider_latency_ms=self._elapsed_ms(started),
             provider_request_count=provider_request_count,
@@ -864,7 +1026,7 @@ class GeminiContextClassifier:
             classification_attempt_id=attempt_id,
             validation_outcome=False,
             reason_codes=[reason_code],
-            validator_version=VALIDATOR_VERSION,
+            validator_version=self._validator_version,
             validated_at=self._now(),
             safe_detail="Gemini classification output failed local validation.",
             trace_id=request.trace_id,
@@ -892,6 +1054,8 @@ class GeminiContextClassifier:
             provider=self._settings.provider,
             model_version=self._settings.model,
             prompt_version=request.prompt_version,
+            response_schema_version=self._settings.response_schema_version,
+            classification_input_fingerprint=request.classification_input_fingerprint,
             status=ContextClassificationStatus.PROVIDER_FAILED,
             provider_latency_ms=self._elapsed_ms(started),
             safe_failure_category=failure.category,
@@ -1077,6 +1241,23 @@ def _reject_json_constant(value: str) -> None:
     raise ValueError(f"Unsupported JSON constant: {value}")
 
 
+def _validated_scope_values(
+    value: object,
+    *,
+    allowed: tuple[str, ...],
+    label: str,
+) -> tuple[list[str], str | None]:
+    if not isinstance(value, list):
+        return [], f"INVALID_{label}_SCOPE"
+    if any(not isinstance(item, str) or not item for item in value):
+        return [], f"INVALID_{label}_SCOPE"
+    if len(set(value)) != len(value):
+        return [], f"DUPLICATE_{label}_SCOPE"
+    if any(item not in allowed for item in value):
+        return [], f"UNKNOWN_{label}_SCOPE"
+    return sorted(value), None
+
+
 def contains_trading_instruction(summary: str) -> bool:
     """Return whether a model summary violates the no-trading-instruction policy."""
     if not isinstance(summary, str):
@@ -1109,5 +1290,8 @@ __all__ = [
     "GeminiInteractionTransport",
     "InteractionTransport",
     "VALIDATOR_VERSION",
+    "VALIDATOR_VERSION_V1",
+    "VALIDATOR_VERSION_V2",
     "contains_trading_instruction",
+    "merge_classification_scope",
 ]

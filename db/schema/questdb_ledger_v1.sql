@@ -241,7 +241,29 @@ CREATE TABLE context_ai_events (
     classified_at TIMESTAMP,
     available_at TIMESTAMP,
     validated_at TIMESTAMP,
-    provider SYMBOL
+    provider SYMBOL,
+    affected_sectors_json STRING,
+    global_relevance BOOLEAN,
+    source_available_at TIMESTAMP,
+    system_observed_at TIMESTAMP,
+    archived_at TIMESTAMP,
+    evidence_ready_at TIMESTAMP,
+    source_fact_id STRING,
+    source_revision_id STRING,
+    revision_sequence LONG,
+    supersedes_revision_id STRING,
+    lifecycle_state SYMBOL,
+    lifecycle_effective_at TIMESTAMP,
+    classification_input_fingerprint STRING,
+    complete_output_fingerprint STRING,
+    policy_output_fingerprint STRING,
+    canonical_classification_attempt_id STRING,
+    correlation_group_id STRING,
+    related_event_ids_json STRING,
+    relationship_types_json STRING,
+    classification_conflict_id STRING,
+    conflict_resolution_id STRING,
+    conflict_resolution_generation LONG
 ) TIMESTAMP(event_time) PARTITION BY DAY;
 
 CREATE TABLE context_flags (
@@ -323,7 +345,26 @@ CREATE TABLE context_classification_attempts (
     provider_request_count LONG,
     retry_count LONG,
     deduplicated BOOLEAN,
-    reused_classification_attempt_id STRING
+    reused_classification_attempt_id STRING,
+    affected_sectors_json STRING,
+    global_relevance BOOLEAN,
+    source_available_at TIMESTAMP,
+    system_observed_at TIMESTAMP,
+    archived_at TIMESTAMP,
+    evidence_ready_at TIMESTAMP,
+    source_fact_id STRING,
+    source_revision_id STRING,
+    revision_sequence LONG,
+    supersedes_revision_id STRING,
+    lifecycle_state SYMBOL,
+    lifecycle_effective_at TIMESTAMP,
+    classification_input_fingerprint STRING,
+    complete_output_fingerprint STRING,
+    policy_output_fingerprint STRING,
+    canonical_classification_attempt_id STRING,
+    classification_conflict_id STRING,
+    conflict_resolution_id STRING,
+    conflict_resolution_generation LONG
 ) TIMESTAMP(requested_at) PARTITION BY DAY;
 
 CREATE TABLE shadow_context_policy_evaluations (

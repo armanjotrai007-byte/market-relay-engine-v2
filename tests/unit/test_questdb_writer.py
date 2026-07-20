@@ -70,6 +70,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE_TIME = datetime(2026, 5, 22, 15, 30, 0, tzinfo=UTC)
 
 
+class _MetadataProxy:
+    def __init__(self, record: object, **metadata: object) -> None:
+        self._record = record
+        self._metadata = metadata
+
+    def __getattr__(self, name: str) -> object:
+        if name in self._metadata:
+            return self._metadata[name]
+        return getattr(self._record, name)
+
+
 class FakeResponse:
     def __init__(self, status_code: int, payload: object | Exception) -> None:
         self.status_code = status_code
@@ -552,10 +563,73 @@ def test_context_records_map_to_context_rows() -> None:
     assert tuple(ai_event_row) == TABLE_COLUMNS["context_ai_events"]
     assert ai_event_row["context_event_id"] == ai_event.context_event_id
     assert ai_event_row["event_type"] == "OTHER"
+    for nullable_external_field in (
+        "affected_sectors_json",
+        "global_relevance",
+        "source_available_at",
+        "system_observed_at",
+        "archived_at",
+        "evidence_ready_at",
+        "source_fact_id",
+        "source_revision_id",
+        "classification_input_fingerprint",
+        "complete_output_fingerprint",
+        "policy_output_fingerprint",
+        "classification_conflict_id",
+        "conflict_resolution_id",
+    ):
+        assert ai_event_row[nullable_external_field] is None
     assert tuple(flag_row) == TABLE_COLUMNS["context_flags"]
     assert flag_row["context_flag_id"] == flag.context_flag_id
     assert flag_row["reason_codes_json"] == "[]"
     assert context_state_snapshot_to_row(state)["context_snapshot_id"] == state.context_snapshot_id
+
+
+def test_external_context_metadata_maps_to_nullable_suffix_only() -> None:
+    event = ContextAIEvent(
+        event_time=EXAMPLE_TIME,
+        source="palantir_ir",
+        source_id="source_1",
+        affected_tickers=["PLTR"],
+        event_type=ContextClassificationEventType.EARNINGS_GUIDANCE,
+        summary="Metadata-only summary",
+    )
+    enriched_event = _MetadataProxy(
+        event,
+        affected_sectors=["DEFENSE", "ENERGY"],
+        global_relevance=True,
+        source_available_at=EXAMPLE_TIME,
+        system_observed_at=EXAMPLE_TIME + timedelta(seconds=1),
+        archived_at=EXAMPLE_TIME + timedelta(seconds=2),
+        evidence_ready_at=EXAMPLE_TIME + timedelta(seconds=4),
+        source_fact_id="PLTR:2026:Q1",
+        source_revision_id="revision_2",
+        revision_sequence=2,
+        supersedes_revision_id="revision_1",
+        lifecycle_state="UPDATED",
+        lifecycle_effective_at=EXAMPLE_TIME,
+        classification_input_fingerprint="a" * 64,
+        complete_output_fingerprint="b" * 64,
+        policy_output_fingerprint="c" * 64,
+        canonical_classification_attempt_id="attempt_1",
+        correlation_group_id="earnings_PLTR_2026_Q1",
+        related_event_ids=["sec_event_1"],
+        relationship_types=["OFFICIAL_EARNINGS_LINK"],
+        classification_conflict_id=None,
+        conflict_resolution_id="resolution_1",
+        conflict_resolution_generation=3,
+    )
+
+    row = context_ai_event_to_row(enriched_event)
+
+    assert tuple(row) == TABLE_COLUMNS["context_ai_events"]
+    assert row["affected_sectors_json"] == '["DEFENSE","ENERGY"]'
+    assert row["global_relevance"] is True
+    assert row["source_revision_id"] == "revision_2"
+    assert row["lifecycle_state"] == "UPDATED"
+    assert row["related_event_ids_json"] == '["sec_event_1"]'
+    assert row["relationship_types_json"] == '["OFFICIAL_EARNINGS_LINK"]'
+    assert row["classification_input_fingerprint"] == "a" * 64
 
 
 def test_phase7_ledger_table_columns_are_exact_and_metadata_only() -> None:
@@ -569,7 +643,13 @@ def test_phase7_ledger_table_columns_are_exact_and_metadata_only() -> None:
         "validator_version validated_at provider_latency_ms safe_failure_category "
         "safe_failure_summary run_id session_id schema_version trace_id "
         "provider_request_count retry_count deduplicated "
-        "reused_classification_attempt_id".split()
+        "reused_classification_attempt_id affected_sectors_json global_relevance "
+        "source_available_at system_observed_at archived_at evidence_ready_at "
+        "source_fact_id source_revision_id revision_sequence supersedes_revision_id "
+        "lifecycle_state lifecycle_effective_at classification_input_fingerprint "
+        "complete_output_fingerprint policy_output_fingerprint "
+        "canonical_classification_attempt_id classification_conflict_id "
+        "conflict_resolution_id conflict_resolution_generation".split()
     )
     assert TABLE_COLUMNS["shadow_context_policy_evaluations"] == tuple(
         "decision_evaluation_time write_time shadow_evaluation_id model_signal_id risk_decision_id "
@@ -590,6 +670,15 @@ def test_phase7_ledger_table_columns_are_exact_and_metadata_only() -> None:
         "traceback",
         "secret",
         "credential",
+        "api_key",
+        "access_token",
+        "source_body",
+        "source_payload",
+        "raw_source_payload",
+        "provider_response",
+        "provider_body",
+        "authorization",
+        "bearer_token",
     }
     for table_name in (
         "context_ai_events",
@@ -630,11 +719,72 @@ def test_context_classification_attempt_maps_trusted_metadata_and_enum_values() 
     assert row["retry_count"] == 0
     assert row["deduplicated"] is False
     assert row["reused_classification_attempt_id"] is None
+    assert row["affected_sectors_json"] is None
+    assert row["global_relevance"] is None
+    assert row["source_available_at"] is None
+    assert row["system_observed_at"] is None
+    assert row["archived_at"] is None
+    assert row["evidence_ready_at"] is None
+    assert row["source_fact_id"] is None
+    assert row["source_revision_id"] is None
+    assert row["classification_input_fingerprint"] is None
+    assert row["complete_output_fingerprint"] is None
+    assert row["policy_output_fingerprint"] is None
+    assert row["classification_conflict_id"] is None
+    assert row["conflict_resolution_id"] is None
     assert row["trace_id"] == "trace_phase7"
     assert "input_text" not in row
     assert "safe_detail" not in row
     assert "exception" not in row
     assert "traceback" not in row
+
+
+def test_classification_attempt_maps_external_ownership_metadata() -> None:
+    request, response, validation = _classification_records()
+    enriched_request = _MetadataProxy(
+        request,
+        affected_sectors=["DEFENSE"],
+        global_relevance=False,
+        source_available_at=EXAMPLE_TIME,
+        system_observed_at=EXAMPLE_TIME + timedelta(seconds=1),
+        archived_at=EXAMPLE_TIME + timedelta(seconds=2),
+        source_fact_id="truth_1",
+        source_revision_id="truth_1_revision_2",
+        revision_sequence=2,
+        supersedes_revision_id="truth_1_revision_1",
+        lifecycle_state="UPDATED",
+        lifecycle_effective_at=EXAMPLE_TIME,
+        classification_input_fingerprint="d" * 64,
+    )
+    enriched_response = _MetadataProxy(
+        response,
+        evidence_ready_at=EXAMPLE_TIME + timedelta(seconds=4),
+        classification_input_fingerprint="d" * 64,
+        complete_output_fingerprint="e" * 64,
+        policy_output_fingerprint="f" * 64,
+        canonical_classification_attempt_id=response.classification_attempt_id,
+        classification_conflict_id=None,
+        conflict_resolution_id="resolution_1",
+        conflict_resolution_generation=2,
+    )
+
+    row = context_classification_attempt_to_row(
+        enriched_request,
+        enriched_response,
+        validation_result=validation,
+    )
+
+    assert tuple(row) == TABLE_COLUMNS["context_classification_attempts"]
+    assert row["affected_sectors_json"] == '["DEFENSE"]'
+    assert row["global_relevance"] is False
+    assert row["source_fact_id"] == "truth_1"
+    assert row["source_revision_id"] == "truth_1_revision_2"
+    assert row["evidence_ready_at"] == EXAMPLE_TIME + timedelta(seconds=4)
+    assert row["classification_input_fingerprint"] == "d" * 64
+    assert row["complete_output_fingerprint"] == "e" * 64
+    assert row["policy_output_fingerprint"] == "f" * 64
+    assert row["canonical_classification_attempt_id"] == response.classification_attempt_id
+    assert row["conflict_resolution_generation"] == 2
 
 
 def test_context_classification_attempt_without_validation_uses_null_metadata() -> None:

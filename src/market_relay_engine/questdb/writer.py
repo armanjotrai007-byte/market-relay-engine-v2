@@ -45,9 +45,9 @@ cost_estimates: estimate_time write_time cost_estimate_id ticker signal_id featu
 context_state_snapshots: snapshot_time write_time context_snapshot_id ticker sector active_indicator_ids_json active_context_event_ids_json active_context_flag_ids_json context_summary_json highest_severity risk_level valid_until run_id session_id schema_version trace_id
 risk_decisions: decision_time write_time risk_decision_id ticker model_signal_id cost_estimate_id context_snapshot_id decision approved risk_version reduce_size_factor reasons_json thresholds_used_json run_id session_id schema_version trace_id
 context_indicator_snapshots: snapshot_time write_time context_indicator_id source ticker_or_sector indicator_name value_json window units freshness_seconds source_event_time details_json run_id session_id schema_version trace_id
-context_ai_events: event_time write_time context_event_id source source_id affected_tickers_json affected_sector event_type sentiment urgency risk_level confidence valid_from valid_until summary prompt_version model_version raw_input_hash run_id session_id schema_version trace_id raw_input_id source_document_id classification_request_id classification_attempt_id validation_result_id source_type source_platform source_uri source_locator document_hash source_published_at source_updated_at collected_at normalized_at classified_at available_at validated_at provider
+context_ai_events: event_time write_time context_event_id source source_id affected_tickers_json affected_sector event_type sentiment urgency risk_level confidence valid_from valid_until summary prompt_version model_version raw_input_hash run_id session_id schema_version trace_id raw_input_id source_document_id classification_request_id classification_attempt_id validation_result_id source_type source_platform source_uri source_locator document_hash source_published_at source_updated_at collected_at normalized_at classified_at available_at validated_at provider affected_sectors_json global_relevance source_available_at system_observed_at archived_at evidence_ready_at source_fact_id source_revision_id revision_sequence supersedes_revision_id lifecycle_state lifecycle_effective_at classification_input_fingerprint complete_output_fingerprint policy_output_fingerprint canonical_classification_attempt_id correlation_group_id related_event_ids_json relationship_types_json classification_conflict_id conflict_resolution_id conflict_resolution_generation
 context_flags: event_time write_time context_flag_id source flag_type severity ticker sector confidence valid_until run_id session_id schema_version trace_id context_event_id raw_input_id source_document_id classification_request_id classification_attempt_id validation_result_id source_type source_id source_platform source_uri source_locator document_hash raw_input_hash valid_from available_at validated_at reason_codes_json summary
-context_classification_attempts: requested_at write_time classification_attempt_id classification_request_id raw_input_id source_document_id source source_type source_platform source_uri source_locator affected_tickers_json raw_input_hash document_hash source_published_at source_updated_at collected_at normalized_at classified_at provider model_version prompt_version status event_type risk_level urgency confidence summary validation_result_id validation_outcome validation_reason_codes_json validator_version validated_at provider_latency_ms safe_failure_category safe_failure_summary run_id session_id schema_version trace_id provider_request_count retry_count deduplicated reused_classification_attempt_id
+context_classification_attempts: requested_at write_time classification_attempt_id classification_request_id raw_input_id source_document_id source source_type source_platform source_uri source_locator affected_tickers_json raw_input_hash document_hash source_published_at source_updated_at collected_at normalized_at classified_at provider model_version prompt_version status event_type risk_level urgency confidence summary validation_result_id validation_outcome validation_reason_codes_json validator_version validated_at provider_latency_ms safe_failure_category safe_failure_summary run_id session_id schema_version trace_id provider_request_count retry_count deduplicated reused_classification_attempt_id affected_sectors_json global_relevance source_available_at system_observed_at archived_at evidence_ready_at source_fact_id source_revision_id revision_sequence supersedes_revision_id lifecycle_state lifecycle_effective_at classification_input_fingerprint complete_output_fingerprint policy_output_fingerprint canonical_classification_attempt_id classification_conflict_id conflict_resolution_id conflict_resolution_generation
 shadow_context_policy_evaluations: decision_evaluation_time write_time shadow_evaluation_id model_signal_id risk_decision_id matched_context_event_ids_json matched_context_flag_ids_json shadow_context_fingerprint policy_version policy_config_hash hypothetical_action proposed_size_factor reason_codes_json run_id session_id schema_version trace_id
 order_events: order_time write_time order_id ticker side order_type quantity status expected_price submitted_price broker broker_order_id paper_trading model_signal_id risk_decision_id feature_snapshot_id run_id session_id schema_version trace_id
 fill_events: fill_time write_time fill_id order_id ticker side quantity fill_price expected_price slippage slippage_bps broker_status broker_fill_id model_signal_id risk_decision_id run_id session_id schema_version trace_id
@@ -475,6 +475,28 @@ def context_ai_event_to_row(record: Any, *, run_id: str | None = None, session_i
         'available_at': record.available_at,
         'validated_at': record.validated_at,
         'provider': record.provider,
+        'affected_sectors_json': _optional_json_attribute(record, 'affected_sectors'),
+        'global_relevance': getattr(record, 'global_relevance', None),
+        'source_available_at': getattr(record, 'source_available_at', None),
+        'system_observed_at': getattr(record, 'system_observed_at', None),
+        'archived_at': getattr(record, 'archived_at', None),
+        'evidence_ready_at': getattr(record, 'evidence_ready_at', None),
+        'source_fact_id': getattr(record, 'source_fact_id', None),
+        'source_revision_id': getattr(record, 'source_revision_id', None),
+        'revision_sequence': getattr(record, 'revision_sequence', None),
+        'supersedes_revision_id': getattr(record, 'supersedes_revision_id', None),
+        'lifecycle_state': _optional_enum_attribute(record, 'lifecycle_state'),
+        'lifecycle_effective_at': getattr(record, 'lifecycle_effective_at', None),
+        'classification_input_fingerprint': getattr(record, 'classification_input_fingerprint', None),
+        'complete_output_fingerprint': getattr(record, 'complete_output_fingerprint', None),
+        'policy_output_fingerprint': getattr(record, 'policy_output_fingerprint', None),
+        'canonical_classification_attempt_id': getattr(record, 'canonical_classification_attempt_id', None),
+        'correlation_group_id': getattr(record, 'correlation_group_id', None),
+        'related_event_ids_json': _optional_json_attribute(record, 'related_event_ids'),
+        'relationship_types_json': _optional_json_attribute(record, 'relationship_types'),
+        'classification_conflict_id': getattr(record, 'classification_conflict_id', None),
+        'conflict_resolution_id': getattr(record, 'conflict_resolution_id', None),
+        'conflict_resolution_generation': getattr(record, 'conflict_resolution_generation', None),
     }
 
 
@@ -597,6 +619,46 @@ def context_classification_attempt_to_row(
         'retry_count': response.retry_count,
         'deduplicated': response.deduplicated,
         'reused_classification_attempt_id': response.reused_classification_attempt_id,
+        'affected_sectors_json': _optional_json_attribute(request, 'affected_sectors'),
+        'global_relevance': getattr(request, 'global_relevance', None),
+        'source_available_at': getattr(request, 'source_available_at', None),
+        'system_observed_at': getattr(request, 'system_observed_at', None),
+        'archived_at': getattr(request, 'archived_at', None),
+        'evidence_ready_at': _first_attribute(
+            response,
+            validation_result,
+            request,
+            name='evidence_ready_at',
+        ),
+        'source_fact_id': getattr(request, 'source_fact_id', None),
+        'source_revision_id': getattr(request, 'source_revision_id', None),
+        'revision_sequence': getattr(request, 'revision_sequence', None),
+        'supersedes_revision_id': getattr(request, 'supersedes_revision_id', None),
+        'lifecycle_state': _optional_enum_attribute(request, 'lifecycle_state'),
+        'lifecycle_effective_at': getattr(request, 'lifecycle_effective_at', None),
+        'classification_input_fingerprint': _first_attribute(
+            response,
+            request,
+            name='classification_input_fingerprint',
+        ),
+        'complete_output_fingerprint': getattr(response, 'complete_output_fingerprint', None),
+        'policy_output_fingerprint': getattr(response, 'policy_output_fingerprint', None),
+        'canonical_classification_attempt_id': getattr(response, 'canonical_classification_attempt_id', None),
+        'classification_conflict_id': _first_attribute(
+            validation_result,
+            response,
+            name='classification_conflict_id',
+        ),
+        'conflict_resolution_id': _first_attribute(
+            validation_result,
+            response,
+            name='conflict_resolution_id',
+        ),
+        'conflict_resolution_generation': _first_attribute(
+            validation_result,
+            response,
+            name='conflict_resolution_generation',
+        ),
     }
 
 
@@ -776,6 +838,30 @@ def _resolve_write_time(value: datetime | None) -> datetime:
 
 def _enum_value(value: Any) -> Any:
     return value.value if isinstance(value, Enum) else value
+
+
+def _optional_enum_attribute(record: Any, name: str) -> Any:
+    if record is None:
+        return None
+    return _enum_value(getattr(record, name, None))
+
+
+def _optional_json_attribute(record: Any, name: str) -> str | None:
+    if record is None:
+        return None
+    value = getattr(record, name, None)
+    if value is None or value == () or value == [] or value == {}:
+        return None
+    return to_json_string(value)
+
+
+def _first_attribute(*records: Any, name: str) -> Any:
+    for record in records:
+        if record is not None:
+            value = getattr(record, name, None)
+            if value is not None:
+                return value
+    return None
 
 
 def _require_matching_reference(expected: Any, actual: Any, field_name: str) -> None:

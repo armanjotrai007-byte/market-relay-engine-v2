@@ -22,6 +22,10 @@ from market_relay_engine.common.config import (  # noqa: E402
     validate_required_top_level_sections,
 )
 from market_relay_engine.context.eia_wpsr import EIAWPSRConfig  # noqa: E402
+from market_relay_engine.context.external_source_config import (  # noqa: E402
+    EXTERNAL_SOURCE_NAMES,
+    load_external_event_source_settings,
+)
 from market_relay_engine.context.fred_collector import FREDConfig  # noqa: E402
 from market_relay_engine.context.macro_calendar import (  # noqa: E402
     MacroCalendarConfig,
@@ -160,9 +164,51 @@ def _check_context_sources(
         if source.get("direct_trade_authority") is not False:
             issues.append(f"unstructured source {source_name} must not trade directly")
 
+    _check_external_event_sources(context_sources, issues, base_dir=base_dir)
+
     _check_ai_context_filter(context_sources["ai_context_filter"], issues)
 
     return issues
+
+
+def _check_external_event_sources(
+    context_sources: dict[str, Any],
+    issues: list[str],
+    *,
+    base_dir: Path,
+) -> None:
+    """Validate all pilot sources without loading credentials or making I/O calls."""
+
+    unstructured = context_sources.get("unstructured_sources")
+    if not isinstance(unstructured, dict):
+        issues.append("context_sources.unstructured_sources must be a mapping")
+        return
+    missing = [name for name in EXTERNAL_SOURCE_NAMES if name not in unstructured]
+    if missing:
+        issues.append(f"external event source configuration is missing: {missing}")
+        return
+    for name in EXTERNAL_SOURCE_NAMES:
+        source = unstructured[name]
+        if not isinstance(source, dict):
+            issues.append(f"external source {name} must be a mapping")
+            continue
+        if source.get("enabled") is not False:
+            issues.append(f"external source {name} enabled must default to false")
+        if source.get("classification_enabled_by_default") is not False:
+            issues.append(
+                f"external source {name} classification must default to false"
+            )
+        if source.get("questdb_write_enabled_by_default") is not False:
+            issues.append(f"external source {name} QuestDB writes must default to false")
+        if source.get("backfill_enabled_by_default") is not False:
+            issues.append(f"external source {name} backfill must default to false")
+    try:
+        load_external_event_source_settings(
+            base_dir=base_dir,
+            config=context_sources,
+        )
+    except Exception as exc:  # noqa: BLE001 - aggregate safe config diagnostics.
+        issues.append(f"external event source configuration invalid: {exc}")
 
 
 def _check_sec_edgar_source(

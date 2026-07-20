@@ -8,3 +8,6 @@ tzdata
 yfinance==1.4.1
 pandas>=2.2,<3
 google-genai==2.10.0
+websockets>=16.1,<17
+beautifulsoup4>=4.15,<5
+pypdf>=6.14,<7

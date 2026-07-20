@@ -135,3 +135,11 @@ events without re-parsing or Gemini, and hydrates a bounded in-memory index for
 leak-free shadow evaluation. PR36's SEC checkpoint remains source-local
 paid-call suppression and ledger retry state; PR37 adds no persistent generic
 research cache.
+
+When external company news is admitted in the same preparation, SEC evidence
+keeps its own bytes, classification, profile ownership, and readiness time.
+Cross-source observations collapse only when they share one explicitly reused
+canonical classification input and exact document, normalized-text, and excerpt
+hashes. Distinct SEC and company input owners remain separate related evidence.
+Correlation never transfers an earlier SEC availability time to later company
+text.

@@ -10,6 +10,10 @@ from market_relay_engine.common.config import (
     ConfigValidationError,
     load_all_configs,
 )
+from market_relay_engine.context.external_source_config import (
+    EXTERNAL_SOURCE_NAMES,
+    load_external_event_source_settings,
+)
 from market_relay_engine.questdb.writer import ALLOWED_LEDGER_TABLES
 from scripts.check_config import (
     FORBIDDEN_V1_TERMS,
@@ -120,6 +124,123 @@ def test_structured_context_sources_are_enabled_and_decision_loop_safe() -> None
         "temperature": 0,
         "direct_trade_authority": False,
     }
+
+
+def test_external_event_sources_load_bounded_disabled_defaults() -> None:
+    settings = load_external_event_source_settings(base_dir=REPO_ROOT)
+
+    assert settings.archive_path == (
+        REPO_ROOT / "data_lake" / "context" / "external_events"
+    ).resolve()
+    assert settings.veritawire.api_key_env == "VERITAWIRE_API_KEY"
+    assert settings.veritawire.websocket_url == "wss://veritawire.com/ws"
+    assert settings.veritawire.max_records_per_run == 50
+    assert settings.lmt_rss.ticker == "LMT"
+    assert settings.lmt_rss.poll_interval_seconds == 30
+    assert settings.pltr_ir.ticker == "PLTR"
+    assert settings.pltr_ir.poll_interval_seconds == 30
+    assert settings.earnings.tickers == ("PLTR", "LMT")
+    assert settings.earnings.fast_poll_interval_seconds == 10
+    assert settings.earnings.http.max_items_per_poll == 20
+    assert settings.earnings.max_pdf_pages == 200
+    assert settings.earnings.max_pdf_text_characters == 1_000_000
+    for common in (
+        settings.veritawire.common,
+        settings.lmt_rss.common,
+        settings.pltr_ir.common,
+        settings.earnings.common,
+    ):
+        assert common.enabled is False
+        assert common.direct_trade_authority is False
+        assert common.used_in_per_signal_path is False
+        assert common.classification_enabled_by_default is False
+        assert common.questdb_write_enabled_by_default is False
+        assert common.backfill_enabled_by_default is False
+
+
+def test_external_event_source_names_are_complete_and_specific() -> None:
+    unstructured = load_all_configs(base_dir=REPO_ROOT)["context_sources"][
+        "unstructured_sources"
+    ]
+
+    assert set(EXTERNAL_SOURCE_NAMES) == {
+        "veritawire_truth_social",
+        "lockheed_martin_rss",
+        "palantir_ir",
+        "company_earnings",
+    }
+    assert set(EXTERNAL_SOURCE_NAMES).issubset(unstructured)
+    assert "news" not in unstructured
+    assert "social" not in unstructured
+
+
+def test_veritawire_misspelled_key_reference_is_rejected() -> None:
+    config = deepcopy(load_all_configs(base_dir=REPO_ROOT)["context_sources"])
+    config["unstructured_sources"]["veritawire_truth_social"][
+        "api_key_env"
+    ] = "VERITAWARE_API_KEY"
+
+    with pytest.raises(ConfigValidationError, match="must be VERITAWIRE_API_KEY"):
+        load_external_event_source_settings(base_dir=REPO_ROOT, config=config)
+
+
+@pytest.mark.parametrize(
+    "websocket_url",
+    (
+        "wss://veritawire.com/other",
+        "wss://veritawire.com/ws?token=unsafe",
+        "wss://example.test/ws",
+    ),
+)
+def test_veritawire_requires_exact_header_only_official_endpoint(
+    websocket_url: str,
+) -> None:
+    config = deepcopy(load_all_configs(base_dir=REPO_ROOT)["context_sources"])
+    config["unstructured_sources"]["veritawire_truth_social"][
+        "websocket_url"
+    ] = websocket_url
+
+    with pytest.raises(ConfigValidationError, match="official|approved"):
+        load_external_event_source_settings(base_dir=REPO_ROOT, config=config)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "direct_trade_authority",
+        "used_in_per_signal_path",
+        "classification_enabled_by_default",
+        "questdb_write_enabled_by_default",
+        "backfill_enabled_by_default",
+    ],
+)
+def test_external_event_source_unsafe_default_is_rejected(field_name: str) -> None:
+    config = deepcopy(load_all_configs(base_dir=REPO_ROOT)["context_sources"])
+    config["unstructured_sources"]["palantir_ir"][field_name] = True
+
+    with pytest.raises(ConfigValidationError, match=field_name):
+        load_external_event_source_settings(base_dir=REPO_ROOT, config=config)
+
+
+def test_external_event_archive_cannot_escape_data_lake() -> None:
+    config = deepcopy(load_all_configs(base_dir=REPO_ROOT)["context_sources"])
+    config["unstructured_sources"]["company_earnings"]["archive_path"] = (
+        "../../outside"
+    )
+
+    with pytest.raises(ConfigValidationError, match="archive_path"):
+        load_external_event_source_settings(base_dir=REPO_ROOT, config=config)
+
+
+def test_external_http_bounds_and_retry_order_are_validated() -> None:
+    config = deepcopy(load_all_configs(base_dir=REPO_ROOT)["context_sources"])
+    source = config["unstructured_sources"]["lockheed_martin_rss"]
+    source["max_response_bytes"] = 0
+    source["retry_base_delay_seconds"] = 9
+    source["retry_max_delay_seconds"] = 8
+
+    with pytest.raises(ConfigValidationError, match="max_response_bytes|retry_max"):
+        load_external_event_source_settings(base_dir=REPO_ROOT, config=config)
 
 
 def test_ai_context_filter_direct_trade_authority_true_is_rejected() -> None:

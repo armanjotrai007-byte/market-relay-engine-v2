@@ -6,8 +6,16 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from market_relay_engine.ai_context.prompting import SUPPORTED_PROMPT_VERSIONS
-from market_relay_engine.ai_context.schema import CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION
+from market_relay_engine.ai_context.prompting import (
+    CONTEXT_FILTER_PROMPT_VERSION_V1,
+    CONTEXT_FILTER_PROMPT_VERSION_V2,
+    SUPPORTED_PROMPT_VERSIONS,
+)
+from market_relay_engine.ai_context.schema import (
+    CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V1,
+    CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+    SUPPORTED_CONTEXT_FILTER_RESPONSE_SCHEMA_VERSIONS,
+)
 from market_relay_engine.common.config import ConfigValidationError, load_yaml_config
 
 
@@ -50,9 +58,20 @@ class AIContextFilterSettings:
             raise ConfigValidationError("ai_context_filter.provider must be gemini")
         if self.prompt_version not in SUPPORTED_PROMPT_VERSIONS:
             raise ConfigValidationError("ai_context_filter.prompt_version is unsupported")
-        if self.response_schema_version != CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION:
+        if (
+            self.response_schema_version
+            not in SUPPORTED_CONTEXT_FILTER_RESPONSE_SCHEMA_VERSIONS
+        ):
             raise ConfigValidationError(
                 "ai_context_filter.response_schema_version is unsupported"
+            )
+        expected_schema = {
+            CONTEXT_FILTER_PROMPT_VERSION_V1: CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V1,
+            CONTEXT_FILTER_PROMPT_VERSION_V2: CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        }[self.prompt_version]
+        if self.response_schema_version != expected_schema:
+            raise ConfigValidationError(
+                "ai_context_filter prompt_version and response_schema_version must match"
             )
         if not isinstance(self.enabled, bool):
             raise ConfigValidationError("ai_context_filter.enabled must be bool")

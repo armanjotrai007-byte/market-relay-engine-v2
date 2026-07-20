@@ -34,6 +34,21 @@ def test_execution_modules_import() -> None:
     assert importlib.import_module("market_relay_engine.execution.execution_metrics")
 
 
+def test_external_event_modules_and_dependencies_import() -> None:
+    for module_name in (
+        "market_relay_engine.context.external_classification",
+        "market_relay_engine.context.external_event_archive",
+        "market_relay_engine.context.external_normalization",
+        "market_relay_engine.context.external_source_config",
+        "market_relay_engine.context.external_sources",
+        "market_relay_engine.context.veritawire",
+        "websockets",
+        "bs4",
+        "pypdf",
+    ):
+        assert importlib.import_module(module_name)
+
+
 def test_contract_modules_import() -> None:
     assert importlib.import_module("market_relay_engine.contracts")
     assert importlib.import_module("market_relay_engine.contracts.base")
@@ -54,6 +69,8 @@ def test_imports_do_not_require_external_service_keys(monkeypatch) -> None:
         "ALPACA_SECRET_KEY",
         "EIA_API_KEY",
         "FRED_API_KEY",
+        "GEMINI_API_KEY",
+        "VERITAWIRE_API_KEY",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -61,3 +78,5 @@ def test_imports_do_not_require_external_service_keys(monkeypatch) -> None:
     assert importlib.import_module("market_relay_engine.contracts")
     assert importlib.import_module("market_relay_engine.execution.alpaca_paper")
     assert importlib.import_module("market_relay_engine.execution.execution_metrics")
+    assert importlib.import_module("market_relay_engine.context.external_sources")
+    assert importlib.import_module("market_relay_engine.context.veritawire")

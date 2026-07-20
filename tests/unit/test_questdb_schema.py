@@ -22,6 +22,12 @@ PR35_MIGRATION_PATH = (
     / "schema"
     / "questdb_pr35_add_context_classification_accounting.sql"
 )
+PR38_MIGRATION_PATH = (
+    REPO_ROOT
+    / "db"
+    / "schema"
+    / "questdb_pr38_add_external_context_metadata.sql"
+)
 
 
 class FakeResponse:
@@ -40,6 +46,7 @@ def test_schema_file_exists() -> None:
     assert MIGRATION_PATH.is_file()
     assert PR34_MIGRATION_PATH.is_file()
     assert PR35_MIGRATION_PATH.is_file()
+    assert PR38_MIGRATION_PATH.is_file()
 
 
 def test_offline_schema_validation_passes() -> None:
@@ -173,6 +180,65 @@ def test_pr35_migration_rejects_missing_idempotency_and_destructive_sql(
 
     assert any("destructive" in failure for failure in failures)
     assert any("statements must exactly match" in failure for failure in failures)
+
+
+def test_pr38_additive_migration_is_exact_suffix_and_non_destructive() -> None:
+    assert check_questdb_schema.validate_pr38_migration_file(PR38_MIGRATION_PATH) == []
+
+    cleaned = check_questdb_schema.strip_sql_line_comments(
+        PR38_MIGRATION_PATH.read_text(encoding="utf-8")
+    )
+    statements = check_questdb_schema.split_sql_statements(cleaned)
+    expected_count = sum(
+        len(additions)
+        for additions in check_questdb_schema.PR38_EXISTING_TABLE_ADDITIONS.values()
+    )
+
+    assert len(statements) == expected_count == 41
+    assert all(statement.startswith("ALTER TABLE ") for statement in statements)
+    assert all(" ADD COLUMN IF NOT EXISTS " in statement for statement in statements)
+    for forbidden in (
+        "DROP",
+        "RENAME",
+        "TRUNCATE",
+        "CREATE",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "SELECT",
+    ):
+        assert re.search(rf"\b{forbidden}\b", cleaned, flags=re.IGNORECASE) is None
+
+
+def test_pr38_migration_rejects_reordering_and_destructive_sql(tmp_path: Path) -> None:
+    migration = tmp_path / "bad-pr38.sql"
+    migration.write_text(
+        "ALTER TABLE context_ai_events ADD COLUMN IF NOT EXISTS global_relevance BOOLEAN;\n"
+        "ALTER TABLE context_ai_events ADD COLUMN IF NOT EXISTS affected_sectors_json STRING;\n"
+        "DROP TABLE context_ai_events;\n",
+        encoding="utf-8",
+    )
+
+    failures = check_questdb_schema.validate_pr38_migration_file(migration)
+
+    assert any("destructive" in failure for failure in failures)
+    assert any("statements must exactly match" in failure for failure in failures)
+
+
+def test_pr38_preserves_deployed_prefix_and_appends_exact_suffix() -> None:
+    cleaned = check_questdb_schema.strip_sql_line_comments(
+        SCHEMA_PATH.read_text(encoding="utf-8")
+    )
+
+    for table, prefix in check_questdb_schema.PRE_PR38_TABLE_PREFIXES.items():
+        definitions = check_questdb_schema._table_column_definitions(cleaned, table)
+        reset_columns = tuple(column for column, _ in definitions)
+        suffix = tuple(
+            column
+            for column, _ in check_questdb_schema.PR38_EXISTING_TABLE_ADDITIONS[table]
+        )
+        assert reset_columns == prefix + suffix
+        assert check_questdb_schema.TABLE_COLUMNS[table] == prefix + suffix
 
 
 def test_reset_schema_columns_exactly_match_writer_tables() -> None:

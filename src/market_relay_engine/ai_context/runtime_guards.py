@@ -70,6 +70,11 @@ def classification_fingerprint(
     render_config_hash: str | None = None,
 ) -> str:
     """Hash bounded trusted identity fields, never source text itself."""
+    if request.classification_input_fingerprint is not None:
+        # External archives calculate the fully pinned semantic identity before
+        # constructing the ephemeral request.  Reuse it verbatim so generated
+        # request IDs and collection timestamps cannot trigger another call.
+        return request.classification_input_fingerprint
     payload = {
         "raw_input_hash": request.raw_input_hash,
         "document_hash": request.document_hash,
@@ -82,6 +87,9 @@ def classification_fingerprint(
         "sector_hints": sorted(sector_hints),
         "render_config_hash": render_config_hash,
     }
+    if request.affected_sectors or request.global_relevance is not None:
+        payload["affected_sectors"] = sorted(request.affected_sectors)
+        payload["global_relevance"] = request.global_relevance
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return sha256(encoded).hexdigest()
 

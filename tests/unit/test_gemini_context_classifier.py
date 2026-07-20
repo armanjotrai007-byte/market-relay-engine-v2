@@ -27,13 +27,16 @@ from market_relay_engine.ai_context.classifier import (
     GeminiInteractionTransport,
     _extract_interaction_output_text,
     contains_trading_instruction,
+    merge_classification_scope,
 )
+from market_relay_engine.ai_context.prompting import CONTEXT_FILTER_PROMPT_VERSION_V2
 from market_relay_engine.ai_context.runtime_guards import (
     ClassificationDedupCache,
     ProviderCallBudget,
     classification_fingerprint,
 )
 from market_relay_engine.ai_context.schema import (
+    CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
     build_context_filter_response_schema,
 )
 from market_relay_engine.ai_context.settings import (
@@ -181,6 +184,7 @@ def _classifier(
     logger: logging.Logger | None = None,
     sleeper: Any = None,
     api_key: str | None = API_KEY_SENTINEL,
+    ticker_sector_hints: dict[str, str] | None = None,
 ) -> GeminiContextClassifier:
     actual_settings = settings or _settings()
     return GeminiContextClassifier(
@@ -204,6 +208,7 @@ def _classifier(
         sleeper=(lambda _delay: None) if sleeper is None else sleeper,
         random_value=lambda: 0.0,
         logger=logger or logging.getLogger("tests.gemini_context"),
+        ticker_sector_hints=ticker_sector_hints,
     )
 
 
@@ -355,6 +360,55 @@ def test_gemini_transport_disables_sdk_retries_and_uses_exact_interactions_shape
         "code_execution",
     }
     assert forbidden.isdisjoint(request_body)
+
+
+def test_gemini_transport_replaces_sdk_debug_logger_before_any_request(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("GOOGLE_GENAI_DEBUG", "1")
+    sdk_configuration = SimpleNamespace(debug_logger=logging.getLogger("unsafe-sdk"))
+
+    class Interactions:
+        def __init__(self) -> None:
+            self.sdk_configuration = sdk_configuration
+
+        def create(self, **kwargs: object) -> object:
+            # This models the generated SDK's debug hooks.  The transport must
+            # have replaced the logger before the first request is constructed.
+            self.sdk_configuration.debug_logger.debug(
+                "authorization=%s prompt=%s response=%s",
+                API_KEY_SENTINEL,
+                kwargs["input"],
+                SOURCE_SENTINEL,
+            )
+            return _interaction()
+
+    interactions = Interactions()
+
+    def client_factory(**_kwargs: object) -> object:
+        return SimpleNamespace(interactions=interactions)
+
+    caplog.set_level(logging.DEBUG)
+    transport = GeminiInteractionTransport(
+        api_key=API_KEY_SENTINEL,
+        timeout_seconds=1.0,
+        client_factory=client_factory,
+    )
+    transport.create(
+        model="gemini-3.5-flash",
+        prompt=SOURCE_SENTINEL,
+        response_schema={"type": "object"},
+        temperature=0.0,
+        max_output_tokens=10,
+    )
+
+    rendered_logs = caplog.text
+    assert API_KEY_SENTINEL not in rendered_logs
+    assert SOURCE_SENTINEL not in rendered_logs
+    assert sdk_configuration.debug_logger.__class__.__name__ == (
+        "_NoOpProviderDebugLogger"
+    )
 
 
 def test_extracts_actual_sdk_interaction_output_text_without_steps() -> None:
@@ -2005,3 +2059,233 @@ def test_checker_optional_live_provider_connectivity_failure_is_safe_skip(
     assert "retry_count=0" in output
     assert len(provider_transport.calls) == 1
     assert API_KEY_SENTINEL not in output
+
+
+def _v2_settings(**overrides: object) -> AIContextFilterSettings:
+    return _settings(
+        prompt_version=CONTEXT_FILTER_PROMPT_VERSION_V2,
+        response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        **overrides,
+    )
+
+
+def _v2_request(
+    marker: str = "v2",
+    *,
+    affected_tickers: list[str] | None = None,
+    affected_sectors: list[str] | None = None,
+    global_relevance: bool | None = False,
+) -> ContextClassificationRequest:
+    return replace(
+        _request(marker, affected_tickers=affected_tickers or ["LMT"]),
+        prompt_version=CONTEXT_FILTER_PROMPT_VERSION_V2,
+        response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        affected_sectors=affected_sectors or ["DEFENSE"],
+        global_relevance=global_relevance,
+    )
+
+
+def _v2_provider_payload(**overrides: object) -> dict[str, object]:
+    payload = _provider_payload()
+    payload.update(
+        {
+            "affected_tickers": ["PLTR", "LMT"],
+            "affected_sectors": ["DEFENSE"],
+            "global_relevance": True,
+        }
+    )
+    payload.update(overrides)
+    return payload
+
+
+def test_v2_classifier_validates_and_canonicalizes_allowlisted_union_scope() -> None:
+    transport = FakeTransport(_interaction(_v2_provider_payload()))
+    request = _v2_request(
+        affected_tickers=["PLTR", "LMT", "PLTR"],
+        affected_sectors=["defense", "DEFENSE"],
+    )
+    classifier = _classifier(
+        transport,
+        settings=_v2_settings(),
+        ticker_sector_hints={"PLTR": "defense", "LMT": "defense", "XOM": "oil"},
+    )
+
+    result = classifier.classify(request)
+
+    assert result.response.status is ContextClassificationStatus.VALID
+    assert result.response.response_schema_version == (
+        CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2
+    )
+    assert result.response.affected_tickers == ["LMT", "PLTR"]
+    assert result.response.affected_sectors == ["DEFENSE"]
+    assert result.response.global_relevance is True
+    assert result.validation_result is not None
+    assert result.validation_result.validator_version == "context_filter_validator_v2_scope"
+    schema = transport.calls[0]["response_schema"]
+    assert schema["properties"]["affected_tickers"]["items"]["enum"] == [
+        "LMT",
+        "PLTR",
+        "XOM",
+    ]
+    assert schema["properties"]["affected_sectors"]["items"]["enum"] == [
+        "DEFENSE",
+        "OIL",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason_code"),
+    [
+        ({"affected_tickers": ["INVENTED"]}, "UNKNOWN_TICKER_SCOPE"),
+        ({"affected_sectors": ["AEROSPACE"]}, "UNKNOWN_SECTOR_SCOPE"),
+        ({"global_relevance": "true"}, "INVALID_GLOBAL_RELEVANCE"),
+        ({"affected_tickers": ["LMT", "LMT"]}, "DUPLICATE_TICKER_SCOPE"),
+        ({"affected_sectors": "DEFENSE"}, "INVALID_SECTOR_SCOPE"),
+    ],
+)
+def test_v2_classifier_rejects_unknown_or_invalid_model_scope(
+    overrides: dict[str, object],
+    reason_code: str,
+) -> None:
+    payload = _v2_provider_payload(**overrides)
+    classifier = _classifier(
+        FakeTransport(_interaction(payload)),
+        settings=_v2_settings(),
+        ticker_sector_hints={"LMT": "defense", "PLTR": "defense"},
+    )
+
+    result = classifier.classify(_v2_request())
+
+    _assert_rejected(result, reason_code)
+
+
+@pytest.mark.parametrize(
+    ("classification_request", "reason_code"),
+    [
+        (
+            _v2_request(affected_tickers=["RTX"]),
+            "UNKNOWN_TRUSTED_TICKER_SCOPE",
+        ),
+        (
+            _v2_request(affected_sectors=["ENERGY"]),
+            "UNKNOWN_TRUSTED_SECTOR_SCOPE",
+        ),
+    ],
+)
+def test_v2_classifier_rejects_trusted_scope_outside_configured_universe(
+    classification_request: ContextClassificationRequest,
+    reason_code: str,
+) -> None:
+    transport = FakeTransport()
+    classifier = _classifier(
+        transport,
+        settings=_v2_settings(),
+        ticker_sector_hints={"LMT": "defense", "PLTR": "defense"},
+    )
+
+    result = classifier.classify(classification_request)
+
+    _assert_rejected(result, reason_code)
+    assert transport.calls == []
+
+
+def test_v2_classifier_requires_a_nonempty_valid_configured_scope_universe() -> None:
+    transport = FakeTransport()
+    classifier = _classifier(
+        transport,
+        settings=_v2_settings(),
+        ticker_sector_hints={},
+    )
+
+    result = classifier.classify(_v2_request())
+
+    _assert_rejected(result, "INVALID_SCOPE_CONFIGURATION")
+    assert transport.calls == []
+
+
+def test_request_response_schema_profile_mismatch_fails_before_provider() -> None:
+    transport = FakeTransport()
+    classifier = _classifier(
+        transport,
+        settings=_settings(),
+    )
+    request = replace(
+        _request("request-schema-mismatch"),
+        response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+    )
+
+    result = classifier.classify(request)
+
+    _assert_rejected(result, "RESPONSE_SCHEMA_VERSION_MISMATCH")
+    assert transport.calls == []
+
+
+def test_trusted_scope_union_cannot_be_removed_by_model_output() -> None:
+    request = _v2_request(
+        affected_tickers=["LMT"],
+        affected_sectors=["DEFENSE"],
+        global_relevance=False,
+    )
+    classifier = _classifier(
+        FakeTransport(
+            _interaction(
+                _v2_provider_payload(
+                    affected_tickers=["PLTR"],
+                    affected_sectors=["OIL"],
+                    global_relevance=True,
+                )
+            )
+        ),
+        settings=_v2_settings(),
+        ticker_sector_hints={"LMT": "defense", "PLTR": "defense", "XOM": "oil"},
+    )
+
+    result = classifier.classify(request)
+    tickers, sectors, global_relevance = merge_classification_scope(
+        request,
+        result.response,
+    )
+
+    assert tickers == ["LMT", "PLTR"]
+    assert sectors == ["DEFENSE", "OIL"]
+    assert global_relevance is True
+
+
+def test_v2_scope_changes_process_fingerprint_but_scope_order_does_not() -> None:
+    base = _v2_request(
+        affected_tickers=["LMT", "PLTR"],
+        affected_sectors=["DEFENSE", "OIL"],
+        global_relevance=False,
+    )
+    reordered = replace(
+        base,
+        affected_tickers=["PLTR", "LMT"],
+        affected_sectors=["OIL", "DEFENSE"],
+    )
+    global_variant = replace(base, global_relevance=True)
+    kwargs = {
+        "model": "gemini-3.5-flash",
+        "response_schema_version": CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+    }
+
+    assert classification_fingerprint(base, **kwargs) == classification_fingerprint(
+        reordered,
+        **kwargs,
+    )
+    assert classification_fingerprint(base, **kwargs) != classification_fingerprint(
+        global_variant,
+        **kwargs,
+    )
+
+
+def test_v2_prompt_and_schema_setting_pair_is_strict() -> None:
+    with pytest.raises(ConfigValidationError, match="must match"):
+        replace(
+            _settings(),
+            prompt_version=CONTEXT_FILTER_PROMPT_VERSION_V2,
+        )
+    with pytest.raises(ConfigValidationError, match="must match"):
+        replace(
+            _settings(),
+            response_schema_version=CONTEXT_FILTER_RESPONSE_SCHEMA_VERSION_V2,
+        )

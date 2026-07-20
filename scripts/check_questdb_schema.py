@@ -46,6 +46,12 @@ PR35_MIGRATION_PATH = (
     / "schema"
     / "questdb_pr35_add_context_classification_accounting.sql"
 )
+PR38_MIGRATION_PATH = (
+    REPO_ROOT
+    / "db"
+    / "schema"
+    / "questdb_pr38_add_external_context_metadata.sql"
+)
 QUESTDB_CONFIG_PATH = REPO_ROOT / "config" / "questdb.yaml"
 
 OLD_TABLES = (
@@ -225,6 +231,84 @@ PR35_EXISTING_TABLE_ADDITIONS = {
     ),
 }
 
+# These literal prefixes freeze the deployed PR35 column order. PR38 may only
+# append the exact nullable suffixes below; deriving the prefixes from the
+# current writer would make an accidental reorder invisible to this checker.
+PRE_PR38_TABLE_PREFIXES = {
+    "context_ai_events": tuple(
+        "event_time write_time context_event_id source source_id "
+        "affected_tickers_json affected_sector event_type sentiment urgency "
+        "risk_level confidence valid_from valid_until summary prompt_version "
+        "model_version raw_input_hash run_id session_id schema_version trace_id "
+        "raw_input_id source_document_id classification_request_id "
+        "classification_attempt_id validation_result_id source_type "
+        "source_platform source_uri source_locator document_hash "
+        "source_published_at source_updated_at collected_at normalized_at "
+        "classified_at available_at validated_at provider".split()
+    ),
+    "context_classification_attempts": tuple(
+        "requested_at write_time classification_attempt_id "
+        "classification_request_id raw_input_id source_document_id source "
+        "source_type source_platform source_uri source_locator "
+        "affected_tickers_json raw_input_hash document_hash source_published_at "
+        "source_updated_at collected_at normalized_at classified_at provider "
+        "model_version prompt_version status event_type risk_level urgency "
+        "confidence summary validation_result_id validation_outcome "
+        "validation_reason_codes_json validator_version validated_at "
+        "provider_latency_ms safe_failure_category safe_failure_summary run_id "
+        "session_id schema_version trace_id provider_request_count retry_count "
+        "deduplicated reused_classification_attempt_id".split()
+    ),
+}
+
+PR38_EXISTING_TABLE_ADDITIONS = {
+    "context_ai_events": (
+        ("affected_sectors_json", "STRING"),
+        ("global_relevance", "BOOLEAN"),
+        ("source_available_at", "TIMESTAMP"),
+        ("system_observed_at", "TIMESTAMP"),
+        ("archived_at", "TIMESTAMP"),
+        ("evidence_ready_at", "TIMESTAMP"),
+        ("source_fact_id", "STRING"),
+        ("source_revision_id", "STRING"),
+        ("revision_sequence", "LONG"),
+        ("supersedes_revision_id", "STRING"),
+        ("lifecycle_state", "SYMBOL"),
+        ("lifecycle_effective_at", "TIMESTAMP"),
+        ("classification_input_fingerprint", "STRING"),
+        ("complete_output_fingerprint", "STRING"),
+        ("policy_output_fingerprint", "STRING"),
+        ("canonical_classification_attempt_id", "STRING"),
+        ("correlation_group_id", "STRING"),
+        ("related_event_ids_json", "STRING"),
+        ("relationship_types_json", "STRING"),
+        ("classification_conflict_id", "STRING"),
+        ("conflict_resolution_id", "STRING"),
+        ("conflict_resolution_generation", "LONG"),
+    ),
+    "context_classification_attempts": (
+        ("affected_sectors_json", "STRING"),
+        ("global_relevance", "BOOLEAN"),
+        ("source_available_at", "TIMESTAMP"),
+        ("system_observed_at", "TIMESTAMP"),
+        ("archived_at", "TIMESTAMP"),
+        ("evidence_ready_at", "TIMESTAMP"),
+        ("source_fact_id", "STRING"),
+        ("source_revision_id", "STRING"),
+        ("revision_sequence", "LONG"),
+        ("supersedes_revision_id", "STRING"),
+        ("lifecycle_state", "SYMBOL"),
+        ("lifecycle_effective_at", "TIMESTAMP"),
+        ("classification_input_fingerprint", "STRING"),
+        ("complete_output_fingerprint", "STRING"),
+        ("policy_output_fingerprint", "STRING"),
+        ("canonical_classification_attempt_id", "STRING"),
+        ("classification_conflict_id", "STRING"),
+        ("conflict_resolution_id", "STRING"),
+        ("conflict_resolution_generation", "LONG"),
+    ),
+}
+
 FORBIDDEN_CONTEXT_LEDGER_COLUMNS = {
     "input_text",
     "source_text",
@@ -251,8 +335,12 @@ FORBIDDEN_CONTEXT_LEDGER_COLUMNS = {
     "article_text",
     "social_post_body",
     "social_post_text",
+    "source_payload",
+    "raw_source_payload",
+    "raw_payload",
     "provider_response",
     "raw_provider_response",
+    "provider_body",
     "exception",
     "exception_text",
     "exception_message",
@@ -260,8 +348,11 @@ FORBIDDEN_CONTEXT_LEDGER_COLUMNS = {
     "stack_trace",
     "secret",
     "credential",
+    "credentials",
     "api_key",
     "access_token",
+    "authorization",
+    "bearer_token",
     "password",
 }
 
@@ -488,6 +579,41 @@ def validate_pr35_migration_file(
     return failures
 
 
+def validate_pr38_migration_file(
+    migration_path: Path = PR38_MIGRATION_PATH,
+) -> list[str]:
+    if not migration_path.is_file():
+        return [f"PR38 migration file not found: {migration_path}"]
+    cleaned = strip_sql_line_comments(
+        migration_path.read_text(encoding="utf-8")
+    ).strip()
+    statements = split_sql_statements(cleaned)
+    failures: list[str] = []
+
+    forbidden = re.findall(
+        r"\b(DROP|RENAME|TRUNCATE|CREATE|INSERT|UPDATE|DELETE|SELECT)\b",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if forbidden:
+        failures.append(
+            "PR38 migration contains destructive, DDL-create, or DML "
+            f"operations: {forbidden}"
+        )
+
+    expected_alters = [
+        f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {column_type}"
+        for table, additions in PR38_EXISTING_TABLE_ADDITIONS.items()
+        for column, column_type in additions
+    ]
+    if statements != expected_alters:
+        failures.append(
+            "PR38 migration statements must exactly match the ordered, "
+            "one-column IF NOT EXISTS metadata suffix additions"
+        )
+    return failures
+
+
 def validate_questdb_config_table_order(
     config_path: Path = QUESTDB_CONFIG_PATH,
 ) -> list[str]:
@@ -578,6 +704,7 @@ def main(argv: list[str] | None = None) -> int:
         failures.extend(validate_pr26_migration_file())
         failures.extend(validate_pr34_migration_file())
         failures.extend(validate_pr35_migration_file())
+        failures.extend(validate_pr38_migration_file())
         failures.extend(validate_questdb_config_table_order())
         if failures:
             for failure in failures:
@@ -740,19 +867,40 @@ def _schema_writer_column_failures(sql_text: str) -> list[str]:
 
     for table, additions in PR34_EXISTING_TABLE_ADDITIONS.items():
         definitions = _table_column_definitions(sql_text, table)
-        if definitions[-len(additions) :] != additions:
+        pr38_additions = PR38_EXISTING_TABLE_ADDITIONS.get(table, ())
+        pre_pr38_definitions = (
+            definitions[: -len(pr38_additions)] if pr38_additions else definitions
+        )
+        if pre_pr38_definitions[-len(additions) :] != additions:
             failures.append(
                 f"reset schema must append PR34 columns after trace_id for {table}"
             )
 
     for table, expected_definitions in PR34_NEW_TABLE_DEFINITIONS.items():
         expected_reset_definitions = (
-            expected_definitions + PR35_EXISTING_TABLE_ADDITIONS.get(table, ())
+            expected_definitions
+            + PR35_EXISTING_TABLE_ADDITIONS.get(table, ())
+            + PR38_EXISTING_TABLE_ADDITIONS.get(table, ())
         )
         if _table_column_definitions(sql_text, table) != expected_reset_definitions:
             failures.append(
                 f"reset schema columns/types differ from current contract for {table}"
             )
+
+    for table, prefix in PRE_PR38_TABLE_PREFIXES.items():
+        definitions = _table_column_definitions(sql_text, table)
+        actual_columns = tuple(column for column, _ in definitions)
+        additions = PR38_EXISTING_TABLE_ADDITIONS[table]
+        suffix = tuple(column for column, _ in additions)
+        writer_columns = TABLE_COLUMNS.get(table, ())
+        if actual_columns[: len(prefix)] != prefix:
+            failures.append(f"reset schema changed the deployed PR35 prefix for {table}")
+        if actual_columns[len(prefix) :] != suffix:
+            failures.append(f"reset schema PR38 suffix differs from the exact contract for {table}")
+        if writer_columns[: len(prefix)] != prefix:
+            failures.append(f"writer changed the deployed PR35 prefix for {table}")
+        if writer_columns[len(prefix) :] != suffix:
+            failures.append(f"writer PR38 suffix differs from the exact contract for {table}")
 
     for table, timestamp in PR34_DESIGNATED_TIMESTAMPS.items():
         if not re.search(
