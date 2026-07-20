@@ -1644,23 +1644,16 @@ class ExternalEventArchive:
                 or chosen_policy_output_fingerprint != canonical_policy_output
             ):
                 raise ExternalEventArchiveError("KEEP_FIRST must choose the proven canonical result")
-            attempts = self.iter_classification_attempts(str(conflict["classification_input_fingerprint"]))
-            chosen = next((item for item in attempts if item.get("classification_attempt_id") == chosen_attempt_id), None)
-            later = [item for item in attempts if item.get("classification_attempt_id") != chosen_attempt_id]
-            if (
-                chosen is None
-                or chosen.get("complete_output_fingerprint") != canonical_output
-                or chosen.get("policy_output_fingerprint")
-                != canonical_policy_output
-                or chosen.get("classification_origin") != "LIVE_SYSTEM"
-                or any(
-                    item.get("classification_origin") != "BACKFILL"
-                    or str(item.get("archive_published_at", ""))
-                    <= str(canonical.get("durably_published_at", ""))
-                    for item in later
-                )
-            ):
-                raise ExternalEventArchiveError("KEEP_FIRST chronology is ambiguous")
+            self._validate_keep_first_canonical_chronology(
+                conflict=conflict,
+                chosen_attempt_id=str(chosen_attempt_id),
+                chosen_complete_output_fingerprint=str(
+                    chosen_complete_output_fingerprint
+                ),
+                chosen_policy_output_fingerprint=str(
+                    chosen_policy_output_fingerprint
+                ),
+            )
         elif decision is ConflictResolutionDecision.ABSTAIN_INPUT:
             if any(
                 value is not None
@@ -1938,43 +1931,12 @@ class ExternalEventArchive:
                 raise ExternalEventArchiveError(
                     "KEEP_FIRST must choose the proven canonical result"
                 )
-            attempts = self.iter_classification_attempts(input_fingerprint)
-            chosen = next(
-                (
-                    item
-                    for item in attempts
-                    if item.get("classification_attempt_id")
-                    == chosen_attempt_id
-                ),
-                None,
+            self._validate_keep_first_canonical_chronology(
+                conflict=conflict,
+                chosen_attempt_id=str(chosen_attempt_id),
+                chosen_complete_output_fingerprint=str(chosen_complete),
+                chosen_policy_output_fingerprint=str(chosen_policy),
             )
-            canonical_published_at = _required_archive_publication_time(
-                canonical.get("durably_published_at"),
-                "canonical durable publication",
-            )
-            later = [
-                item
-                for item in attempts
-                if item.get("classification_attempt_id") != chosen_attempt_id
-            ]
-            if (
-                chosen is None
-                or chosen.get("classification_origin") != "LIVE_SYSTEM"
-                or chosen.get("complete_output_fingerprint") != chosen_complete
-                or chosen.get("policy_output_fingerprint") != chosen_policy
-                or any(
-                    item.get("classification_origin") != "BACKFILL"
-                    or _required_archive_publication_time(
-                        item.get("archive_published_at"),
-                        "classification attempt publication",
-                    )
-                    <= canonical_published_at
-                    for item in later
-                )
-            ):
-                raise ExternalEventArchiveError(
-                    "KEEP_FIRST chronology is ambiguous"
-                )
         elif decision is ConflictResolutionDecision.ABSTAIN_INPUT:
             if any(
                 item is not None
@@ -2008,6 +1970,112 @@ class ExternalEventArchive:
                     "RECLASSIFY requires a genuinely new profile"
                 )
         return value
+
+    def _validate_keep_first_canonical_chronology(
+        self,
+        *,
+        conflict: Mapping[str, Any],
+        chosen_attempt_id: str,
+        chosen_complete_output_fingerprint: str,
+        chosen_policy_output_fingerprint: str,
+    ) -> None:
+        """Prove that a reviewed KEEP_FIRST choice is the first live success.
+
+        Retryable provider/validation outcomes are deliberately retained in the
+        archive, but they never competed for canonical ownership.  Only a
+        complete, validated, durably published attempt under the exact input
+        and profile can establish (or make ambiguous) this chronology.
+        """
+
+        input_fingerprint = _sha256_value(
+            conflict.get("classification_input_fingerprint"),
+            "classification_input_fingerprint",
+        )
+        canonical = conflict.get("canonical_claim")
+        if not isinstance(canonical, Mapping):
+            raise ExternalEventArchiveError(
+                "KEEP_FIRST requires proven canonical chronology"
+            )
+        profile_hash = _sha256_value(canonical.get("profile_hash"), "profile_hash")
+        canonical_published_at = _required_archive_publication_time(
+            canonical.get("durably_published_at"),
+            "canonical durable publication",
+        )
+        candidates = self._successful_canonical_attempt_candidates(
+            classification_input_fingerprint=input_fingerprint,
+            profile_hash=profile_hash,
+        )
+        chosen = next(
+            (
+                value
+                for value, _published_at in candidates
+                if value.get("classification_attempt_id") == chosen_attempt_id
+            ),
+            None,
+        )
+        if (
+            chosen is None
+            or chosen.get("classification_origin") != "LIVE_SYSTEM"
+            or chosen.get("complete_output_fingerprint")
+            != chosen_complete_output_fingerprint
+            or chosen.get("policy_output_fingerprint")
+            != chosen_policy_output_fingerprint
+        ):
+            raise ExternalEventArchiveError("KEEP_FIRST chronology is ambiguous")
+        publication_times = [published_at for _value, published_at in candidates]
+        if len(set(publication_times)) != len(publication_times):
+            raise ExternalEventArchiveError("KEEP_FIRST chronology is ambiguous")
+        ordered = sorted(candidates, key=lambda item: item[1])
+        if not ordered or ordered[0][0].get("classification_attempt_id") != chosen_attempt_id:
+            raise ExternalEventArchiveError("KEEP_FIRST chronology is ambiguous")
+        for candidate, published_at in ordered[1:]:
+            if (
+                candidate.get("classification_origin") != "BACKFILL"
+                or published_at <= canonical_published_at
+            ):
+                raise ExternalEventArchiveError("KEEP_FIRST chronology is ambiguous")
+
+    def _successful_canonical_attempt_candidates(
+        self,
+        *,
+        classification_input_fingerprint: str,
+        profile_hash: str,
+    ) -> list[tuple[dict[str, Any], datetime]]:
+        """Return only archived attempts eligible to compete for ownership."""
+
+        candidates: list[tuple[dict[str, Any], datetime]] = []
+        for attempt in self.iter_classification_attempts(
+            classification_input_fingerprint
+        ):
+            if (
+                attempt.get("classification_input_fingerprint")
+                != classification_input_fingerprint
+                or attempt.get("profile_hash") != profile_hash
+                or attempt.get("validation_outcome") is not True
+                or attempt.get("durably_published") is not True
+                or attempt.get("classification_origin")
+                not in {"LIVE_SYSTEM", "BACKFILL"}
+            ):
+                continue
+            try:
+                _sha256_value(
+                    attempt.get("complete_output_fingerprint"),
+                    "complete_output_fingerprint",
+                )
+                _sha256_value(
+                    attempt.get("policy_output_fingerprint"),
+                    "policy_output_fingerprint",
+                )
+                published_at = _required_archive_publication_time(
+                    attempt.get("archive_published_at"),
+                    "classification attempt publication",
+                )
+            except ExternalEventArchiveError:
+                # A malformed record remains immutable audit data but cannot
+                # compete with a reviewed canonical result.
+                continue
+            candidates.append((attempt, published_at))
+        return candidates
 
     def _register_classification_artifact(
         self,

@@ -1250,11 +1250,13 @@ def _write_combined_company_archive(
     root,
     *,
     ready_at: datetime,
+    observed_at: datetime | None = None,
     document_hash: str,
     normalized_text_hash: str,
     excerpt_hash: str,
     summary: str = "Safe fixture classification.",
 ) -> tuple[ExternalEventArchive, ResearchSourceClassificationProfile]:
+    observed = observed_at or ready_at
     current_time = {"value": ready_at}
     archive = ExternalEventArchive(root, now=lambda: current_time["value"])
     profile = _external_profile(
@@ -1272,11 +1274,11 @@ def _write_combined_company_archive(
         revision_sequence=1,
         supersedes_revision_id=None,
         lifecycle_state=LifecycleState.ACTIVE,
-        lifecycle_effective_at=ready_at,
-        system_observed_at=ready_at,
-        source_available_at=ready_at,
-        archived_at=ready_at,
-        normalized_at=ready_at,
+        lifecycle_effective_at=observed,
+        system_observed_at=observed,
+        source_available_at=observed,
+        archived_at=observed,
+        normalized_at=observed,
         raw_object_hash="4" * 64,
         document_hash=document_hash,
         normalized_text_hash=normalized_text_hash,
@@ -1287,7 +1289,7 @@ def _write_combined_company_archive(
             "https://investors.lockheedmartin.com/news-releases/"
             "2026-quarterly-results"
         ),
-        source_published_at=ready_at,
+        source_published_at=observed,
         affected_tickers=("LMT",),
         affected_sectors=(),
         global_relevance=False,
@@ -1352,7 +1354,7 @@ def _write_combined_company_archive(
     )
     event = ContextAIEvent(
         context_event_id="context-event-combined-company",
-        event_time=ready_at,
+        event_time=observed,
         source="company_earnings",
         source_id=revision.source_fact_id,
         affected_tickers=["LMT"],
@@ -1376,16 +1378,16 @@ def _write_combined_company_archive(
         source_uri=revision.source_uri,
         source_locator=revision.source_fact_id,
         document_hash=revision.document_hash,
-        source_published_at=ready_at,
-        collected_at=ready_at,
-        normalized_at=ready_at,
+        source_published_at=observed,
+        collected_at=observed,
+        normalized_at=observed,
         classified_at=ready_at,
         available_at=ready_at,
         validated_at=ready_at,
         provider="gemini",
-        source_available_at=ready_at,
-        system_observed_at=ready_at,
-        archived_at=ready_at,
+        source_available_at=observed,
+        system_observed_at=observed,
+        archived_at=observed,
         evidence_ready_at=ready_at,
         source_fact_id=revision.source_fact_id,
         source_revision_id=revision.source_revision_id,
@@ -1454,6 +1456,162 @@ def _combined_archive_run(
         external_archive_generation=int(manifest["generation"]),
         external_archive_manifest_hash=_manifest_hash(manifest),
     )
+
+
+def test_live_hydration_uses_readiness_inside_window_not_observation_time(
+    tmp_path,
+) -> None:
+    hydration_start = T0 - timedelta(hours=1)
+    observed_at = hydration_start - timedelta(seconds=10)
+    ready_at = T0 + timedelta(seconds=10)
+    archive, profile = _write_combined_company_archive(
+        tmp_path,
+        observed_at=observed_at,
+        ready_at=ready_at,
+        document_hash="1" * 64,
+        normalized_text_hash="2" * 64,
+        excerpt_hash="3" * 64,
+    )
+    coverage = archive.load_coverage("company_earnings:LMT")
+    assert coverage is not None
+    live_run = replace(
+        _pinned_external_run(
+            archive,
+            event_sources=("company_earnings",),
+            profiles=(profile,),
+            coverage_profiles=(
+                ResearchSourceCoverageProfile(
+                    source="company_earnings",
+                    ticker="LMT",
+                    semantic_adapter_version=profile.semantic_adapter_version,
+                    coverage_manifest_source="company_earnings:LMT",
+                    coverage_generation=coverage.coverage_generation,
+                    coverage_version=coverage.coverage_version,
+                ),
+            ),
+        ),
+        hydration_start_time=hydration_start,
+        hydration_end_time=T0 + timedelta(seconds=60),
+    )
+
+    index = hydrate_external_research_evidence(
+        archive=archive,
+        run_definition=live_run,
+    )
+
+    assert len(index.evidence) == 1
+    assert index.evidence[0].system_observed_at == observed_at
+    assert index.evidence[0].evidence_ready_at == ready_at
+    assert _selected_ids(index, T0 + timedelta(seconds=5)) == []
+    assert _selected_ids(index, ready_at) == [index.evidence[0].evidence_id]
+
+
+def test_live_hydration_excludes_readiness_after_window_and_pending_revision(
+    tmp_path,
+) -> None:
+    hydration_start = T0 - timedelta(hours=1)
+    observed_at = hydration_start - timedelta(seconds=10)
+    archive, profile = _write_combined_company_archive(
+        tmp_path / "after-window",
+        observed_at=observed_at,
+        ready_at=T0 + timedelta(seconds=61),
+        document_hash="1" * 64,
+        normalized_text_hash="2" * 64,
+        excerpt_hash="3" * 64,
+    )
+    coverage = archive.load_coverage("company_earnings:LMT")
+    assert coverage is not None
+    run = replace(
+        _pinned_external_run(
+            archive,
+            event_sources=("company_earnings",),
+            profiles=(profile,),
+            coverage_profiles=(
+                ResearchSourceCoverageProfile(
+                    source="company_earnings",
+                    ticker="LMT",
+                    semantic_adapter_version=profile.semantic_adapter_version,
+                    coverage_manifest_source="company_earnings:LMT",
+                    coverage_generation=coverage.coverage_generation,
+                    coverage_version=coverage.coverage_version,
+                ),
+            ),
+        ),
+        hydration_start_time=hydration_start,
+        hydration_end_time=T0 + timedelta(seconds=60),
+    )
+    assert hydrate_external_research_evidence(
+        archive=archive,
+        run_definition=run,
+    ).evidence == ()
+
+    pending = ExternalEventArchive(tmp_path / "pending")
+    pending.publish_revision(
+        _revision(
+            source=SOURCE,
+            fact_id="truth-pending",
+            ticker="LMT",
+            source_type="social_post",
+            adapter_version="adapter_v1",
+            extractor_version="extractor_v1",
+            normalizer_version="normalizer_v1",
+        )
+    )
+    pending.save_coverage(_coverage(status=CoverageStatus.COMPLETE_FOR_RANGE))
+    pending_run = replace(
+        _archive_run(pending),
+        hydration_start_time=T0,
+        hydration_end_time=T0 + timedelta(seconds=60),
+    )
+    pending_index = hydrate_external_research_evidence(
+        archive=pending,
+        run_definition=pending_run,
+    )
+    assert pending_index.evidence == ()
+    assert pending_index.lifecycle_revisions[0].evidence_ready_at is None
+
+
+def test_historical_hydration_retains_source_time_filtering(tmp_path) -> None:
+    hydration_start = T0 - timedelta(hours=1)
+    observed_at = hydration_start - timedelta(seconds=10)
+    archive, profile = _write_combined_company_archive(
+        tmp_path,
+        observed_at=observed_at,
+        ready_at=T0 + timedelta(seconds=10),
+        document_hash="1" * 64,
+        normalized_text_hash="2" * 64,
+        excerpt_hash="3" * 64,
+    )
+    coverage = archive.load_coverage("company_earnings:LMT")
+    assert coverage is not None
+    historical_run = replace(
+        _pinned_external_run(
+            archive,
+            event_sources=("company_earnings",),
+            profiles=(profile,),
+            coverage_profiles=(
+                ResearchSourceCoverageProfile(
+                    source="company_earnings",
+                    ticker="LMT",
+                    semantic_adapter_version=profile.semantic_adapter_version,
+                    coverage_manifest_source="company_earnings:LMT",
+                    coverage_generation=coverage.coverage_generation,
+                    coverage_version=coverage.coverage_version,
+                ),
+            ),
+        ),
+        availability_mode=ResearchAvailabilityMode.HISTORICAL_SOURCE_TIME,
+        hydration_start_time=hydration_start,
+        hydration_end_time=T0 + timedelta(seconds=60),
+    )
+
+    index = hydrate_external_research_evidence(
+        archive=archive,
+        run_definition=historical_run,
+    )
+
+    assert index.evidence == ()
+    assert index.attempted_record_count == 0
 
 
 def test_source_specific_earnings_profiles_select_pltr_and_lmt_extractors(

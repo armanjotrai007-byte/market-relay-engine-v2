@@ -1635,29 +1635,29 @@ def hydrate_external_research_evidence(
     correlated: list[tuple[ResearchEvidence, str, tuple[str, ...]]] = []
     attempted = 0
     for revision in archive.iter_revisions(sources=external_sources):
-        lifecycle_time = (
-            revision.system_observed_at
-            if run_definition.availability_mode
-            is ResearchAvailabilityMode.LIVE_SYSTEM_READY
-            else revision.lifecycle_effective_at
-        )
-        if not (
-            run_definition.hydration_start_time
-            <= lifecycle_time
-            <= run_definition.hydration_end_time
+        if (
+            run_definition.availability_mode
+            is ResearchAvailabilityMode.HISTORICAL_SOURCE_TIME
         ):
+            # Historical-source-time preparation continues to use the source
+            # lifecycle time.  It must not acquire live readiness semantics.
+            if not (
+                run_definition.hydration_start_time
+                <= revision.lifecycle_effective_at
+                <= run_definition.hydration_end_time
+            ):
+                continue
+        elif revision.system_observed_at > run_definition.hydration_end_time:
+            # A revision observed after the bounded preparation window cannot
+            # have a valid LIVE_SYSTEM_READY receipt in that window.  Earlier
+            # observations still need their receipt inspected: classifier
+            # retries may make them evidence-ready during this window.
             continue
         profile = _profile_for_external_revision(
             revision=revision,
             profiles=profiles,
         )
         attempted += 1
-        revision_resolution = _validate_revision_classification_conflicts(
-            archive=archive,
-            source_revision_id=revision.source_revision_id,
-            selected_profile=profile,
-            run_definition=run_definition,
-        )
         selected_readiness = _select_external_readiness(
             archive=archive,
             source_revision_id=revision.source_revision_id,
@@ -1687,6 +1687,25 @@ def hydrate_external_research_evidence(
         )
         if selected_readiness is None:
             continue
+        if (
+            run_definition.availability_mode
+            is ResearchAvailabilityMode.LIVE_SYSTEM_READY
+            and not (
+                run_definition.hydration_start_time
+                <= ready_at
+                <= run_definition.hydration_end_time
+            )
+        ):
+            # The readiness receipt is the authoritative live effective time.
+            # Do not hydrate a revision whose durable evidence only became
+            # available after this bounded window.
+            continue
+        revision_resolution = _validate_revision_classification_conflicts(
+            archive=archive,
+            source_revision_id=revision.source_revision_id,
+            selected_profile=profile,
+            run_definition=run_definition,
+        )
         status = str(selected_readiness.get("classification_status", ""))
         policy_eligible = selected_readiness.get("policy_eligible") is True
         input_fingerprint = _required_sha256(

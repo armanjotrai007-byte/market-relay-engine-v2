@@ -515,6 +515,87 @@ def test_keep_first_requires_proven_live_chronology(tmp_path) -> None:
     ]
 
 
+@pytest.mark.parametrize("status", ("PROVIDER_FAILED", "VALIDATION_REJECTED"))
+def test_keep_first_ignores_retryable_attempts_before_canonical_success(
+    tmp_path,
+    status: str,
+) -> None:
+    archive = ExternalEventArchive(
+        tmp_path,
+        now=SequenceClock(
+            *(T0 + timedelta(seconds=value) for value in range(1, 16)),
+        ),
+    )
+    input_fingerprint = sha256(b"input").hexdigest()
+    profile_hash = sha256(b"profile").hexdigest()
+    archive.publish_classification_attempt(
+        classification_input_fingerprint=input_fingerprint,
+        attempt_id=f"{status.lower()}-attempt",
+        payload={
+            **_attempt(
+                attempt_id="live-attempt",
+                input_fingerprint=input_fingerprint,
+                complete_output_fingerprint=SHA_A,
+                policy_output_fingerprint=SHA_B,
+                profile_hash=profile_hash,
+                archived_at=T0,
+                summary="retryable failure",
+            ),
+            "classification_attempt_id": f"{status.lower()}-attempt",
+            "status": status,
+            "validation_outcome": False,
+            "durably_published": False,
+            "classification_origin": "LIVE_SYSTEM",
+        },
+    )
+    input_fingerprint, _, first_output, canonical = _publish_conflicting_attempts(
+        archive
+    )
+    conflict_id = next(tmp_path.joinpath("conflicts").glob("*.json")).stem
+
+    resolution = archive.publish_conflict_resolution(
+        conflict_id=conflict_id,
+        decision=ConflictResolutionDecision.KEEP_FIRST_DURABLY_PUBLISHED,
+        reviewer="research-reviewer",
+        reason="The first qualifying successful live result owns the input.",
+        chosen_attempt_id="live-attempt",
+        chosen_complete_output_fingerprint=first_output,
+        chosen_policy_output_fingerprint=str(
+            canonical["policy_output_fingerprint"]
+        ),
+    )
+
+    attempts = archive.iter_classification_attempts(input_fingerprint)
+    failed = next(
+        value
+        for value in attempts
+        if value["classification_attempt_id"] == f"{status.lower()}-attempt"
+    )
+    assert resolution["chosen_attempt_id"] == "live-attempt"
+    assert failed["status"] == status
+    assert failed["validation_outcome"] is False
+    assert failed["durably_published"] is False
+
+
+def test_keep_first_rejects_ambiguous_successful_candidate_chronology(tmp_path) -> None:
+    archive = ExternalEventArchive(tmp_path, now=lambda: T0)
+    _, _, first_output, canonical = _publish_conflicting_attempts(archive)
+    conflict_id = next(tmp_path.joinpath("conflicts").glob("*.json")).stem
+
+    with pytest.raises(ExternalEventArchiveError, match="chronology is ambiguous"):
+        archive.publish_conflict_resolution(
+            conflict_id=conflict_id,
+            decision=ConflictResolutionDecision.KEEP_FIRST_DURABLY_PUBLISHED,
+            reviewer="research-reviewer",
+            reason="Equal successful publication times cannot prove ordering.",
+            chosen_attempt_id="live-attempt",
+            chosen_complete_output_fingerprint=first_output,
+            chosen_policy_output_fingerprint=str(
+                canonical["policy_output_fingerprint"]
+            ),
+        )
+
+
 def test_restart_adopts_resolution_written_before_manifest_save(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
